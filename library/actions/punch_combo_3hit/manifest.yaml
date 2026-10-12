@@ -1,0 +1,17 @@
+id: punch_combo_3hit
+kind: action
+version: 1
+name: Three-hit combo vs three attackers
+category: fight
+description: Hero blocks, elbows the first attacker, spins and kicks the second and third; ends in a held pose.
+performers: 4
+duration_s: 6
+rasas: [veera, raudra]
+intensity: [7, 10]
+tags: [fight, hero_vs_group, combo, hero_intro, climax]
+camera_suggestions: [orbit, speed_ramp, MS]
+sfx_cues: [punch_heavy, body_fall, crowd_cheer_te]
+license: {type: owned, commercial_use: true, source: "fight choreographer mocap session 2026-08"}
+files:
+  mocap: mocap.bvh
+  pose_video: pose.mp4

@@ -1,0 +1,16 @@
+id: dappu_teenmaar_132
+kind: music_stem
+version: 1
+name: Dappu teenmaar groove, 132 BPM
+role: groove
+tala: teenmaar_folk
+bpm: 132
+rasas: [veera, raudra]
+intensity: [7, 10]
+instruments: [dappu, tappeta_gullu]
+tags: [groove, dappu, teenmaar, folk, mass, telangana]
+duration_s: 29.1
+loopable: true
+license: {type: commissioned, commercial_use: true, source: "folk percussion session, Warangal, 2026-07"}
+files:
+  audio: dappu_teenmaar_132.wav

@@ -1,0 +1,77 @@
+# NRAIORBIT pipeline configuration.
+# Copy into a project (projects/<slug>/pipeline.yaml) to override per film.
+
+film:
+  runtime_minutes: 105
+  runtime_tolerance_minutes: 3
+  structure_template: auto         # auto | telugu_commercial | family_drama | thriller | village_action
+  language: te
+  subtitle_languages: [te, en]
+  resolution: [1920, 1080]         # generation is upscaled to this; use [3840, 2160] for 4K masters
+  fps: 24
+  trailer_seconds: 135
+  teaser_seconds: 60               # teaser stage is planned; not produced yet
+
+animatic:
+  resolution: [640, 360]           # placeholder render size when all generators are mock
+
+llm:
+  model: claude-opus-5-5
+  max_tokens: 64000
+  effort:                          # per agent: low | medium | high | xhigh | max
+    story_analyst: high
+    screenwriter: high
+    dialogue_critic: medium
+    director: high
+    music_director: medium
+    casting: medium
+  critique_rounds: 2
+  critique_pass_score: 8
+
+# Provider per capability. "mock" renders placeholders with ffmpeg (animatic mode).
+# Production values are adapter names registered in src/nraiorbit/providers/.
+providers:
+  keyframe: mock                   # e.g. comfyui_flux_pulid, comfyui_qwen_image
+  video: mock                      # e.g. comfyui_wan_i2v, api_kling, api_veo
+  tts: mock                        # e.g. indic_parler, indicf5, sarvam, rvc_convert
+  lipsync: none                    # e.g. latentsync
+  music: mock                      # e.g. stems_plus_symbolic, ace_step
+  sfx: none                        # e.g. library_then_generate
+  face_embedder: none              # e.g. insightface (check licence), rekognition
+  speaker_embedder: none           # e.g. speechbrain_ecapa
+
+voice:
+  mode: tts                        # performance_vc | tts | api_tts_vc  (see docs/VOICE_TELUGU.md)
+  takes_per_line: 3
+
+guards:
+  identity:
+    sample_every_n_frames: 6
+    min_mean_similarity: {CU: 0.55, MCU: 0.55, ECU: 0.55, MS: 0.45, two_shot: 0.45, OTS: 0.45}
+    min_frame_similarity: 0.40
+    max_similarity_std: 0.08
+    min_face_px: 48
+    min_body_similarity: 0.75
+  voice:
+    min_speaker_similarity: 0.70
+    max_cer: 0.15
+    min_mos: 3.5
+    duration_tolerance: 0.20
+
+retakes:
+  max_per_shot: 4
+  max_per_line: 3
+  escalation: [new_seed, stronger_identity, simpler_motion, alt_provider]
+
+review_gates:
+  story: {enabled: true, auto_approve: false}
+  cast: {enabled: true, auto_approve: false}
+  pacing: {enabled: true, auto_approve: false}
+  final_cut: {enabled: true, auto_approve: false}
+  trailer: {enabled: true, auto_approve: false}
+
+audio:
+  master_lufs: -14
+  true_peak_db: -1
+  dialogue_duck_db: -10
+  sample_rate: 48000

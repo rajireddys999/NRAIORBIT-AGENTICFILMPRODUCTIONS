@@ -1,0 +1,31 @@
+id: arjun_hero
+kind: character
+version: 3
+name: Arjun
+role: hero
+description: Rugged, calm village hero in his early 30s from the Godavari delta.
+tags: [hero, male, 30s, godavari, rugged, village, action]
+physical:
+  gender: male
+  age: 32
+  height_cm: 180
+  build: athletic
+  skin_tone_lab: [52, 14, 22]      # face skin centroid (CIELAB), from the identity pack
+  skin_tone_tolerance_de: 8
+  hair: short black, light stubble
+  eyes: dark brown
+  marks: small scar above left eyebrow
+costumes:
+  - {id: cst_arjun_village, description: "off-white cotton shirt, sleeves rolled, checked veshti", refs: refs/costumes/cst_arjun_village/}
+  - {id: cst_arjun_climax, description: "same shirt torn at the shoulder, mud and ash, veshti tied up", refs: refs/costumes/cst_arjun_climax/}
+default_voice: arjun_voice
+guard:                              # per-character overrides, calibrated on 50 good / 50 bad takes
+  min_mean_similarity: 0.58
+license: {type: owned, commercial_use: true, source: "in-house synthetic identity pack"}
+consent: {required: false}
+files:
+  face_refs: refs/face/
+  body_refs: refs/body/
+  lora_image: lora/arjun_image_v3.safetensors
+  face_centroid: embeddings/face_centroid.npy
+  body_centroid: embeddings/body_centroid.npy

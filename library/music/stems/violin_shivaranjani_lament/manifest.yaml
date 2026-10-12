@@ -1,0 +1,16 @@
+id: violin_shivaranjani_lament
+kind: music_stem
+version: 1
+name: Carnatic violin lament in Shivaranjani
+role: melody
+raga: shivaranjani
+sa_note: "C#"
+bpm: 60
+rasas: [karuna, vatsalya]
+intensity: [4, 9]
+instruments: [carnatic_violin_solo]
+tags: [melody, violin, shivaranjani, sentiment, pathos]
+duration_s: 41.0
+license: {type: commissioned, commercial_use: true, source: "violin session, 2026-08"}
+files:
+  audio: violin_shivaranjani_lament.wav

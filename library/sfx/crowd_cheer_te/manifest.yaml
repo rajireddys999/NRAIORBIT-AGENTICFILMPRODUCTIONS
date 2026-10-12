@@ -1,0 +1,11 @@
+id: crowd_cheer_te
+kind: sfx
+version: 1
+name: Telugu village crowd cheering (walla)
+category: crowd
+tags: [crowd, cheer, telugu, walla, village]
+duration_s: 14.0
+license: {type: owned, commercial_use: true, source: "field recording, East Godavari, 2026-08"}
+consent: {required: false}
+files:
+  audio: crowd_cheer_te.wav

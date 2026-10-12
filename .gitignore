@@ -1,0 +1,29 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+build/
+dist/
+
+# generated per-film outputs
+projects/
+
+# secrets
+client_secret*.json
+.youtube_token.json
+.env
+
+# library media lives in LFS/DVC/object storage, not plain git
+library/**/*.wav
+library/**/*.mp4
+library/**/*.png
+library/**/*.jpg
+library/**/*.npy
+library/**/*.safetensors
+library/**/*.ckpt
+library/**/*.pth
+library/**/*.bvh
+library/**/*.fbx
+library/**/*.mid

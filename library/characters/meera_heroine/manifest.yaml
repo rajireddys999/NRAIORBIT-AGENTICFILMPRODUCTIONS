@@ -1,0 +1,29 @@
+id: meera_heroine
+kind: character
+version: 2
+name: Meera
+role: heroine
+description: Warm, outspoken school teacher in her mid 20s from a Godavari village.
+tags: [heroine, female, 20s, godavari, village, teacher]
+physical:
+  gender: female
+  age: 26
+  height_cm: 162
+  build: slim
+  skin_tone_lab: [60, 12, 20]
+  skin_tone_tolerance_de: 8
+  hair: long black braid
+  eyes: dark brown
+  marks: none
+costumes:
+  - {id: cst_meera_saree, description: "maroon cotton saree with mustard border, simple gold studs", refs: refs/costumes/cst_meera_saree/}
+  - {id: cst_meera_festival, description: "silk pattu saree, jasmine in hair", refs: refs/costumes/cst_meera_festival/}
+default_voice: meera_voice
+license: {type: owned, commercial_use: true, source: "in-house synthetic identity pack"}
+consent: {required: false}
+files:
+  face_refs: refs/face/
+  body_refs: refs/body/
+  lora_image: lora/meera_image_v2.safetensors
+  face_centroid: embeddings/face_centroid.npy
+  body_centroid: embeddings/body_centroid.npy

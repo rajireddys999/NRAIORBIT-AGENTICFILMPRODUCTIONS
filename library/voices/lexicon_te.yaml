@@ -1,0 +1,8 @@
+# Pronunciation lexicon applied before TTS: written form -> how it should be spoken (Telugu script).
+# Use it for names, places and English words in Telugu speech.
+entries:
+  Arjun: అర్జున్
+  Raghavaiah: రాఘవయ్య
+  police station: పోలీస్ స్టేషన్
+  motorcycle: మోటార్ సైకిల్
+  Godavari: గోదావరి

@@ -1,0 +1,94 @@
+from types import SimpleNamespace
+
+import pytest
+from pydantic import TypeAdapter
+
+from nraiorbit import schemas as S
+from nraiorbit.llm import FALLBACK_BETA, ClaudeClient, LLMRefusal, LLMTruncated
+
+LLM_FACING = [S.StoryBible, S.Outline, S.SceneScript, S.ShotList, S.Critique, S.CueRevisions, S.IdentityPackBrief]
+
+
+class FakeStream:
+    def __init__(self, message):
+        self.message = message
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get_final_message(self):
+        return self.message
+
+
+class FakeClient:
+    def __init__(self, message):
+        self.calls = []
+        self.beta = SimpleNamespace(messages=SimpleNamespace(stream=self._stream))
+        self.message = message
+
+    def _stream(self, **kwargs):
+        self.calls.append(kwargs)
+        return FakeStream(self.message)
+
+
+def _message(stop_reason="end_turn", parsed=None):
+    usage = SimpleNamespace(input_tokens=10, output_tokens=5, cache_read_input_tokens=0,
+                            cache_creation_input_tokens=0)
+    return SimpleNamespace(stop_reason=stop_reason, parsed_output=parsed, usage=usage,
+                           model="claude-opus-5-5", stop_details=None)
+
+
+def test_request_shape_caching_fallback_structured_output(tmp_path):
+    critique = S.Critique(score=9, issues=[], revision_instructions=[])
+    fake = FakeClient(_message(parsed=critique))
+    client = ClaudeClient(client=fake, usage_log=tmp_path / "usage.jsonl")
+    out = client.generate(schema=S.Critique, system="SYS", context="BIBLE", task="TASK", effort="medium",
+                          agent="dialogue_critic")
+    assert out == critique
+    call = fake.calls[0]
+    assert call["model"] == "claude-opus-5-5"
+    assert call["output_format"] is S.Critique
+    assert call["output_config"] == {"effort": "medium"}
+    assert call["thinking"] == {"type": "adaptive"}
+    assert call["betas"] == [FALLBACK_BETA] and call["fallbacks"] == "default"
+    assert call["system"][0]["cache_control"] == {"type": "ephemeral"}
+    content = call["messages"][0]["content"]
+    assert content[0] == {"type": "text", "text": "BIBLE", "cache_control": {"type": "ephemeral"}}
+    assert content[1] == {"type": "text", "text": "TASK"}
+    assert "dialogue_critic" in (tmp_path / "usage.jsonl").read_text()
+
+
+def test_empty_context_sends_no_empty_block():
+    fake = FakeClient(_message(parsed=S.Critique(score=1, issues=[], revision_instructions=[])))
+    ClaudeClient(client=fake).generate(schema=S.Critique, system="S", context="", task="T")
+    assert fake.calls[0]["messages"][0]["content"] == [{"type": "text", "text": "T"}]
+
+
+@pytest.mark.parametrize("stop, exc", [("refusal", LLMRefusal), ("max_tokens", LLMTruncated)])
+def test_stop_reasons_raise(stop, exc):
+    client = ClaudeClient(client=FakeClient(_message(stop_reason=stop)))
+    with pytest.raises(exc):
+        client.generate(schema=S.Critique, system="S", context="", task="T")
+
+
+@pytest.mark.parametrize("schema", LLM_FACING, ids=lambda s: s.__name__)
+def test_schemas_are_strict_structured_output_compatible(schema):
+    from anthropic.lib._parse._transform import transform_schema
+
+    transformed = transform_schema(TypeAdapter(schema).json_schema())
+
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("type") == "object" and "properties" in node:
+                assert node.get("additionalProperties") is False
+                assert set(node["properties"]) <= set(node.get("required", []))
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(transformed)

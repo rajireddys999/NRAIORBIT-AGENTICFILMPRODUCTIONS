@@ -1,0 +1,15 @@
+id: arjun_theme
+kind: motif
+version: 1
+name: Arjun's theme
+for_role: hero
+raga: nattai
+sa_note: "D"
+bpm: 120
+rasas: [veera]
+tags: [hero, arjun_hero, leitmotif]
+description: Four-bar heroic motif; rising Nattai phrase ending on Pa. Reharmonised in Shivaranjani for pathos.
+license: {type: owned, commercial_use: true, source: "composed in-house"}
+files:
+  midi: arjun_theme.mid
+  stems: stems/

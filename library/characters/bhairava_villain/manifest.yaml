@@ -1,0 +1,26 @@
+id: bhairava_villain
+kind: character
+version: 1
+name: Bhairava
+role: villain
+description: Heavy-set river boss in his 50s, white clothes, gold chain, cold stare.
+tags: [villain, male, 50s, coastal_andhra, menacing, landlord]
+physical:
+  gender: male
+  age: 55
+  height_cm: 176
+  build: heavy-set
+  skin_tone_lab: [42, 12, 18]
+  skin_tone_tolerance_de: 8
+  hair: grey, oiled back; thick moustache
+  eyes: dark brown
+  marks: gold tooth
+costumes:
+  - {id: cst_bhairava_white, description: "starched white shirt and dhoti, thick gold chain, rings", refs: refs/costumes/cst_bhairava_white/}
+default_voice: bhairava_voice
+license: {type: owned, commercial_use: true, source: "in-house synthetic identity pack"}
+consent: {required: false}
+files:
+  face_refs: refs/face/
+  lora_image: lora/bhairava_image_v1.safetensors
+  face_centroid: embeddings/face_centroid.npy

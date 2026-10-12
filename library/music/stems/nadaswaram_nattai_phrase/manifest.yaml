@@ -1,0 +1,16 @@
+id: nadaswaram_nattai_phrase
+kind: music_stem
+version: 1
+name: Nadaswaram heroic phrase in Nattai
+role: melody
+raga: nattai
+sa_note: "D"
+bpm: 120
+rasas: [veera]
+intensity: [7, 10]
+instruments: [nadaswaram]
+tags: [melody, nadaswaram, nattai, hero, elevation]
+duration_s: 12.5
+license: {type: commissioned, commercial_use: true, source: "nadaswaram session, 2026-08"}
+files:
+  audio: nadaswaram_nattai_phrase.wav

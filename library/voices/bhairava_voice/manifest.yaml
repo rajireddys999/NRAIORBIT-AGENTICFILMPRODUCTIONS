@@ -1,0 +1,21 @@
+id: bhairava_voice
+kind: voice
+version: 1
+name: Bhairava (voice artist C)
+tags: [male, 50s, coastal_andhra, gravelly, low]
+dialect: coastal_andhra
+gender: male
+age_range: [48, 62]
+pitch: low
+timbre_tags: [gravelly, heavy, slow]
+emotion_refs:
+  raudra:
+    - {path: samples/emotion/raudra/01.wav, transcript_te: "నా మాటే శాసనం.", intensity: 8, pace: slow}
+  bhayanaka:
+    - {path: samples/emotion/bhayanaka/01.wav, transcript_te: "ఎవడు వచ్చినా... ఇక్కడే సమాధి.", intensity: 7, pace: very_slow}
+license: {type: commissioned, commercial_use: true, source: "studio session 2026-09, voice artist C"}
+consent: {required: true, document_ref: "consents/voice_artist_C_ai_voice_2026.pdf"}
+files:
+  clean_samples: samples/clean/
+  speaker_centroid: embeddings/speaker_centroid.npy
+  tts_model: models/bhairava_tts_v1.ckpt

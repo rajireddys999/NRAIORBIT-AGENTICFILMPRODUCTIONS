@@ -1,0 +1,14 @@
+id: godavari_village_riverbank
+kind: location
+version: 1
+name: Godavari village riverbank
+region: east_godavari
+setting_type: riverbank_village
+description: Wide Godavari river, palm trees, wooden fishing boats, nets drying, temple gopuram in the distance.
+times_of_day: [dawn, golden_hour, dusk, night]
+tags: [river, village, boats, godavari]
+license: {type: owned, commercial_use: true, source: "generated plates + own reference photos"}
+files:
+  refs: refs/
+  depth: depth/
+  ambience: ambience_river_morning.wav

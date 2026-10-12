@@ -1,0 +1,10 @@
+id: punch_heavy
+kind: sfx
+version: 1
+name: Heavy cinematic punch
+category: impact
+tags: [punch, impact, fight, heavy]
+duration_s: 0.9
+license: {type: licensed, commercial_use: true, source: "licensed SFX pack (royalty-free)"}
+files:
+  audio: punch_heavy.wav

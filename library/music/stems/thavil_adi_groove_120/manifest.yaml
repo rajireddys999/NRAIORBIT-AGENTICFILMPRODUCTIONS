@@ -1,0 +1,16 @@
+id: thavil_adi_groove_120
+kind: music_stem
+version: 1
+name: Thavil groove in Adi tala, 120 BPM
+role: groove
+tala: adi
+bpm: 120
+rasas: [veera, bhakti]
+intensity: [5, 9]
+instruments: [thavil]
+tags: [groove, thavil, adi, temple, mass]
+duration_s: 32.0
+loopable: true
+license: {type: commissioned, commercial_use: true, source: "temple percussion session, 2026-07"}
+files:
+  audio: thavil_adi_groove_120.wav

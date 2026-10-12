@@ -1,0 +1,13 @@
+id: choir_chant_hit
+kind: music_stem
+version: 1
+name: Sanskrit choir chant hit
+role: hit
+rasas: [veera, adbhuta]
+intensity: [8, 10]
+instruments: [choir_sanskrit_chant, epic_brass]
+tags: [hit, choir, chant, elevation, interval_bang, climax]
+duration_s: 4.2
+license: {type: commissioned, commercial_use: true, source: "choir session, 2026-09"}
+files:
+  audio: choir_chant_hit.wav

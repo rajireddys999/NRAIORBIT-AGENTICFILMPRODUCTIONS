@@ -1,0 +1,17 @@
+id: hero_slowmo_entry
+kind: action
+version: 1
+name: Hero slow-motion entry
+category: entry
+description: Hero steps off a bike and walks toward camera in slow motion; dust, crowd parting, low angle.
+performers: 1
+duration_s: 8
+rasas: [veera]
+intensity: [6, 9]
+tags: [hero_intro, entry, walk, slowmo, mass]
+camera_suggestions: [low_angle_WS, track, slowmo_120]
+sfx_cues: [bike_rev, footsteps_dust, whoosh]
+license: {type: owned, commercial_use: true, source: "in-house mocap session 2026-08"}
+files:
+  mocap: mocap.bvh
+  pose_video: pose.mp4

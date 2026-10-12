@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nraiorbit"
+version = "0.1.0"
+description = "Agentic pipeline: story prompt to Telugu feature film, trailer and YouTube release"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "anthropic>=1.13",
+  "pydantic>=2.7",
+  "pyyaml>=6",
+  "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+publish = ["google-api-python-client>=2.100", "google-auth-oauthlib>=1.2"]
+guards = ["insightface>=0.7", "onnxruntime-gpu>=1.17", "opencv-python>=4.9", "speechbrain>=1.0", "torchaudio>=2.2"]
+
+[project.scripts]
+nraiorbit = "nraiorbit.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+nraiorbit = ["prompts/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 130
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]

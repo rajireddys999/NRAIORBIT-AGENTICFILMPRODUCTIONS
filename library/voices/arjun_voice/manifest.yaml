@@ -1,0 +1,26 @@
+id: arjun_voice
+kind: voice
+version: 2
+name: Arjun (voice artist A)
+tags: [male, 30s, godavari, warm, low]
+dialect: godavari
+gender: male
+age_range: [28, 38]
+pitch: low
+timbre_tags: [warm, resonant, controlled]
+emotion_refs:          # reference clips per rasa: the TTS copies their prosody
+  veera:
+    - {path: samples/emotion/veera/01.wav, transcript_te: "ఈ ఊరు నాది.", intensity: 8, pace: slow}
+  raudra:
+    - {path: samples/emotion/raudra/01.wav, transcript_te: "ఇంకొక్కసారి చెయ్యి వేస్తే చూడు.", intensity: 9, pace: slow}
+  shringara:
+    - {path: samples/emotion/shringara/01.wav, transcript_te: "భయపడకు. నేనున్నాను కదా.", intensity: 4, pace: slow}
+  karuna:
+    - {path: samples/emotion/karuna/01.wav, transcript_te: "నాన్నా... నన్ను క్షమించు.", intensity: 7, pace: very_slow}
+license: {type: commissioned, commercial_use: true, source: "studio session 2026-08, voice artist A"}
+consent: {required: true, document_ref: "consents/voice_artist_A_ai_voice_2026.pdf"}
+files:
+  clean_samples: samples/clean/
+  speaker_centroid: embeddings/speaker_centroid.npy
+  tts_model: models/arjun_tts_v2.ckpt
+  vc_model: models/arjun_rvc_v2.pth

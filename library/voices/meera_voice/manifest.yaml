@@ -1,0 +1,23 @@
+id: meera_voice
+kind: voice
+version: 1
+name: Meera (voice artist B)
+tags: [female, 20s, godavari, bright]
+dialect: godavari
+gender: female
+age_range: [22, 30]
+pitch: mid
+timbre_tags: [clear, bright, expressive]
+emotion_refs:
+  shringara:
+    - {path: samples/emotion/shringara/01.wav, transcript_te: "నాకు భయంగా ఉంది, అర్జున్.", intensity: 4, pace: medium}
+  karuna:
+    - {path: samples/emotion/karuna/01.wav, transcript_te: "నువ్వు ఒక్కడివే కాదు.", intensity: 7, pace: slow}
+  hasya:
+    - {path: samples/emotion/hasya/01.wav, transcript_te: "అబ్బా, ఇంక చాలు!", intensity: 5, pace: fast}
+license: {type: commissioned, commercial_use: true, source: "studio session 2026-08, voice artist B"}
+consent: {required: true, document_ref: "consents/voice_artist_B_ai_voice_2026.pdf"}
+files:
+  clean_samples: samples/clean/
+  speaker_centroid: embeddings/speaker_centroid.npy
+  tts_model: models/meera_tts_v1.ckpt

@@ -1,0 +1,16 @@
+id: bike_chase_village
+kind: action
+version: 1
+name: Bike chase through village lanes
+category: chase
+description: Motorcycle chase through narrow village lanes, a jump over a cart, near miss with a bullock.
+performers: 3
+duration_s: 10
+rasas: [veera, bhayanaka]
+intensity: [7, 10]
+tags: [chase, bike, village]
+camera_suggestions: [track, drone, handheld]
+sfx_cues: [bike_rev, crash, crowd_shout_te]
+license: {type: owned, commercial_use: true, source: "previs animation 2026-09"}
+files:
+  reference: reference.mp4

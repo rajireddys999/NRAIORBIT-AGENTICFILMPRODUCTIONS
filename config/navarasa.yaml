@@ -1,0 +1,206 @@
+# Navarasa emotion taxonomy -> default creative choices.
+#
+# Every agent starts from these defaults and must justify deviations.
+# Ragas and instrumentation are starting points for a Telugu film score; tune them
+# with a music director. Talas: adi (8), rupaka (3/6), misra_chapu (7), khanda_chapu (5),
+# folk = teenmaar / dappu patterns.
+#
+# Nine classical rasas + two widely used extensions (vatsalya, bhakti).
+
+rasas:
+  shringara:            # love, romance, beauty
+    label_te: శృంగారం
+    music:
+      ragas: [mohanam, kalyani, abheri, hindolam]
+      talas: [adi, rupaka]
+      tempo_bpm: [70, 96]
+      instruments: [venu_flute, veena, strings, santoor, soft_mridangam, female_hum]
+      cue_types: [romance_theme, song_bridge]
+    voice: {pace: medium_slow, pitch: warm, energy: low_medium}
+    camera:
+      shot_sizes: [CU, MCU, two_shot]
+      moves: [slow_push_in, gentle_orbit, rack_focus]
+      fps_effect: [normal, light_slowmo]
+    look: {palette: warm_golden, contrast: soft, time_of_day_bias: [golden_hour, night_lights]}
+
+  hasya:                # comedy
+    label_te: హాస్యం
+    music:
+      ragas: [bilahari, mohanam]
+      talas: [adi, khanda_chapu]
+      tempo_bpm: [100, 132]
+      instruments: [mandolin, ghatam, kanjira, morsing, pizzicato_strings, clarinet, whistles]
+      cue_types: [comedy_sting, comedy_bed]
+    voice: {pace: fast, pitch: varied, energy: high}
+    camera:
+      shot_sizes: [MS, WS, reaction_CU]
+      moves: [static, quick_pan, crash_zoom]
+      fps_effect: [normal]
+    look: {palette: bright_saturated, contrast: medium}
+
+  karuna:               # pathos, sorrow, sentiment
+    label_te: కరుణ
+    music:
+      ragas: [shivaranjani, subhapantuvarali, mukhari, charukesi]
+      talas: [rupaka, misra_chapu, free]
+      tempo_bpm: [50, 72]
+      instruments: [carnatic_violin_solo, nadaswaram_slow, cello, tanpura_drone, female_alaap, shehnai]
+      cue_types: [sentiment_theme, mother_sentiment, loss]
+    voice: {pace: slow, pitch: low_breaking, energy: low}
+    camera:
+      shot_sizes: [ECU, CU]
+      moves: [very_slow_push_in, static, handheld_subtle]
+      fps_effect: [normal, light_slowmo]
+    look: {palette: desaturated_cool, contrast: low, time_of_day_bias: [overcast, dusk, night]}
+
+  raudra:               # fury, anger
+    label_te: రౌద్రం
+    music:
+      ragas: [atana, chromatic_hybrid]
+      talas: [adi, khanda_chapu]
+      tempo_bpm: [120, 160]
+      instruments: [thavil, chenda, dappu, low_brass, taiko_style_drums, distorted_guitar, male_chant]
+      cue_types: [rage_build, villain_theme, fight]
+    voice: {pace: clipped, pitch: low_forceful, energy: very_high}
+    camera:
+      shot_sizes: [ECU_eyes, low_angle_MS, WS]
+      moves: [crash_zoom, whip_pan, handheld_aggressive, dolly_zoom]
+      fps_effect: [speed_ramp, slowmo_impact]
+    look: {palette: red_amber_high_contrast, contrast: high}
+
+  veera:                # heroism, mass elevation
+    label_te: వీరం
+    music:
+      ragas: [nattai, arabhi, hamsadhwani]
+      talas: [adi, teenmaar_folk]
+      tempo_bpm: [110, 150]
+      instruments: [dappu, thavil, chenda, nadaswaram, epic_brass, choir_sanskrit_chant, electric_guitar, whistle_claps]
+      cue_types: [hero_elevation, mass_bgm, interval_bang, climax]
+    voice: {pace: measured_punch, pitch: low_resonant, energy: high}
+    camera:
+      shot_sizes: [low_angle_WS, hero_MCU, EWS_silhouette]
+      moves: [slow_motion_walk, 360_orbit, crane_up, push_in]
+      fps_effect: [slowmo_120, speed_ramp]
+    look: {palette: teal_orange_epic, contrast: high, atmosphere: [dust, embers, backlight_rays]}
+
+  bhayanaka:            # fear, dread
+    label_te: భయానకం
+    music:
+      ragas: [textural]       # mostly non-tonal
+      talas: [free]
+      tempo_bpm: [40, 70]
+      instruments: [low_drones, dissonant_strings, prepared_percussion, reverse_swells, breath_fx]
+      cue_types: [dread_bed, jump_sting]
+    voice: {pace: halting, pitch: tight_high, energy: low_whisper}
+    camera:
+      shot_sizes: [POV, OTS, WS_negative_space]
+      moves: [slow_creep, handheld_unsteady, static_long]
+      fps_effect: [normal]
+    look: {palette: cold_green_blue, contrast: high_shadows, time_of_day_bias: [night]}
+
+  bibhatsa:             # disgust, repulsion
+    label_te: బీభత్సం
+    music:
+      ragas: [textural]
+      talas: [free]
+      tempo_bpm: [50, 80]
+      instruments: [detuned_strings, metallic_scrapes, sub_bass]
+      cue_types: [disgust_sting]
+    voice: {pace: slow_drawn, pitch: low, energy: medium}
+    camera:
+      shot_sizes: [ECU, dutch_MS]
+      moves: [dutch_tilt, slow_push]
+      fps_effect: [normal]
+    look: {palette: sickly_green_yellow, contrast: medium}
+
+  adbhuta:              # wonder, awe, revelation
+    label_te: అద్భుతం
+    music:
+      ragas: [kalyani, vasantha]      # kalyani ~ lydian colour
+      talas: [rupaka, free]
+      tempo_bpm: [60, 90]
+      instruments: [choir, harp, celesta, veena_glissando, strings_swell, temple_bells]
+      cue_types: [reveal, wonder]
+    voice: {pace: slow, pitch: rising, energy: medium}
+    camera:
+      shot_sizes: [EWS, reveal_WS, reaction_CU]
+      moves: [crane_up, slow_reveal_pan, drone_rise]
+      fps_effect: [normal, light_slowmo]
+    look: {palette: luminous, contrast: medium, atmosphere: [god_rays, mist]}
+
+  shanta:               # peace, calm, resolution
+    label_te: శాంతం
+    music:
+      ragas: [revati, hindolam]
+      talas: [free, rupaka]
+      tempo_bpm: [50, 70]
+      instruments: [tanpura_drone, veena, venu_flute, soft_strings, temple_bells]
+      cue_types: [resolution, calm_bed]
+    voice: {pace: slow, pitch: soft, energy: low}
+    camera:
+      shot_sizes: [WS, MS]
+      moves: [static, slow_pan]
+      fps_effect: [normal]
+    look: {palette: soft_natural, contrast: low, time_of_day_bias: [dawn]}
+
+  vatsalya:             # parental / family love
+    label_te: వాత్సల్యం
+    music:
+      ragas: [neelambari, ananda_bhairavi]
+      talas: [rupaka, misra_chapu]
+      tempo_bpm: [55, 76]
+      instruments: [female_lullaby_hum, veena, venu_flute, soft_strings]
+      cue_types: [family_theme, mother_sentiment]
+    voice: {pace: slow, pitch: warm, energy: low}
+    camera:
+      shot_sizes: [CU, two_shot]
+      moves: [slow_push_in, static]
+      fps_effect: [normal]
+    look: {palette: warm_soft, contrast: low}
+
+  bhakti:               # devotion
+    label_te: భక్తి
+    music:
+      ragas: [mayamalavagowla, revati, bhairavi]
+      talas: [adi, rupaka]
+      tempo_bpm: [60, 100]
+      instruments: [nadaswaram, thavil, temple_bells, conch, tanpura_drone, group_chant]
+      cue_types: [temple, festival, devotional]
+    voice: {pace: measured, pitch: resonant, energy: medium}
+    camera:
+      shot_sizes: [WS_temple, low_angle_idol, CU_face_lamps]
+      moves: [crane_down, slow_orbit]
+      fps_effect: [normal, light_slowmo]
+    look: {palette: saffron_lamp_glow, contrast: medium, atmosphere: [incense_smoke, lamp_flicker]}
+
+# Raga scale data used by the raga-conformance check (pitch classes relative to Sa=0).
+# Arohana/avarohana are simplified to the union of allowed swaras.
+raga_scales:
+  mohanam:          [0, 2, 4, 7, 9]
+  kalyani:          [0, 2, 4, 6, 7, 9, 11]
+  abheri:           [0, 2, 3, 5, 7, 9, 10]
+  hindolam:         [0, 3, 5, 8, 10]
+  bilahari:         [0, 2, 4, 5, 7, 9, 11]
+  shivaranjani:     [0, 2, 3, 7, 9]
+  subhapantuvarali: [0, 1, 3, 6, 7, 8, 11]
+  mukhari:          [0, 2, 3, 5, 7, 8, 9, 10]
+  charukesi:        [0, 2, 4, 5, 7, 8, 10]
+  atana:            [0, 2, 4, 5, 7, 9, 10, 11]
+  nattai:           [0, 3, 4, 5, 7, 10, 11]
+  arabhi:           [0, 2, 4, 5, 7, 9, 11]
+  hamsadhwani:      [0, 2, 4, 7, 11]
+  vasantha:         [0, 1, 4, 5, 9, 11]
+  revati:           [0, 1, 5, 7, 10]
+  neelambari:       [0, 2, 4, 5, 7, 9, 11]
+  ananda_bhairavi:  [0, 2, 3, 5, 7, 9, 10]
+  mayamalavagowla:  [0, 1, 4, 5, 7, 8, 11]
+  bhairavi:         [0, 2, 3, 5, 7, 8, 9, 10]
+
+# Cue planning rules used by src/nraiorbit/planning/music.py
+cue_rules:
+  merge_adjacent_same_rasa: true      # consecutive scenes with the same rasa share one cue
+  min_cue_seconds: 20
+  max_cue_seconds: 240
+  silence_before_peak_seconds: 1.5     # a beat of silence before interval bang / climax hits
+  leitmotif_roles: [hero, heroine, villain]
+  dialogue_duck_db: -10                # duck music under dialogue

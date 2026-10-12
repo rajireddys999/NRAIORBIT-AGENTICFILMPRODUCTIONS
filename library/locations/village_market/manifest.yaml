@@ -1,0 +1,13 @@
+id: village_market
+kind: location
+version: 1
+name: Village weekly market (santha)
+region: east_godavari
+setting_type: market
+description: Dusty open market with vegetable stalls, tarpaulin shades, bicycles, a banyan tree.
+times_of_day: [morning, noon]
+tags: [market, village, crowd]
+license: {type: owned, commercial_use: true, source: "generated plates"}
+files:
+  refs: refs/
+  ambience: ambience_market_te.wav

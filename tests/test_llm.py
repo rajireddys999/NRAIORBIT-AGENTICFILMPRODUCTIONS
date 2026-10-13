@@ -92,3 +92,20 @@ def test_schemas_are_strict_structured_output_compatible(schema):
                 walk(v)
 
     walk(transformed)
+
+
+def test_client_is_created_lazily(monkeypatch):
+    """Commands that never call Claude (POC run, shot pack, identity build) must work without the SDK."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_anthropic(name, *args, **kwargs):
+        if name == "anthropic":
+            raise ImportError("anthropic not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_anthropic)
+    client = ClaudeClient()                      # must not import anthropic
+    with pytest.raises(ImportError):
+        _ = client.client                        # only the first real call needs it

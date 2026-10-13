@@ -61,14 +61,18 @@ class ClaudeClient:
         usage_log: Path | None = None,
         client: Any | None = None,
     ):
-        if client is None:
-            import anthropic
-
-            client = anthropic.Anthropic()
-        self.client = client
+        self._client = client      # created on first use, so runs that never call Claude don't need the SDK
         self.model = model
         self.max_tokens = max_tokens
         self.usage_log = usage_log
+
+    @property
+    def client(self):
+        if self._client is None:
+            import anthropic
+
+            self._client = anthropic.Anthropic()
+        return self._client
 
     def generate(self, *, schema, system, context, task, effort="high", agent="agent"):
         content: list[dict] = []

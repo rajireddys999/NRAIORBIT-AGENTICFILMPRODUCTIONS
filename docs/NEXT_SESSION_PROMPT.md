@@ -11,8 +11,8 @@
     session that made the trailer, and
   - a Google Cloud Storage copy at `gs://nraiorbit-agentic-film-product-media/godavari5/`, once it has been made
     (needs `storage.googleapis.com` in the network allow-list).
-- Restoring the backup means **nothing is paid again**. A restore test into a fresh clone showed all 17 clips reused
-  and $0 for video and keyframes.
+- Restoring the backup means **nothing is paid again**. A restore test into a fresh clone rebuilt the trailer and
+  movie with every Google call blocked, and the ledger stayed at $57.65.
 
 ## Before you start (once)
 

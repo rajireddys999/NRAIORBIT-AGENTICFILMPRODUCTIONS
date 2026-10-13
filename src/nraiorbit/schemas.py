@@ -297,6 +297,7 @@ class VoiceAsset(AssetBase):
     pitch: Literal["low", "mid", "high"] | None = None
     timbre_tags: list[str] = []
     tts_speaker: str | None = None      # named speaker of the TTS model, for a consistent voice
+    gemini_voice: str | None = None     # Gemini TTS prebuilt voice name
     emotion_refs: dict[str, list[dict]] = {}
 
 

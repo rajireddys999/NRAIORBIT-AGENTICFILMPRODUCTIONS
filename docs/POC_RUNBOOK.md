@@ -1,48 +1,57 @@
 # 5-minute POC runbook: "Godavari Simham"
 
-Goal: produce a real 5-minute Telugu short end to end on your own setup (MacBook Pro 48 GB,
-Google Veo, DaVinci Resolve, AWS, Claude), and measure what it actually costs.
+Goal: produce a real 5-minute Telugu short and its trailer end to end on your setup
+(MacBook Pro, Google Veo, DaVinci Resolve, AWS, Claude), and measure what it actually
+costs.
 
 The story, screenplay (10 scenes, 13 Telugu lines), shot plan (54 shots, each ≤ 8 s for
 Veo) and music cue sheet are already written. They were written in Claude Code on your
-subscription, so the pipeline makes **no Claude API calls** for this POC.
+subscription, so the run makes **no Claude API calls**. Everything else runs
+automatically through your Google key:
 
-## The bill, before you start
+| Step | Done by | Paid to |
+|---|---|---|
+| Character reference images (front, three-quarter, each costume) | Gemini image | Google |
+| First frame of every shot with a lead character | Gemini image, using the reference images | Google |
+| Video clip per shot | Veo (image-to-video) | Google |
+| Telugu dialogue (13 lines, one voice per character) | Gemini TTS | Google |
+| Edit, ducked music bed, −14 LUFS master, te/en subtitles, trailer | the pipeline (ffmpeg) on your Mac | — |
+| Colour, final mix | DaVinci Resolve | — |
 
-`nraiorbit estimate godavari5` prints this from the real shot plan. Here are the
-expected-case numbers (2 attempts per shot on average):
+## The bill
 
-| Video option | Video | Everything else | **Total** |
-|---|---|---|---|
-| Veo 3.1 Lite, API ($0.05/s) | $32 | $2 | **≈ $34** |
-| Veo 3.1 Fast, API ($0.10/s) | $64 | $2 | **≈ $66** |
-| Veo 3.1, API ($0.40/s) | $256 | $2 | **≈ $258** |
-| Google AI Pro subscription, Veo 3.1 Fast (20 credits/clip) | 2,160 credits ≈ 2.2 months of AI Pro | $2 | **≈ $62** |
+These are the numbers `nraiorbit run` prints before it spends anything (Veo 3.1 Fast,
+720p, one attempt per shot):
 
-- One attempt at every shot = 54 Veo clips = 320 billed seconds; shots round up to 4/6/8 s
-  clips.
-- Range: 1.3 attempts per shot (low) to 3 (high). The Fast tier ranges from $42 to $96.
-- "Everything else" is lip-sync on one AWS g6.xlarge for about 2 hours (≈ $2) plus S3
-  storage (cents).
-- Your Mac does the keyframes, Telugu voices, checks and edit at no cost: about 2.5–11
-  hours of machine time.
-- For comparison, the same estimate for a full 1h45m film (`nraiorbit estimate
-  --runtime 105`) is about **$890 (Lite) / $1,730 (Fast) / $6,770 (standard)** in Veo
-  API fees, plus about $50 for everything else.
+| Run | Veo | Keyframes | Voices | **Total** |
+|---|---|---|---|---|
+| Character reference images (once) | — | 11 images | — | **≈ $0.44** |
+| **Trailer test**: `--only trailer` (17 shots) | 114 s → $11.40 | 13 → $0.52 | 13 lines → $0.02 | **≈ $12** |
+| Full 5 minutes (54 shots; trailer shots are reused) | 320 s → $32.00 | 30 → $1.20 | $0.02 | **≈ $33** |
 
-Prices are in `config/pricing.yaml`. They come from third-party price trackers, captured
-2026-10, so verify them on Google's and AWS's own pricing pages before you budget:
-[Veo API per-second prices](https://benchlm.ai/media-pricing/veo),
+- Retakes add cost. `nraiorbit estimate godavari5` shows the range at 1.3–3 attempts
+  per shot: $42–$96 total for Veo Fast.
+- Other Veo tiers: Lite is about half the Fast price; standard Veo 3.1 is 4×.
+- Lip-sync on AWS, if you add it, is about $2.
+- For the full 1h45m feature, the same assumptions give about $890 (Lite), $1,730 (Fast)
+  or $6,770 (standard). See `nraiorbit estimate --runtime 105`.
+
+**Spending safeguards:**
+- A budget cap (`budget.max_usd`, $50 for this project) stops the run before any call
+  that would cross it.
+- Every paid call is logged to `reports/cost.jsonl`.
+- Every Veo clip, keyframe and voice line is kept, so a re-run, crash or budget stop
+  never pays twice for the same thing.
+
+Prices are in `config/pricing.yaml`. They come from third-party trackers captured
+2026-10, so verify them on Google's and AWS's own pricing pages:
+[Veo API per second](https://benchlm.ai/media-pricing/veo),
 [Flow credits per plan](https://www.hooked.so/compare/veo-3-pricing),
 [credits per clip](https://diyai.io/ai-tools/video-generation/google-veo-pricing/),
 [AWS g6.xlarge, Mumbai](https://www.doit.com/compute/spot/ap-south-1/g6.xlarge),
 [AWS g5.xlarge, Mumbai](https://www.doit.com/compute/spot/ap-south-1/g5.xlarge).
 
-**To keep the bill small:** generate with Veo 3.1 Lite or Fast at 720p (the pipeline
-upscales to 1080p). Get the reference images right first (step 3): most retakes come from
-faces that don't match.
-
-## Steps
+## Steps (automatic)
 
 ### 1. Install on your Mac
 
@@ -51,137 +60,100 @@ brew install ffmpeg python@3.12
 git clone -b claude/telugu-ai-movie-generator-yhb6po https://github.com/rajireddys999/NRAIORBIT-AGENTICFILMPRODUCTIONS.git
 cd NRAIORBIT-AGENTICFILMPRODUCTIONS
 python3.12 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-nraiorbit demo godavari     # 30-second sanity check: placeholder movie + trailer
+pip install -e ".[dev,google]"
+nraiorbit demo godavari          # 30-second sanity check, no keys needed
 ```
 
-### 2. Create the POC project and check the bill
+### 2. Google key
+
+1. Create an API key in Google AI Studio (aistudio.google.com) on a project with
+   **billing enabled**. Veo has no free tier.
+2. Export it:
+   ```bash
+   export GEMINI_API_KEY=...
+   nraiorbit google models          # check which Veo / image / TTS models your key can use
+   ```
+3. If the listed names differ from `veo-3.1-fast-generate-preview`,
+   `gemini-2.5-flash-image` or `gemini-2.5-flash-preview-tts`, put the right ones into
+   `projects/godavari5/pipeline.yaml` under `google:`. Set `veo_tier` to match the model's
+   price tier (`standard`, `fast` or `lite`).
+
+### 3. Create the POC and build the characters
 
 ```bash
 nraiorbit poc godavari5
-nraiorbit estimate godavari5          # saved to projects/godavari5/reports/cost_estimate.md
+nraiorbit estimate godavari5                 # full bill table
+nraiorbit identity build godavari5           # ~$0.44; asks before spending
 ```
 
-### 3. Make the character reference images (consistent faces)
+**Look at the images** in `library/characters/*/refs/` before going further. Every shot
+uses these faces. To regenerate one you don't like, delete it and run `identity build`
+again; only missing images are regenerated.
 
-Veo keeps a face consistent only if you give it the same reference images every time.
-For Arjun, Meera and Bhairava:
-
-1. Generate one portrait you like per character. Use an image model on your Mac (ComfyUI
-   with FLUX/Qwen-Image) or Gemini's image generation, and the description in
-   `projects/godavari5/01_story_bible.json`. The faces must be fictional.
-2. From that portrait, make: a front face, a three-quarter face, and a full-body shot in
-   each costume (`cst_arjun_village`, `cst_arjun_climax`, `cst_meera_saree`,
-   `cst_bhairava_white`).
-3. Save them into the library:
-   ```
-   library/characters/arjun_hero/refs/face/01_front.png, 02_three_quarter.png
-   library/characters/arjun_hero/refs/costumes/cst_arjun_village/01.png
-   library/characters/arjun_hero/refs/costumes/cst_arjun_climax/01.png
-   library/characters/meera_heroine/refs/face/...      refs/costumes/cst_meera_saree/...
-   library/characters/bhairava_villain/refs/face/...   refs/costumes/cst_bhairava_white/...
-   ```
-
-### 4. Export the shot pack
+### 4. Trailer test (about $12)
 
 ```bash
-nraiorbit shotpack export godavari5
+nraiorbit run godavari5 --only trailer
 ```
 
-This writes `projects/godavari5/shotpack/`:
+It prints the cost preview and asks before spending. It then generates the 17 trailer
+shots and all 13 Telugu lines, and cuts:
 
-| File | What it is |
+- `11_master/movie.mp4`: the 5 minutes, with placeholder cards where shots aren't
+  generated yet
+- `11_master/trailer.mp4`: cut only from generated shots
+
+Watch the trailer. Check `reports/review_queue.jsonl` for any shot Veo's safety filter
+blocked. Check `reports/cost.jsonl` for exactly what you spent.
+
+### 5. Full 5 minutes (about $21 more)
+
+```bash
+nraiorbit run godavari5
+```
+
+The trailer shots from step 4 are reused for free; only the other 37 are generated. Use
+`--max-spend 40` to change the cap for one run, and `--yes` to skip the question.
+
+### 6. Finish
+
+- **Music:** 9 cues are planned in `08_music/cue_sheet.json`. Run `nraiorbit shotpack
+  export godavari5` for a readable cue sheet (`shotpack/MUSIC.md`). Save tracks as
+  `inbox/music/<cue id>.wav`, and `inbox/music/trailer.wav` for the trailer, then
+  `nraiorbit run godavari5 --force render`. Until then, cues are placeholder tones.
+- **Better voices:** record any line and save it as `inbox/dialogue/<line id>.wav` (the
+  script is in `shotpack/DIALOGUE.md`). Recordings override Gemini TTS. Voice choices are
+  `gemini_voice` in `library/voices/*/manifest.yaml`.
+- **DaVinci Resolve:** import `movie.mp4`, `stems/dialogue.wav`, `stems/music.wav` and
+  `subs_te.srt`. Grade the colour and do the final mix in Fairlight.
+- **The real bill:** run `nraiorbit estimate godavari5`. Its "Actual spend" section reads
+  `reports/cost.jsonl`. Plan the feature from that number:
+  `feature ≈ actual ÷ 54 shots × ~1,400 shots`.
+- **Upload (private):** run `nraiorbit publish godavari5 --dry-run` first, then without
+  `--dry-run`.
+
+### Knobs
+
+| Setting (`projects/godavari5/pipeline.yaml`) | Effect |
 |---|---|
-| `SHOTPACK.md` | Every shot in order: the Veo prompt, clip length, and which reference images to attach |
-| `<shot_id>/prompt.txt` + `<shot_id>/refs/` | The same per shot, with the reference images copied in |
-| `DIALOGUE.md` | Recording script: line id, speaker, Telugu text, English, delivery notes |
-| `MUSIC.md` | Cue sheet: start, length, emotion, raga/tala/BPM, instruments, theme |
-| `shots.jsonl` | Machine-readable version, for automating Veo later |
+| `google.veo_mode: keyframe` (default) | Gemini draws the first frame from the reference images; Veo animates it. 4/6/8 s clips, cheapest |
+| `google.veo_mode: reference` | Veo gets the reference images directly. Clips are fixed 8 s, so more seconds are billed |
+| `google.veo_model` / `veo_tier` | Lite / Fast / standard: price vs. quality |
+| `budget.max_usd` | Hard cap for this project |
+| `render.only` or `--only sc002 sc009_s004 trailer` | Generate only some scenes/shots; the rest get placeholder cards |
 
-### 5. Generate the video clips in Veo
+### Not automated yet
 
-For each shot in `SHOTPACK.md`:
+- **Lip-sync.** Veo's mouth movement won't match the Telugu audio. That needs an NVIDIA
+  GPU, planned for an AWS g6.xlarge at about $2 for this POC.
+- **Music generation.**
 
-1. Paste the prompt and the negative prompt. Set the clip length (4/6/8 s) and 16:9.
-2. Attach the shot's reference images. In Flow this is "Ingredients to video"; in the API
-   it's reference images.
-3. Save the clip you like as `projects/godavari5/inbox/video/<shot_id>.mp4`.
-4. **Keep the other attempts too**, as `<shot_id>_2.mp4` and `<shot_id>_3.mp4`, so the
-   bill shows what you really spent.
-
-Check progress with `nraiorbit shotpack status godavari5`. Shots without clips show a
-labelled "MISSING" card in the film, so you can assemble at any point.
-
-### 6. Voices (Telugu)
-
-Choose one of these, or mix them per line:
-
-- **Record:** a Telugu voice artist reads `DIALOGUE.md`. Save each line as
-  `inbox/dialogue/<line id>.wav` (mp3/m4a also work).
-- **Telugu TTS on your Mac** (free; Indic Parler-TTS):
-  ```bash
-  pip install torch soundfile "git+https://github.com/huggingface/parler-tts.git"
-  ```
-  Then in `projects/godavari5/pipeline.yaml`, set `voice: {inbox_fallback: indic_parler}`.
-  Any line without a recording is then spoken by the TTS. This adapter was written from
-  the model card and hasn't been run yet, so tell me if it errors.
-
-### 7. Music
-
-Save cue audio as `inbox/music/<cue id>.wav`, following `MUSIC.md` (9 cues). Cues are
-trimmed or padded and faded to fit. Missing cues play a placeholder tone. For the POC you
-can also leave music out and score it in Resolve.
-
-### 8. Assemble
+## Alternative: generate clips by hand (any Veo plan, no API key)
 
 ```bash
+nraiorbit poc godavari5 --manual
+nraiorbit shotpack export godavari5    # SHOTPACK.md: prompt, clip length and reference images per shot
+# In Veo / Flow, generate each shot; save as inbox/video/<shot_id>.mp4 (extra attempts: <shot_id>_2.mp4 ...)
+nraiorbit shotpack status godavari5
 nraiorbit run godavari5 --force render
-```
-
-Outputs in `projects/godavari5/11_master/`:
-- `movie.mp4`: 1080p, −14 LUFS
-- `stems/dialogue.wav` and `stems/music.wav`
-- `subs_te.srt` and `subs_en.srt`
-
-Re-run the same command whenever you add more clips, voices or music. Your inbox files are
-never deleted.
-
-Approve the cut to get the trailer:
-
-```bash
-nraiorbit approve godavari5 final_cut && nraiorbit run godavari5
-nraiorbit approve godavari5 trailer
-```
-
-### 9. Finish in DaVinci Resolve
-
-Import `movie.mp4`, the two stems and the subtitle files. Do the colour grade, mix
-dialogue and music in Fairlight, and fix any cuts. The pipeline did the timing; Resolve
-is for polish.
-
-### 10. Lip-sync (optional for the POC)
-
-Veo's mouth movements won't match the Telugu audio. Lip-sync needs an NVIDIA GPU. Plan:
-an AWS g6.xlarge with LatentSync, about 2 hours (≈ $2). The adapter isn't built yet: it's
-the next step once the POC clips exist. Without it, the POC still shows whether faces,
-pacing, voices and the bill work.
-
-### 11. Compare actual vs. estimate
-
-```bash
-nraiorbit estimate godavari5
-```
-
-The "Actual so far" section counts every clip in `inbox/video/` (kept or not) and prices
-it at each Veo tier. Use that number, not the estimate, to plan the full film:
-
-```
-feature cost ≈ (actual Veo $ for the POC ÷ 54 shots) × ~1,400 shots
-```
-
-### 12. Upload (private)
-
-```bash
-nraiorbit publish godavari5 --dry-run      # check title, chapters, AI disclosure
-nraiorbit publish godavari5 --client-secrets client_secret.json   # uploads as private
 ```

@@ -9,6 +9,7 @@ age_range: [28, 38]
 pitch: low
 timbre_tags: [warm, resonant, controlled]
 tts_speaker: Prakash   # Indic Parler-TTS Telugu speaker; check the model card's speaker list
+gemini_voice: Orus       # Gemini TTS prebuilt voice; change to taste
 emotion_refs:          # reference clips per rasa: the TTS copies their prosody
   veera:
     - {path: samples/emotion/veera/01.wav, transcript_te: "ఈ ఊరు నాది.", intensity: 8, pace: slow}

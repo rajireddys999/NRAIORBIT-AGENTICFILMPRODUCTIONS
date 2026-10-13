@@ -92,3 +92,16 @@ def extract_frames(video: Path, every_n: int, out_dir: Path) -> list[Path]:
          str(out_dir / "f_%05d.png")])
     run(["-sseof", "-0.1", "-i", str(video), "-frames:v", "1", "-update", "1", str(out_dir / "last.png")])
     return sorted(out_dir.glob("*.png"))
+
+
+def conform_clip(src: Path, out: Path, duration_s: float, resolution: tuple[int, int], fps: int) -> Path:
+    """Fit an external clip to its slot: scale/pad to the frame, set fps, trim or hold the last frame, drop audio."""
+    w, h = resolution
+    out.parent.mkdir(parents=True, exist_ok=True)
+    run([
+        "-i", str(src), "-t", f"{duration_s:.3f}", "-an",
+        "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,"
+               f"setsar=1,fps={fps},tpad=stop_mode=clone:stop_duration={duration_s:.3f}",
+        "-frames:v", str(int(round(duration_s * fps))), *VIDEO_ENCODE, str(out),
+    ])
+    return out

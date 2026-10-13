@@ -32,17 +32,7 @@ class ShotPackVideo:
         attempt = max(1, ctx.seed)
         if attempt > len(clips):
             return self.placeholder.render_shot(shot, out, ctx, note="MISSING: generate in Veo")
-        w, h = ctx.resolution
-        d = shot.duration_s
-        out.parent.mkdir(parents=True, exist_ok=True)
-        ffmpeg.run([
-            "-i", str(clips[attempt - 1]), "-t", f"{d:.3f}", "-an",
-            "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,"
-                   f"setsar=1,fps={ctx.fps},tpad=stop_mode=clone:stop_duration={d:.3f}",
-            "-frames:v", str(int(round(d * ctx.fps))),
-            *ffmpeg.VIDEO_ENCODE, str(out),
-        ])
-        return out
+        return ffmpeg.conform_clip(clips[attempt - 1], out, shot.duration_s, ctx.resolution, ctx.fps)
 
 
 def _find_audio(folder: Path, stem: str) -> Path | None:

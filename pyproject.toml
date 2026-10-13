@@ -18,6 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 publish = ["google-api-python-client>=2.100", "google-auth-oauthlib>=1.2"]
+google = ["google-genai>=2.30"]                      # Veo, Gemini image and Gemini TTS providers
 guards = ["insightface>=0.7", "onnxruntime-gpu>=1.17", "opencv-python>=4.9", "speechbrain>=1.0", "torchaudio>=2.2"]
 
 [project.scripts]

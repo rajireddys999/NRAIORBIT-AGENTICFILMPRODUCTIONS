@@ -21,6 +21,7 @@ claude:                      # Anthropic API, per million tokens
 veo:
   durations_s: [4, 6, 8]     # clip lengths Veo can generate; a shot is billed at the next one up
   extension_s: 7             # each "extend" adds this much for shots longer than 8 s
+  reference_clip_s: 8        # reference-image mode generates fixed 8 s clips
   resolution: 720p           # 720p | 1080p (generate 720p, upscale finals)
   api_per_second:            # Gemini API, billed per generated second
     standard: {720p: 0.40, 1080p: 0.40}
@@ -34,6 +35,10 @@ veo:
     name: Google AI Pro
     monthly_usd: 19.99
     monthly_credits: 1000
+
+gemini:                      # Gemini API, third-party estimates; verify on ai.google.dev/pricing
+  image_per_image: 0.04      # keyframes and identity-pack images (flash-image class, 1K)
+  tts_per_minute: 0.02       # Telugu speech (~$10 per 1M audio tokens)
 
 aws:                         # lip-sync runs on one small NVIDIA GPU machine
   instance: g6.xlarge        # 1x L4 24 GB; g5.xlarge (A10G) is ~1.21/h in Mumbai

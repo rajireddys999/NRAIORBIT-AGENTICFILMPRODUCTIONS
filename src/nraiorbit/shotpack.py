@@ -34,6 +34,15 @@ NEGATIVE = ("text, subtitles, captions, watermark, logo, cartoon, anime, CGI loo
 CLIP_RE = r"^{shot}(?:_(\d+))?\.(mp4|mov|webm)$"
 
 
+def selected(shot: Shot, scene_id: str, only: list[str] | None) -> bool:
+    """`render.only`: empty = every shot; otherwise scene ids, shot ids, and/or "trailer"."""
+    if not only:
+        return True
+    if "trailer" in only and (shot.trailer_candidate or shot.punch_dialogue):
+        return True
+    return scene_id in only or shot.shot_id in only
+
+
 def inbox_dir(root: Path, kind: str) -> Path:
     return root / "inbox" / kind
 

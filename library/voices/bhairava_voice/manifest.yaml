@@ -8,6 +8,7 @@ gender: male
 age_range: [48, 62]
 pitch: low
 timbre_tags: [gravelly, heavy, slow]
+gemini_voice: Algenib       # Gemini TTS prebuilt voice; change to taste
 emotion_refs:
   raudra:
     - {path: samples/emotion/raudra/01.wav, transcript_te: "నా మాటే శాసనం.", intensity: 8, pace: slow}

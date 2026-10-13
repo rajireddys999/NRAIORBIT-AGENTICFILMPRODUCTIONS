@@ -40,6 +40,25 @@ providers:
   face_embedder: none              # e.g. insightface (check licence), rekognition
   speaker_embedder: none           # e.g. speechbrain_ecapa
 
+google:                            # used by the veo / gemini providers (see providers/google_ai.py)
+  vertex: false                    # true = Vertex AI (GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION)
+  veo_model: veo-3.1-fast-generate-preview   # `nraiorbit google models` lists what your key can use
+  veo_tier: fast                   # pricing tier of that model: standard | fast | lite
+  veo_resolution: 720p             # generate 720p; the edit upscales to film.resolution
+  veo_mode: keyframe               # keyframe (Gemini first frame -> Veo) | reference (Veo asset references, 8 s)
+  person_generation: allow_adult
+  poll_seconds: 10
+  timeout_seconds: 900
+  image_model: gemini-2.5-flash-image
+  tts_model: gemini-2.5-flash-preview-tts
+  tts_language_code: null          # auto-detected from Telugu script; set if your model needs it
+
+budget:
+  max_usd: 50                      # hard stop for paid generation in one project (cost.jsonl ledger)
+
+render:
+  only: []                         # [] = all shots; or scene ids, shot ids, and/or "trailer"
+
 voice:
   mode: tts                        # performance_vc | tts | api_tts_vc  (see docs/VOICE_TELUGU.md)
   takes_per_line: 3

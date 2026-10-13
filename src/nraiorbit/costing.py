@@ -22,6 +22,47 @@ LINES_PER_SHOT = 0.25
 VEO_MB_PER_S = 1.5        # 720p clip size, for storage
 
 
+class BudgetExceeded(RuntimeError):
+    pass
+
+
+class SpendLedger:
+    """Every paid call is written to reports/cost.jsonl; calls that would cross the budget are refused."""
+
+    def __init__(self, path: Path, max_usd: float | None):
+        self.path = path
+        self.max_usd = max_usd
+
+    def records(self) -> list[dict]:
+        if not self.path.exists():
+            return []
+        return [json.loads(line) for line in self.path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    def spent(self) -> float:
+        return sum(r["usd"] for r in self.records())
+
+    def check(self, projected_usd: float, what: str) -> None:
+        if self.max_usd is None:
+            return
+        spent = self.spent()
+        if spent + projected_usd > self.max_usd + 1e-9:
+            raise BudgetExceeded(
+                f"budget ${self.max_usd:.2f} reached: spent ${spent:.2f}, next call ({what}) costs ${projected_usd:.2f}. "
+                "Raise budget.max_usd (or --max-spend) to continue; finished work is kept.")
+
+    def record(self, provider: str, item: str, usd: float, **details) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        entry = {"provider": provider, "item": item, "usd": round(usd, 4), **details}
+        with open(self.path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def summary(self) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for r in self.records():
+            out[r["provider"]] = out.get(r["provider"], 0.0) + r["usd"]
+        return out
+
+
 def load_pricing(project_dir: Path | None = None) -> dict:
     pricing = load_yaml(DEFAULT_CONFIG_DIR / "pricing.yaml")
     if project_dir is not None and (project_dir / "pricing.yaml").exists():
@@ -49,7 +90,7 @@ class PlanStats:
     title: str
     minutes: float
     scenes: int
-    shots: list[tuple[str, float, bool]]   # (shot_id, duration_s, needs_lipsync)
+    shots: list[tuple[str, float, bool, bool]]   # (shot_id, duration_s, needs_lipsync, has_lead_characters)
     lines: int
     from_plan: bool
     artifact_tokens: dict[str, int] = field(default_factory=dict)
@@ -61,7 +102,7 @@ def plan_stats(project_dir: Path | None, runtime_minutes: float | None = None) -
     minutes = runtime_minutes or 105
     n = int(round(minutes * 60 / AVG_SHOT_S))
     lines = int(round(n * LINES_PER_SHOT))
-    shots = [(f"shot{i:04d}", AVG_SHOT_S, i < lines) for i in range(n)]
+    shots = [(f"shot{i:04d}", AVG_SHOT_S, i < lines, i % 5 < 3) for i in range(n)]   # ~60% show a lead
     return PlanStats(f"{minutes:g}-minute film (no shot plan yet)", minutes, int(round(minutes * 60 / SCENE_S)),
                      shots, lines, from_plan=False)
 
@@ -73,7 +114,7 @@ def _stats_from_plan(root: Path) -> PlanStats:
     for name in ("01_story_bible.json", "02_outline.json"):
         if (root / name).exists():
             tokens[name] = approx_tokens((root / name).read_text(encoding="utf-8"))
-    shots: list[tuple[str, float, bool]] = []
+    shots: list[tuple[str, float, bool, bool]] = []
     lines = 0
     scenes = sorted((root / "04_shots").glob("*.json"))
     for path in scenes:
@@ -90,8 +131,8 @@ def _stats_from_plan(root: Path) -> PlanStats:
         for shot in shot_list.shots:
             on_screen = any(speakers.get(b) in shot.characters_in_frame for b in shot.block_ids if b in speakers)
             needs_lipsync = on_screen and shot.size not in ("EWS", "WS", "aerial", "insert")
-            shots.append((shot.shot_id, shot.duration_s, needs_lipsync))
-    minutes = sum(d for _, d, _ in shots) / 60
+            shots.append((shot.shot_id, shot.duration_s, needs_lipsync, bool(shot.characters_in_frame)))
+    minutes = sum(d for _, d, _, _ in shots) / 60
     return PlanStats(title, minutes, len(scenes), shots, lines, from_plan=True, artifact_tokens=tokens)
 
 
@@ -153,6 +194,7 @@ def claude_actual(project_dir: Path | None, pricing: dict) -> tuple[float, int] 
 @dataclass
 class Estimate:
     stats: PlanStats
+    veo_mode: str
     veo_seconds: int                       # billed seconds for one attempt at every shot
     veo_clips: int                         # generations for one attempt (incl. extensions)
     video_options: dict[str, dict[str, float]]
@@ -165,11 +207,16 @@ class Estimate:
     storage: dict[str, float]
     mac_hours: dict[str, float]
     actual_veo: dict | None
+    keyframes: dict[str, float] = field(default_factory=dict)
+    tts: dict[str, float] = field(default_factory=dict)
+    identity_pack: float = 0.0
+    ledger: dict | None = None
 
     def other_costs(self, level: str) -> float:
         claude = self.claude_logged[0] if self.claude_logged else (
             0.0 if self.claude_billing == "subscription" else self.claude_api[level])
-        return claude + self.lipsync[level] + self.storage[level]
+        return (claude + self.lipsync[level] + self.storage[level] + self.keyframes.get(level, 0.0)
+                + self.tts.get(level, 0.0) + self.identity_pack)
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -178,16 +225,23 @@ class Estimate:
 
 
 def estimate(project_dir: Path | None = None, runtime_minutes: float | None = None,
-             pricing: dict | None = None) -> Estimate:
+             pricing: dict | None = None, cfg: dict | None = None) -> Estimate:
+    from .config import load_pipeline_config
+
     pricing = pricing or load_pricing(project_dir)
+    cfg = cfg or load_pipeline_config(project_dir)
+    mode = cfg.get("google", {}).get("veo_mode", "keyframe")
     stats = plan_stats(project_dir, runtime_minutes)
     att = pricing["attempts_per_clip"]
     veo = pricing["veo"]
     res = veo["resolution"]
 
     seconds = clips = 0
-    for _, dur, _ in stats.shots:
-        s, c = billed_seconds(dur, veo["durations_s"], veo["extension_s"])
+    for _, dur, _, leads in stats.shots:
+        if mode == "reference" and leads:
+            s, c = veo.get("reference_clip_s", 8), 1
+        else:
+            s, c = billed_seconds(dur, veo["durations_s"], veo["extension_s"])
         seconds += s
         clips += c
 
@@ -202,8 +256,23 @@ def estimate(project_dir: Path | None = None, runtime_minutes: float | None = No
                       **{f"months_{lv}": months[lv] for lv in LEVELS},
                       **{f"usd_{lv}": math.ceil(months[lv]) * plan["monthly_usd"] for lv in LEVELS}}
 
+    gem = pricing.get("gemini", {})
+    prov = cfg.get("providers", {})
+    veo_api = prov.get("video") == "veo"
+    gemini_tts = prov.get("tts") == "gemini" or (prov.get("tts") == "inbox"
+                                                 and cfg.get("voice", {}).get("inbox_fallback") == "gemini")
+    lead_shots = sum(1 for *_, leads in stats.shots if leads)
+    keyframes = {lv: (lead_shots * att[lv] * gem.get("image_per_image", 0.04) if veo_api and mode == "keyframe" else 0.0)
+                 for lv in LEVELS}
+    tts = {lv: (stats.lines * 5 / 60 * gem.get("tts_per_minute", 0.02) * {"low": 1, "expected": 2, "high": 3}[lv]
+                if gemini_tts else 0.0) for lv in LEVELS}
+    n_chars = 3
+    if project_dir is not None and (project_dir / "01_story_bible.json").exists():
+        n_chars = len(json.loads((project_dir / "01_story_bible.json").read_text(encoding="utf-8"))["characters"])
+    identity = n_chars * 4 * gem.get("image_per_image", 0.04)     # front, 3/4 and ~2 costumes each
+
     aws = pricing["aws"]
-    lip_shots = sum(1 for _, _, ls in stats.shots if ls)
+    lip_shots = sum(1 for _, _, ls, _ in stats.shots if ls)
     lip_hours = {lv: aws["setup_hours"] + lip_shots * att[lv] * aws["lipsync_minutes_per_shot"][lv] / 60
                  for lv in LEVELS}
     lipsync = {lv: lip_hours[lv] * aws["hourly"] for lv in LEVELS}
@@ -215,11 +284,66 @@ def estimate(project_dir: Path | None = None, runtime_minutes: float | None = No
                       + stats.lines * 3 * mac["tts_seconds_per_line"][lv]) / 3600 for lv in LEVELS}
 
     return Estimate(
-        stats=stats, veo_seconds=seconds, veo_clips=clips, video_options=video, flow=flow,
+        stats=stats, veo_mode=mode, veo_seconds=seconds, veo_clips=clips, video_options=video, flow=flow,
+        keyframes=keyframes, tts=tts, identity_pack=identity, ledger=_ledger_summary(project_dir),
         claude_api=claude_api_estimate(stats, pricing), claude_billing=pricing["claude"].get("billing", "api"),
         claude_logged=claude_actual(project_dir, pricing), lipsync=lipsync, lipsync_hours=lip_hours,
         storage=storage, mac_hours=mac_hours, actual_veo=actual_veo_usage(project_dir, pricing),
     )
+
+
+def _ledger_summary(project_dir: Path | None) -> dict | None:
+    if project_dir is None or not (project_dir / "reports" / "cost.jsonl").exists():
+        return None
+    ledger = SpendLedger(project_dir / "reports" / "cost.jsonl", None)
+    return {"by_provider": ledger.summary(), "total": ledger.spent(), "calls": len(ledger.records())}
+
+
+def preview_run(root: Path, cfg: dict, pricing: dict) -> dict:
+    """What the next `run` would spend on paid generators, given what is already generated and cached."""
+    from .shotpack import clips_for, inbox_dir, selected
+
+    g = cfg.get("google", {})
+    prov = cfg.get("providers", {})
+    mode = g.get("veo_mode", "keyframe")
+    only = cfg.get("render", {}).get("only") or []
+    veo = pricing["veo"]
+    per_s = veo["api_per_second"][g.get("veo_tier", "fast")][g.get("veo_resolution", "720p")]
+    image = pricing.get("gemini", {}).get("image_per_image", 0.04)
+    out = {"shots": 0, "cached_shots": 0, "seconds": 0, "keyframes": 0, "lines": 0, "video_usd": 0.0,
+           "keyframe_usd": 0.0, "tts_usd": 0.0}
+    for path in sorted((root / "04_shots").glob("*.json")):
+        shot_list = ShotList.model_validate_json(path.read_text(encoding="utf-8"))
+        for shot in shot_list.shots:
+            if not selected(shot, shot_list.scene_id, only):
+                continue
+            if prov.get("video") != "veo":
+                continue
+            if clips_for(root, shot.shot_id):
+                out["cached_shots"] += 1
+                continue
+            out["shots"] += 1
+            if mode == "reference" and shot.characters_in_frame:
+                secs = veo.get("reference_clip_s", 8)
+            else:
+                secs = min(billed_seconds(shot.duration_s, veo["durations_s"], veo["extension_s"])[0], max(veo["durations_s"]))
+            out["seconds"] += secs
+            keyframe = root / "06_keyframes" / shot.shot_id / "take_1.png"
+            if mode == "keyframe" and shot.characters_in_frame and not keyframe.exists():
+                out["keyframes"] += 1
+    uses_gemini_tts = prov.get("tts") == "gemini" or (prov.get("tts") == "inbox"
+                                                       and cfg.get("voice", {}).get("inbox_fallback") == "gemini")
+    if uses_gemini_tts:
+        for path in sorted((root / "03_scenes").glob("*.json")):
+            for b in SceneScript.model_validate_json(path.read_text(encoding="utf-8")).blocks:
+                if b.kind == "dialogue" and not any((inbox_dir(root, "dialogue") / f"{b.block_id}{e}").exists()
+                                                    for e in (".wav", ".mp3", ".m4a", ".flac", ".aiff")):
+                    out["lines"] += 1
+    out["video_usd"] = out["seconds"] * per_s
+    out["keyframe_usd"] = out["keyframes"] * image
+    out["tts_usd"] = out["lines"] * 5 / 60 * pricing.get("gemini", {}).get("tts_per_minute", 0.02)
+    out["total_usd"] = out["video_usd"] + out["keyframe_usd"] + out["tts_usd"]
+    return out
 
 
 def actual_veo_usage(project_dir: Path | None, pricing: dict) -> dict | None:
@@ -250,7 +374,7 @@ def _usd(v: float) -> str:
 
 def render_markdown(e: Estimate, pricing: dict) -> str:
     s, att, veo = e.stats, pricing["attempts_per_clip"], pricing["veo"]
-    lip_shots = sum(1 for _, _, ls in s.shots if ls)
+    lip_shots = sum(1 for _, _, ls, _ in s.shots if ls)
     src = "from the shot plan" if s.from_plan else "from runtime only (rough)"
     out = [
         f"# Cost estimate: {s.title}",
@@ -260,7 +384,8 @@ def render_markdown(e: Estimate, pricing: dict) -> str:
         "",
         f"Attempts per clip: low {att['low']}× · expected {att['expected']}× · high {att['high']}×. "
         f"One attempt at every shot = {e.veo_clips} Veo generations, {e.veo_seconds} billed seconds "
-        f"(shots round up to {veo['durations_s']} s clips).",
+        f"(shots round up to {veo['durations_s']} s clips"
+        + ("; reference mode makes every shot with a lead an 8 s clip" if e.veo_mode == "reference" else "") + ").",
         "",
         f"## Video: Google Veo (the main cost), {veo['resolution']}",
         "",
@@ -299,7 +424,12 @@ def render_markdown(e: Estimate, pricing: dict) -> str:
         f"| Lip-sync on {pricing['aws']['instance']} (${pricing['aws']['hourly']}/h) | AWS | "
         + " | ".join(f"{_usd(e.lipsync[lv])} ({e.lipsync_hours[lv]:.1f} h)" for lv in LEVELS) + " |",
         "| Storage, 1 month | AWS S3 | " + " | ".join(_usd(e.storage[lv]) for lv in LEVELS) + " |",
-        "| Keyframes, Telugu voices, checks, edit | Your Mac + DaVinci Resolve | $0 | $0 | $0 |",
+        f"| Keyframes (Veo API, {e.veo_mode} mode) | Google (Gemini image) | "
+        + " | ".join(_usd(e.keyframes.get(lv, 0.0)) for lv in LEVELS) + " |",
+        "| Telugu voices, if Gemini TTS | Google (Gemini TTS) | " + " | ".join(_usd(e.tts.get(lv, 0.0)) for lv in LEVELS) + " |",
+        f"| Character reference images (one-time) | Google (Gemini image) | {_usd(e.identity_pack)} | "
+        f"{_usd(e.identity_pack)} | {_usd(e.identity_pack)} |",
+        "| Quality checks, edit, colour, mix | Your Mac + DaVinci Resolve | $0 | $0 | $0 |",
         "",
         "## Total bill by video option (expected)",
         "",
@@ -315,8 +445,13 @@ def render_markdown(e: Estimate, pricing: dict) -> str:
                    f"**{_usd(f['usd_expected'] + other)}** |")
     out += [
         "",
-        f"Mac time (no bill): about {e.mac_hours['low']:.1f}–{e.mac_hours['high']:.1f} hours for keyframes and voices.",
+        f"If keyframes and voices run on your Mac instead (no bill): about {e.mac_hours['low']:.1f}–"
+        f"{e.mac_hours['high']:.1f} hours of machine time.",
     ]
+    if e.ledger:
+        by = ", ".join(f"{k} {_usd(v)}" for k, v in sorted(e.ledger["by_provider"].items()))
+        out += ["", "## Actual spend (reports/cost.jsonl)", "",
+                f"**{_usd(e.ledger['total'])}** over {e.ledger['calls']} paid calls: {by}"]
     if e.actual_veo:
         a = e.actual_veo
         out += [

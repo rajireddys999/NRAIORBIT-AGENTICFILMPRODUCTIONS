@@ -8,6 +8,7 @@ gender: female
 age_range: [22, 30]
 pitch: mid
 timbre_tags: [clear, bright, expressive]
+gemini_voice: Kore       # Gemini TTS prebuilt voice; change to taste
 emotion_refs:
   shringara:
     - {path: samples/emotion/shringara/01.wav, transcript_te: "నాకు భయంగా ఉంది, అర్జున్.", intensity: 4, pace: medium}

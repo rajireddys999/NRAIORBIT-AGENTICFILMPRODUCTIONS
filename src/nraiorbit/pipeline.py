@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from .agents import CastingAgent, DialogueCritic, Director, MusicDirector, Screenwriter, StoryAnalyst
 from .config import REPO_ROOT, load_navarasa, load_pipeline_config
+from .costing import BudgetExceeded, SpendLedger, load_pricing
 from .guards.identity import IdentityGuard, IdentityThresholds
 from .guards.voice import VoiceGuard, VoiceTake, VoiceThresholds
 from .library.registry import AssetRegistry
@@ -32,6 +33,9 @@ from .post import assemble, ffmpeg
 from .post.subtitles import write_srt
 from .post.trailer import plan_trailer
 from .providers import RenderContext, get_provider
+from .providers.google_ai import GoogleAPIError, ShotFiltered
+from .providers.mock import MockTTS, MockVideo
+from .shotpack import selected
 from .schemas import CastLock, Critique, Cue, CueSheet, Outline, SceneScript, ShotList, StoryBible
 
 STAGES = ["story_bible", "outline", "scenes", "cast", "shots", "music_plan", "render", "assemble", "trailer"]
@@ -90,6 +94,8 @@ class Pipeline:
         self.cfg = cfg or load_pipeline_config(self.p.root)
         self.navarasa = navarasa or load_navarasa()
         self.library = library or AssetRegistry.load(REPO_ROOT / "library")
+        self.pricing = load_pricing(self.p.root)
+        self.ledger = SpendLedger(self.p.reports / "cost.jsonl", self.cfg.get("budget", {}).get("max_usd"))
         self.log = log
         self.story_analyst = StoryAnalyst(llm, self.cfg)
         self.screenwriter = Screenwriter(llm, self.cfg)
@@ -336,8 +342,12 @@ class Pipeline:
 
     def _render(self) -> None:
         timeline_path = self.p.edit / "timeline.json"
+        only = list(self.cfg.get("render", {}).get("only") or [])
         if timeline_path.exists():
-            return
+            if json.loads(timeline_path.read_text(encoding="utf-8")).get("only", []) == only:
+                return
+            self.log(f"  shot selection changed to {only or 'all shots'}: re-rendering (paid clips are reused)")
+            self.invalidate("render")
         outline = self._load(self.p.outline, Outline)
         lock = self._lock()
         prov = self.cfg["providers"]
@@ -359,7 +369,11 @@ class Pipeline:
             ctx = RenderContext(cast=lock, scene_id=sc.scene_id, resolution=resolution, fps=fps)
             t, scene_end, placed = starts[sc.scene_id], starts[sc.scene_id] + sc.target_seconds, set()
             for shot in shot_list.shots:
-                clip = self._render_shot(video, shot, ctx, face_guard)
+                if selected(shot, sc.scene_id, only):
+                    clip = self._render_shot(video, shot, ctx, face_guard)
+                else:
+                    clip = MockVideo().render_shot(shot, self.p.video / shot.shot_id / "placeholder.mp4", ctx,
+                                                   note="not in this run (--only)")
                 shots_out.append(assemble.TimelineShot(shot.shot_id, sc.scene_id, round(t, 3), shot.duration_s, clip))
                 cursor = t + DIALOGUE_LEAD_IN_S
                 for bid in shot.block_ids:
@@ -384,6 +398,7 @@ class Pipeline:
                                                  cue.duration_s - cue.silence_before_s, "music", -4.0, cue.cue_id))
 
         timeline = {
+            "only": only,
             "film_seconds": sum(s.target_seconds for s in outline.scenes),
             "shots": [{**asdict(s), "clip": str(s.clip)} for s in shots_out],
             "dialogue": [{**asdict(e), "path": str(e.path)} for e in dialogue_out],
@@ -399,7 +414,16 @@ class Pipeline:
         for take in range(1, max_takes + 1):
             clip = self.p.video / shot.shot_id / f"take_{take}.mp4"
             if not clip.exists():
-                video.render_shot(shot, clip, replace(ctx, seed=take))
+                try:
+                    video.render_shot(shot, clip, replace(ctx, seed=take))
+                except ShotFiltered as blocked:
+                    self._report("review_queue", {"shot_id": shot.shot_id, "reason": [str(blocked)]})
+                    self.log(f"  {shot.shot_id}: blocked by the safety filter, placeholder used (see review_queue)")
+                    return MockVideo().render_shot(shot, clip, ctx, note="BLOCKED by safety filter: rewrite shot")
+                except (BudgetExceeded, GoogleAPIError) as stop:
+                    raise PipelineBlocked(str(stop)) from None
+                except FileNotFoundError as missing:
+                    raise PipelineBlocked(str(missing)) from None
             if face_guard is None or not shot.characters_in_frame:
                 return clip
             last_result = self._check_identity(face_guard, shot, clip)
@@ -414,7 +438,13 @@ class Pipeline:
         results, files = [], {}
         for take in range(1, takes + 1):
             wav = self.p.dialogue / block.block_id / f"take_{take}.wav"
-            dur = ffmpeg.duration(wav) if wav.exists() else tts.synthesize(block, voice, wav)
+            try:
+                dur = ffmpeg.duration(wav) if wav.exists() else tts.synthesize(block, voice, wav)
+            except ShotFiltered as blocked:
+                self._report("review_queue", {"line_id": block.block_id, "reason": [str(blocked)]})
+                dur = MockTTS().synthesize(block, voice, wav)
+            except (BudgetExceeded, GoogleAPIError) as stop:
+                raise PipelineBlocked(str(stop)) from None
             files[f"take_{take}"] = (wav, dur)
             if voice_guard is None:
                 return wav, dur
@@ -435,12 +465,17 @@ class Pipeline:
                   for e in lock.characters.values() if e.voice_asset}
         if name in ("shotpack", "inbox") and capability in ("video", "music"):
             return {"project_root": self.p.root}
+        if capability == "video" and name == "veo":
+            return {"project_root": self.p.root, "library": self.library, "cfg": self.cfg, "pricing": self.pricing,
+                    "ledger": self.ledger, "navarasa": self.navarasa}
         if capability != "tts":
             return {}
         if name == "mock":
             return {"pitch_by_voice": {ref: v.get("pitch") or "mid" for ref, v in voices.items()}}
         if name == "indic_parler":
             return {"voices": voices}
+        if name == "gemini":
+            return {"voices": voices, "cfg": self.cfg, "pricing": self.pricing, "ledger": self.ledger}
         if name == "inbox":
             fallback = self.cfg.get("voice", {}).get("inbox_fallback", "mock")
             fallback = "mock" if fallback == "inbox" else fallback
@@ -541,10 +576,12 @@ class Pipeline:
             outline = self._load(self.p.outline, Outline)
             tl = json.loads((self.p.edit / "timeline.json").read_text(encoding="utf-8"))
             starts = {s["shot_id"]: s["start_s"] for s in tl["shots"]}
+            only = tl.get("only", [])
             all_shots = []
             for sc in outline.scenes:
                 for shot in self._load(self.p.shots / f"{sc.scene_id}.json", ShotList).shots:
-                    all_shots.append((shot, starts[shot.shot_id]))
+                    if selected(shot, sc.scene_id, only):      # never cut placeholders into the trailer
+                        all_shots.append((shot, starts[shot.shot_id]))
             plan = plan_trailer(all_shots, bible, tl["film_seconds"], self._film["trailer_seconds"])
             (self.p.edit / "trailer_plan.json").write_text(
                 json.dumps([asdict(c) for c in plan], indent=1), encoding="utf-8")
@@ -558,7 +595,8 @@ class Pipeline:
             cue = Cue(cue_id="trailer", scene_ids=[], start_s=0, duration_s=total, rasa="veera", intensity=9,
                       cue_type="trailer", raga="nattai", tala="adi", bpm=140,
                       instruments=["dappu", "thavil", "epic_brass"], leitmotif_character=None, peak=True)
-            music = get_provider("music", self.cfg["providers"]["music"])
+            name = self.cfg["providers"]["music"]
+            music = get_provider("music", name, **self._provider_kwargs("music", name, self._lock()))
             wav = music.render_cue(cue, self.p.music / "trailer_cue.wav")
             audio = self.cfg["audio"]
             assemble.master(raw, [assemble.AudioEvent(wav, 0.0, total, "music", -2.0, "trailer")], out,

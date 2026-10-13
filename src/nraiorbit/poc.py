@@ -14,7 +14,7 @@ from pathlib import Path
 import yaml
 
 from .agents.production import CastingAgent
-from .config import REPO_ROOT, load_navarasa
+from .config import REPO_ROOT, deep_merge, load_navarasa
 from .library.registry import AssetRegistry
 from .demo import _CHARACTERS, _action, _beat, _line, _scene, _shot
 from .planning.music import apply_revisions, plan_cues
@@ -27,23 +27,25 @@ up to his men in the market and tells the fishermen to sell their own catch. Mee
 village school teacher who loves him, fears for his life.
 
 At the interval Bhairava discovers that Arjun is the son of Raghavaiah, the fishermen's
-leader he killed twenty years ago. A flashback shows the boy Arjun watching his father
-being dragged away. Bhairava burns the boats; Meera holds Arjun together. On a torch-lit
+leader he killed twenty years ago. A flashback shows the night his father was dragged
+away. Bhairava burns the boats; Meera holds Arjun together. On a torch-lit
 night the whole village stands behind Arjun, and he throws Bhairava into the river.
 At dawn the boats go back into the water.
 """
 
 POC_CONFIG = {
     "film": {"runtime_minutes": 5, "runtime_tolerance_minutes": 0.5, "trailer_seconds": 45},
-    "providers": {"video": "shotpack", "tts": "inbox", "music": "inbox"},
-    # Lines without a recording in inbox/dialogue use this TTS. Switch to indic_parler on your Mac.
-    "voice": {"inbox_fallback": "mock"},
-    "review_gates": {"story": {"auto_approve": True}, "cast": {"auto_approve": True},
-                     "pacing": {"auto_approve": True}, "final_cut": {"auto_approve": False},
-                     "trailer": {"auto_approve": False}},
+    # Automatic: Veo API for video, Gemini TTS for lines without a recording in inbox/dialogue.
+    "providers": {"video": "veo", "tts": "inbox", "music": "inbox"},
+    "voice": {"inbox_fallback": "gemini"},
+    "google": {"veo_mode": "keyframe", "veo_model": "veo-3.1-fast-generate-preview", "veo_tier": "fast"},
+    "budget": {"max_usd": 50},
+    # Spending is guarded by the preview + confirmation and the budget, so the POC runs straight through.
+    "review_gates": {g: {"auto_approve": True} for g in ("story", "cast", "pacing", "final_cut", "trailer")},
 }
 
 POC_PRICING = {"claude": {"billing": "subscription"}}
+MANUAL_OVERRIDES = {"providers": {"video": "shotpack"}, "voice": {"inbox_fallback": "mock"}}
 
 STORY_BIBLE = {
     "title_te": "గోదావరి సింహం",
@@ -93,7 +95,7 @@ OUTLINE = {"scenes": [
     _scene(6, "INT. BHAIRAVA'S MANSION - NIGHT", "bhairava_mansion", "night", ["bhairava"],
            "An old photograph: Arjun is Raghavaiah's son. INTERVAL.", "raudra", 9, "interval_bang", 25, "bt06"),
     _scene(7, "EXT. RIVERBANK - NIGHT (20 YEARS AGO)", "godavari_village_riverbank", "night", ["arjun"],
-           "Rain; a boy hides as his father is dragged away. Arjun's voice-over.", "karuna", 7, "flashback", 30, "bt07"),
+           "Rain; Raghavaiah is dragged away into the dark. Arjun's voice-over.", "karuna", 7, "flashback", 30, "bt07"),
     _scene(8, "EXT. BURNT BOATS - DUSK", "godavari_village_riverbank", "dusk", ["arjun", "meera"],
            "The boats are burnt; Meera kneels beside Arjun; he resolves to finish it.", "karuna", 8,
            "emotional_peak", 30, "bt08"),
@@ -151,8 +153,8 @@ SCENES = {
         _action("sc005", 3, "He crushes the glass in his hand and lets it fall to the floor."),
     ],
     "sc006": [
-        _action("sc006", 1, "The henchman slides an old photograph onto the table: "
-                            "a boy standing beside his father, Raghavaiah."),
+        _action("sc006", 1, "The henchman slides an old photograph onto the table: Raghavaiah by his boat, "
+                            "with the same eyes and the same scar above the left eyebrow as Arjun."),
         _line("sc006", 2, B, "వాడు... ఆ రాఘవయ్య కొడుకా? అయితే ఈ యుద్ధం ఇప్పుడే మొదలైంది.",
               "He's... Raghavaiah's son? Then this war has only just begun.", "raudra", 9, "slow", "loud",
               "disbelief turning to rage"),
@@ -160,7 +162,7 @@ SCENES = {
     ],
     "sc007": [
         _action("sc007", 1, "Twenty years ago. Rain and torches on the riverbank. Men drag Raghavaiah away into the dark."),
-        _action("sc007", 2, "A small boy hides behind a boat, watching. His hand grips a broken oar."),
+        _action("sc007", 2, "A hand-carved toy boat floats away on the dark water. A broken oar lies in the mud."),
         _line("sc007", 3, A, "ఆ రాత్రి నేను ఏడవలేదు. గుర్తుపెట్టుకున్నాను.",
               "That night I didn't cry. I remembered.", "karuna", 7, "very_slow", "low", "voice-over, flat and heavy"),
     ],
@@ -183,7 +185,7 @@ SCENES = {
         _action("sc009", 4, "Arjun breaks through the henchmen, grapples with Bhairava and throws him into the shallow river."),
     ],
     "sc010": [
-        _action("sc010", 1, "Dawn. The boats go back into the water. Meera and Arjun watch children run along the bank."),
+        _action("sc010", 1, "Dawn. The boats go back into the water. Meera and Arjun watch the fishermen head out, singing."),
         _action("sc010", 2, "Title card: Godavari Simham."),
     ],
 }
@@ -279,7 +281,8 @@ SHOTS = {
     ],
     "sc006": [
         _shot("sc006", 1, [1], "insert", "push_in", [], [], "raudra", 8, 5,
-              "An old faded photograph on a wooden table: a boy standing beside his father", "slow push into the photo",
+              "An old faded photograph on a wooden table: a proud fisherman in his forties standing by his boat, "
+              "a small scar above his left eyebrow", "slow push into the photo",
               sfx=["paper_slide"]),
         _shot("sc006", 2, [2], "ECU", "crash_zoom", [B], [BW], "raudra", 9, 6,
               "bhairava's eyes widening in lamplight", "crash zoom as rage builds"),
@@ -295,12 +298,13 @@ SHOTS = {
               sfx=["rain_heavy"]),
         _shot("sc007", 2, [1], "MS", "handheld", [], [], "karuna", 7, 6,
               "Men dragging a fisherman away in the rain, seen from behind", "they pull him into the dark"),
-        _shot("sc007", 3, [2], "CU", "static", [], [], "karuna", 7, 6,
-              "A small boy's frightened eyes peeking from behind a wooden boat in the rain", "rain runs down his face"),
+        _shot("sc007", 3, [2], "insert", "static", [], [], "karuna", 7, 6,
+              "A small hand-carved wooden toy boat drifting away on dark rainy river water, torchlight reflections",
+              "the toy boat drifts out of frame"),
         _shot("sc007", 4, [2], "insert", "static", [], [], "karuna", 7, 4,
-              "A child's hand gripping a broken oar, rain", "the grip tightens"),
+              "A broken wooden oar lying in the mud in heavy rain", "rain hammers the mud"),
         _shot("sc007", 5, [3], "WS", "static", [], [], "karuna", 7, 8,
-              "Jeep headlights cutting through rain on a riverbank, a small silhouette left alone", "the headlights drive away"),
+              "Jeep headlights cutting through rain on an empty riverbank at night", "the headlights drive away"),
     ],
     "sc008": [
         _shot("sc008", 1, [1], "EWS", "static", [], [], "karuna", 6, 6,
@@ -344,7 +348,7 @@ SHOTS = {
         _shot("sc010", 2, [1], "two_shot", "static", [M, A], [MS, AV], "shanta", 4, 5,
               "meera and arjun standing on the bank at dawn, smiling", "a breeze moves her saree"),
         _shot("sc010", 3, [2], "WS", "static", [], [], "shanta", 4, 4,
-              "Children running along the riverbank at dawn", "they run past the camera"),
+              "Fishermen carrying nets along the riverbank at dawn, laughing", "they walk past the camera"),
     ],
 }
 
@@ -364,13 +368,17 @@ def _with_context(scene: dict, sid: str) -> dict:
             "rasa_primary": meta["rasa_primary"], "intensity": meta["intensity"], "blocks": scene}
 
 
-def create_poc(root: Path) -> Path:
-    """Write the POC project. Refuses to overwrite an existing story bible."""
+def create_poc(root: Path, automatic: bool = True) -> Path:
+    """Write the POC project. Refuses to overwrite an existing story bible.
+
+    automatic=True uses the Veo API and Gemini TTS; False sets up the manual shot-pack flow.
+    """
     if (root / "01_story_bible.json").exists():
         raise FileExistsError(f"{root} already has a story bible")
     (root / "input").mkdir(parents=True, exist_ok=True)
     (root / "input" / "story.md").write_text(POC_PLOT, encoding="utf-8")
-    (root / "pipeline.yaml").write_text(yaml.safe_dump(POC_CONFIG, sort_keys=False), encoding="utf-8")
+    config = POC_CONFIG if automatic else deep_merge(POC_CONFIG, MANUAL_OVERRIDES)
+    (root / "pipeline.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     (root / "pricing.yaml").write_text(yaml.safe_dump(POC_PRICING, sort_keys=False), encoding="utf-8")
 
     bible = StoryBible.model_validate(STORY_BIBLE)

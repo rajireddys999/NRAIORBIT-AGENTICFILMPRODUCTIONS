@@ -33,19 +33,22 @@ An agentic pipeline that turns a **story plot prompt** into a **Telugu feature f
 | [docs/INFRA_COST_ROADMAP.md](docs/INFRA_COST_ROADMAP.md) | Deployment, GPU hours and cost estimates, compliance checklist, phased roadmap |
 | [docs/POC_RUNBOOK.md](docs/POC_RUNBOOK.md) | **Start here:** the 5-minute POC on a Mac + Veo + DaVinci Resolve, with its bill |
 
-## 5-minute POC and its bill
+## 5-minute POC and trailer test (automatic, Google Veo + Gemini)
 
 ```bash
-nraiorbit poc godavari5                 # screenplay + 54 shots + cue sheet, already written
-nraiorbit estimate godavari5            # expected ≈ $34 (Veo Lite) / $66 (Veo Fast) / $258 (Veo) in total
-nraiorbit shotpack export godavari5     # Veo prompts, reference images, recording script, cue sheet
-# generate clips in Veo -> projects/godavari5/inbox/video/<shot_id>.mp4
-nraiorbit run godavari5 --force render  # 1080p movie, stems for Resolve, te/en subtitles
-nraiorbit estimate godavari5            # now with "Actual so far"
+pip install -e ".[dev,google]" && export GEMINI_API_KEY=...
+nraiorbit poc godavari5                       # screenplay + 54 shots + cue sheet, already written
+nraiorbit estimate godavari5                  # the bill before spending anything
+nraiorbit identity build godavari5            # character reference images (~$0.44)
+nraiorbit run godavari5 --only trailer        # trailer test: 17 Veo shots, ~$12, asks before spending
+nraiorbit run godavari5                       # full 5 minutes, ~$21 more (trailer shots reused)
 ```
 
-Full steps in [docs/POC_RUNBOOK.md](docs/POC_RUNBOOK.md). `nraiorbit estimate --runtime 105`
-estimates a full feature before any plan exists.
+Every run shows a cost preview and asks before spending. A budget cap stops it before
+the limit, every paid call is logged to `reports/cost.jsonl`, and nothing is paid for
+twice. Full steps, prices and sources are in [docs/POC_RUNBOOK.md](docs/POC_RUNBOOK.md);
+`--manual` gives a hand-generation flow for any Veo plan. `nraiorbit estimate --runtime
+105` estimates a full feature.
 
 ## Quick start
 
@@ -86,7 +89,8 @@ you review pacing before any GPU spend. Plug real generators into
 | Planning | Structure templates, runtime rebalance + landmark checks, frame-exact shot fitting, rasa-driven cue planner | Teaser cut, song sequences |
 | Asset library | Manifest schemas, registry, search, version-pinned lockfile, licence/consent validation, example manifests | Embedding search (pgvector/Qdrant), media in LFS/DVC |
 | Guards | Identity guard (assignment, drift, swap, thresholds, retake loop wired into render), voice guard (speaker, Telugu CER, emotion, MOS), adapters for InsightFace and SpeechBrain | Body/costume guard, continuity critic, raga-conformance check, ASR/emotion adapters |
-| Generators | Mock video/TTS/music (ffmpeg animatic); Veo shot-pack export + inbox import for video, voice and music; Indic Parler-TTS Telugu adapter (written from the model card, not yet run) | Veo API automation, ComfyUI keyframes + identity LoRA, voice conversion, lip-sync (AWS), stem-based score, SFX |
+| Generators | **Veo API** (keyframe or reference mode), **Gemini keyframes**, **Gemini Telugu TTS**, Gemini identity-pack builder; shot-pack export + inbox import for hand-made clips, recordings and music; mock animatic; Indic Parler-TTS adapter (not yet run) | Lip-sync (AWS), music generation, voice conversion, ComfyUI + LoRA path, SFX |
+| Spend control | Cost preview + confirmation, budget cap, `reports/cost.jsonl` ledger, `--only trailer`, resumable without double payment | Per-provider rate limits |
 | Cost | `nraiorbit estimate`: Veo API/subscription, Claude, AWS lip-sync, storage, Mac time; actual Veo spend from the inbox | GPU-hour tracking per take |
 | Post | Per-scene assembly, sidechain-ducked music, loudness master, dialogue/music stems for DaVinci Resolve, SRT te/en, trailer cutter | OTIO/FCPXML timeline export, thumbnails |
 | Publish | YouTube metadata (chapters, disclosure), upload with captions | Scheduling / premieres |

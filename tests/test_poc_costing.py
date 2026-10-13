@@ -18,7 +18,7 @@ from nraiorbit.shotpack import clips_for, export, status
 
 @pytest.fixture
 def poc(tmp_path):
-    return create_poc(tmp_path / "godavari5")
+    return create_poc(tmp_path / "godavari5", automatic=False)
 
 
 @pytest.mark.parametrize("duration, expected", [
@@ -58,9 +58,17 @@ def test_estimate_for_poc(poc):
     assert e.veo_clips == 54
     assert e.video_options["fast"]["expected"] == pytest.approx(e.veo_seconds * 2.0 * 0.10)
     assert e.claude_billing == "subscription"
-    assert e.other_costs("expected") == pytest.approx(e.lipsync["expected"] + e.storage["expected"])
+    # manual Veo: no pipeline keyframes or Gemini TTS; one-time reference images are still counted
+    assert e.keyframes["expected"] == 0 and e.tts["expected"] == 0
+    assert e.other_costs("expected") == pytest.approx(e.lipsync["expected"] + e.storage["expected"] + e.identity_pack)
     report = render_markdown(e, pricing)
     assert "Veo 3.1 Fast" in report and "Claude Code" in report
+
+
+def test_estimate_automatic_mode_counts_keyframes_and_tts(tmp_path):
+    root = create_poc(tmp_path / "auto")
+    e = estimate(root)
+    assert e.veo_mode == "keyframe" and e.keyframes["expected"] > 0 and e.tts["expected"] > 0
 
 
 def test_estimate_from_runtime_only():

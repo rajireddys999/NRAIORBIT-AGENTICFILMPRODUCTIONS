@@ -6,6 +6,9 @@
   nraiorbit poc <slug>                                      5-minute POC project (screenplay + shots pre-written)
   nraiorbit estimate [<slug>] [--runtime 105]               bill estimate before (and actuals after) generating
   nraiorbit shotpack export|status <slug>                   Veo prompts per shot / which clips are in the inbox
+  nraiorbit identity build <slug>                           character reference images (Gemini)
+  nraiorbit run <slug> --only trailer [--max-spend 20]      paid run limited to trailer shots, with a budget cap
+  nraiorbit google models                                   models your Google key can use
   nraiorbit approve <slug> <gate>                           approve a review gate
   nraiorbit status <slug>
   nraiorbit library validate [--strict]
@@ -24,6 +27,7 @@ import yaml
 from .config import REPO_ROOT, load_pipeline_config
 from .library.registry import AssetRegistry
 from .pipeline import STAGES, GatePending, Pipeline, PipelineBlocked, ProjectPaths
+from .providers.google_ai import GoogleAPIError, GoogleSetupError
 
 PROJECTS = Path("projects")
 
@@ -57,18 +61,110 @@ def _run(pipeline: Pipeline, slug: str, until=None, force=()) -> None:
         return
     except PipelineBlocked as b:
         sys.exit(f"\nBlocked: {b}")
+    except GoogleSetupError as e:
+        sys.exit(f"\nGoogle setup needed: {e}")
+    except GoogleAPIError as e:
+        sys.exit(f"\nGoogle API error: {e}")
     if until is None:
         print(f"\nDone. Outputs in {pipeline.p.master}")
+
+
+def _confirm(question: str, assume_yes: bool) -> bool:
+    if assume_yes:
+        return True
+    if not sys.stdin.isatty():
+        print(f"{question} -> not confirmed (no terminal); re-run with --yes to proceed")
+        return False
+    return input(f"{question} [y/N] ").strip().lower() in ("y", "yes")
+
+
+def _apply_run_options(cfg: dict, args) -> dict:
+    if getattr(args, "only", None) is not None:
+        cfg.setdefault("render", {})["only"] = args.only
+    if getattr(args, "max_spend", None) is not None:
+        cfg.setdefault("budget", {})["max_usd"] = args.max_spend
+    return cfg
+
+
+def _preflight(root: Path, cfg: dict, assume_yes: bool) -> bool:
+    """Show what the paid generators will cost before spending anything."""
+    from .costing import SpendLedger, load_pricing, preview_run
+
+    prov = cfg.get("providers", {})
+    paid = prov.get("video") == "veo" or prov.get("tts") == "gemini" or (
+        prov.get("tts") == "inbox" and cfg.get("voice", {}).get("inbox_fallback") == "gemini")
+    if not paid or not (root / "04_shots").exists():
+        return True
+    pre = preview_run(root, cfg, load_pricing(root))
+    spent = SpendLedger(root / "reports" / "cost.jsonl", None).spent()
+    budget = cfg.get("budget", {}).get("max_usd")
+    only = cfg.get("render", {}).get("only") or []
+    print(f"Paid generation for this run ({'only ' + ', '.join(only) if only else 'all shots'}):\n"
+          f"  Veo: {pre['shots']} new clips, {pre['seconds']} s -> ${pre['video_usd']:.2f}"
+          f"  ({pre['cached_shots']} shots already generated, reused for free)\n"
+          f"  Keyframes: {pre['keyframes']} images -> ${pre['keyframe_usd']:.2f}\n"
+          f"  Telugu voices (Gemini TTS): {pre['lines']} lines -> ${pre['tts_usd']:.2f}\n"
+          f"  Total about ${pre['total_usd']:.2f} for one attempt per shot. Spent so far ${spent:.2f}"
+          + (f", budget ${budget:.2f}." if budget is not None else ", no budget cap."))
+    if pre["total_usd"] == 0:
+        return True
+    return _confirm("Proceed?", assume_yes)
 
 
 def cmd_run(args) -> None:
     from .llm import ClaudeClient
 
     root = _project(args.slug)
-    cfg = load_pipeline_config(root)
+    cfg = _apply_run_options(load_pipeline_config(root), args)
+    if not _preflight(root, cfg, args.yes):
+        return
     llm = ClaudeClient(model=cfg["llm"]["model"], max_tokens=cfg["llm"]["max_tokens"],
                        usage_log=root / "reports" / "llm_usage.jsonl")
     _run(Pipeline(root, llm, cfg=cfg), args.slug, args.until, args.force)
+
+
+def cmd_identity(args) -> None:
+    from .costing import SpendLedger, load_pricing
+    from .identity import build_identity_pack
+    from .llm import ClaudeClient
+    from .providers.google_ai import GeminiImages, google_client
+    from .schemas import CastLock, StoryBible
+
+    root = _project(args.slug)
+    cfg = load_pipeline_config(root)
+    if args.max_spend is not None:
+        cfg.setdefault("budget", {})["max_usd"] = args.max_spend
+    paths = ProjectPaths(root)
+    if not paths.lock.exists():
+        _run(Pipeline(root, ClaudeClient(), cfg=cfg), args.slug, until="cast")
+    bible = StoryBible.model_validate_json(paths.bible.read_text(encoding="utf-8"))
+    lock = CastLock.model_validate(yaml.safe_load(paths.lock.read_text(encoding="utf-8")))
+    pricing = load_pricing(root)
+    library = AssetRegistry.load(REPO_ROOT / "library")
+    n_images = sum(2 + len(getattr(library.resolve(e.character_asset), "costumes", []))
+                   for e in lock.characters.values() if not e.character_asset.endswith("@pending"))
+    price = pricing.get("gemini", {}).get("image_per_image", 0.04)
+    print(f"Character reference images: up to {n_images} images (existing ones are kept"
+          f"{', except with --force' if not args.force else ''}) -> at most ${n_images * price:.2f}")
+    if not _confirm("Generate them with Gemini?", args.yes):
+        return
+    ledger = SpendLedger(paths.reports / "cost.jsonl", cfg.get("budget", {}).get("max_usd"))
+    images = GeminiImages(google_client(cfg.get("google", {})), cfg.get("google", {}), pricing, ledger)
+    build_identity_pack(bible, lock, library, images, force=args.force)
+    print("Review the images in library/characters/*/refs/ before generating video; delete any you dislike and run "
+          "this again to regenerate just those.")
+
+
+def cmd_google(args) -> None:
+    from .providers.google_ai import google_client
+
+    cfg = load_pipeline_config()
+    client = google_client(cfg.get("google", {}))
+    wanted = ("veo", "image", "tts", "lyria")
+    for m in client.models.list():
+        name = getattr(m, "name", str(m))
+        if any(w in name for w in wanted):
+            print(f"  {name}  {getattr(m, 'display_name', '') or ''}")
 
 
 def cmd_demo(args) -> None:
@@ -87,13 +183,17 @@ def cmd_poc(args) -> None:
     from .poc import create_poc
 
     root = PROJECTS / args.slug
-    create_poc(root)
-    print(f"created the 5-minute POC in {root}: story, screenplay, 54 shots and cue sheet are written.\n"
-          f"Next:\n  nraiorbit estimate {args.slug}            # the bill before you spend anything\n"
-          f"  nraiorbit shotpack export {args.slug}     # Veo prompts + reference images per shot\n"
-          f"  (generate clips into {root / 'inbox' / 'video'})\n"
-          f"  nraiorbit run {args.slug} --force render  # assemble the film with your clips\n"
-          f"See docs/POC_RUNBOOK.md.")
+    create_poc(root, automatic=not args.manual)
+    print(f"created the 5-minute POC in {root}: story, screenplay, 54 shots and cue sheet are written.")
+    if args.manual:
+        print(f"Next (manual Veo):\n  nraiorbit estimate {args.slug}\n  nraiorbit shotpack export {args.slug}\n"
+              f"  (generate clips into {root / 'inbox' / 'video'})\n  nraiorbit run {args.slug} --force render")
+    else:
+        print(f"Next (automatic, needs GEMINI_API_KEY):\n  nraiorbit estimate {args.slug}\n"
+              f"  nraiorbit identity build {args.slug}        # character reference images (~$0.50)\n"
+              f"  nraiorbit run {args.slug} --only trailer    # cheap first test: trailer shots only\n"
+              f"  nraiorbit run {args.slug}                   # the full 5 minutes (reuses paid clips)")
+    print("See docs/POC_RUNBOOK.md.")
 
 
 def cmd_estimate(args) -> None:
@@ -181,6 +281,13 @@ def cmd_publish(args) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    try:
+        _main(argv)
+    except GoogleSetupError as e:
+        sys.exit(f"Google setup needed: {e}")
+
+
+def _main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="nraiorbit", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -195,10 +302,27 @@ def main(argv: list[str] | None = None) -> None:
         p.add_argument("slug")
         p.add_argument("--until", choices=STAGES)
         p.add_argument("--force", nargs="*", choices=STAGES, default=[])
+        if name == "run":
+            p.add_argument("--only", nargs="*", help="scene ids, shot ids and/or 'trailer'; others get placeholders")
+            p.add_argument("--max-spend", type=float, help="budget cap in USD for paid generation (overrides config)")
+            p.add_argument("--yes", action="store_true", help="skip the spend confirmation")
         p.set_defaults(fn=fn)
+
+    p = sub.add_parser("identity", help="generate character reference images with Gemini")
+    p.add_argument("action", choices=["build"])
+    p.add_argument("slug")
+    p.add_argument("--force", action="store_true", help="regenerate existing images")
+    p.add_argument("--max-spend", type=float)
+    p.add_argument("--yes", action="store_true")
+    p.set_defaults(fn=cmd_identity)
+
+    p = sub.add_parser("google", help="list the Veo / image / TTS models your Google key can use")
+    p.add_argument("action", choices=["models"])
+    p.set_defaults(fn=cmd_google)
 
     p = sub.add_parser("poc", help="create the 5-minute Godavari Simham POC project")
     p.add_argument("slug")
+    p.add_argument("--manual", action="store_true", help="generate Veo clips by hand (shot pack) instead of the API")
     p.set_defaults(fn=cmd_poc)
 
     p = sub.add_parser("estimate", help="bill estimate for a project, or for a runtime")

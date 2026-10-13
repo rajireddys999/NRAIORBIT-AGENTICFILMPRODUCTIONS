@@ -189,6 +189,7 @@ class Cue(BaseModel):
     leitmotif_character: str | None
     peak: bool
     silence_before_s: float = 0.0
+    notes: str = ""          # free-text direction for the music generator, e.g. a trailer's timed elevation arc
 
 
 class CueSheet(BaseModel):

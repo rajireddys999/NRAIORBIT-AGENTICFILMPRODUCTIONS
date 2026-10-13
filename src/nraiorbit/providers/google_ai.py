@@ -78,7 +78,9 @@ def _call(fn, what: str, **kwargs):
         raise
 
 
-def google_client(google_cfg: dict):
+def google_client(google_cfg: dict, role: str = ""):
+    """role ("veo", "image", "tts"): on Vertex AI, google.<role>_location picks that model's region, because one
+    region may not serve all of them (Veo is regional, e.g. us-central1; the pro image model is served from global)."""
     if CLIENT_FACTORY is not None:
         return CLIENT_FACTORY(google_cfg)
     try:
@@ -86,7 +88,9 @@ def google_client(google_cfg: dict):
     except ImportError:
         raise GoogleSetupError("google-genai is not installed: pip install google-genai") from None
     try:
-        return genai.Client(vertexai=True, **vertex_auth()) if google_cfg.get("vertex") else genai.Client()
+        if google_cfg.get("vertex"):
+            return genai.Client(vertexai=True, **vertex_auth(google_cfg.get(f"{role}_location") if role else None))
+        return genai.Client()
     except ValueError as e:
         raise GoogleSetupError(
             f"{e}\nSet GEMINI_API_KEY (Gemini API key on a project with billing; see docs/GOOGLE_CLOUD_SETUP.md), "
@@ -94,7 +98,7 @@ def google_client(google_cfg: dict):
             "with GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION for Vertex AI.") from None
 
 
-def vertex_auth() -> dict:
+def vertex_auth(location: str | None = None) -> dict:
     """Vertex AI sign-in from the environment: a service account key's JSON text in
     GOOGLE_APPLICATION_CREDENTIALS_JSON (handy where only env vars can be set), else the SDK's default
     (GOOGLE_APPLICATION_CREDENTIALS file or gcloud login). Passing project/location explicitly keeps the SDK
@@ -116,6 +120,8 @@ def vertex_auth() -> dict:
                                    f"({type(e).__name__}). Paste the whole downloaded JSON file.") from None
         kwargs["credentials"] = creds
         kwargs.setdefault("project", info.get("project_id"))
+    if location:
+        kwargs["location"] = location
     kwargs.setdefault("location", "us-central1")
     return kwargs
 
@@ -204,8 +210,8 @@ class VeoVideo:
         self.pricing = pricing
         self.ledger = ledger
         self.navarasa = navarasa
-        self.client = client or google_client(self.g)
-        self.images = GeminiImages(self.client, self.g, pricing, ledger)
+        self.client = client or google_client(self.g, "veo")
+        self.images = GeminiImages(client or google_client(self.g, "image"), self.g, pricing, ledger)
         self.bible = StoryBible.model_validate_json((project_root / "01_story_bible.json").read_text(encoding="utf-8"))
         self.outline = Outline.model_validate_json((project_root / "02_outline.json").read_text(encoding="utf-8"))
         self.scripts: dict[str, dict] = {}
@@ -342,7 +348,7 @@ class GeminiTTS:
         self.cache_dir = cache_dir or ledger.path.parent.parent / "cache" / "tts"
         self.g = cfg.get("google", {})
         self.voices = voices
-        self.client = client or google_client(self.g)
+        self.client = client or google_client(self.g, "tts")
         self.ledger = ledger
         self.per_minute = pricing.get("gemini", {}).get("tts_per_minute", 0.02)
 

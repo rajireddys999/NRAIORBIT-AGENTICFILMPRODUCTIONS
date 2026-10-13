@@ -191,7 +191,7 @@ def cmd_identity(args) -> None:
     if not _confirm("Generate them with Gemini?", args.yes):
         return
     ledger = SpendLedger(paths.reports / "cost.jsonl", cfg.get("budget", {}).get("max_usd"))
-    images = GeminiImages(google_client(cfg.get("google", {})), cfg.get("google", {}), pricing, ledger)
+    images = GeminiImages(google_client(cfg.get("google", {}), "image"), cfg.get("google", {}), pricing, ledger)
     build_identity_pack(bible, lock, library, images, force=args.force)
     print("Review the images in library/characters/*/refs/ before generating video; delete any you dislike and run "
           "this again to regenerate just those.")

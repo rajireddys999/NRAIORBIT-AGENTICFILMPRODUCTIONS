@@ -64,7 +64,8 @@ class FakeGoogle:
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
     lib_root = tmp_path / "library"
-    shutil.copytree(REPO_ROOT / "library", lib_root)          # identity images must not land in the repo
+    # identity images must not land in the repo; skip images from a real local run (gitignored media)
+    shutil.copytree(REPO_ROOT / "library", lib_root, ignore=shutil.ignore_patterns("*.png", "*.jpg", "*.jpeg"))
     library = AssetRegistry.load(lib_root)
     root = create_poc(tmp_path / "godavari5")
     fake = FakeGoogle(tmp_path)
@@ -300,3 +301,34 @@ def test_vertex_auth_from_service_account_json(monkeypatch):
 
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
     assert google_ai.vertex_auth() == {"project": "other-proj", "location": "asia-south1"}
+
+
+def test_vertex_location_per_model(monkeypatch):
+    """Veo is regional (us-central1) and the pro image model is served from global: each gets its own client."""
+    import sys
+
+    made = []
+
+    class FakeGenaiClient:
+        def __init__(self, **kw):
+            made.append(kw)
+
+    fake_genai = SimpleNamespace(Client=FakeGenaiClient)
+    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+    monkeypatch.setattr(sys.modules["google"], "genai", fake_genai, raising=False)
+    monkeypatch.setattr(google_ai, "CLIENT_FACTORY", None)
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", raising=False)
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "film-proj")
+    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "global")
+    g = {"vertex": True, "veo_location": "us-central1", "image_location": "global"}
+
+    google_ai.google_client(g, "veo")
+    google_ai.google_client(g, "image")
+    google_ai.google_client(g, "tts")                      # no tts_location: falls back to GOOGLE_CLOUD_LOCATION
+    google_ai.google_client(g)
+    assert [m["location"] for m in made] == ["us-central1", "global", "global", "global"]
+    assert all(m["vertexai"] is True and m["project"] == "film-proj" for m in made)
+
+    made.clear()
+    google_ai.google_client({"vertex": False, "veo_location": "us-central1"}, "veo")
+    assert made == [{}]                                     # Gemini API: no project/location at all

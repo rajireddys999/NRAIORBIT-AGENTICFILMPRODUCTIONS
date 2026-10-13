@@ -1,6 +1,7 @@
 """5-minute POC project, bill estimate, shot pack export and inbox import."""
 
 import json
+import shutil
 
 import pytest
 
@@ -97,9 +98,11 @@ def _cast(poc):
     return pipeline
 
 
-def test_shotpack_export(poc):
+def test_shotpack_export(poc, tmp_path):
     _cast(poc)
-    pack = export(poc, AssetRegistry.load(REPO_ROOT / "library"), load_navarasa(), load_pricing(poc))
+    lib_root = tmp_path / "library"                       # without images from a real local run (gitignored media)
+    shutil.copytree(REPO_ROOT / "library", lib_root, ignore=shutil.ignore_patterns("*.png", "*.jpg", "*.jpeg"))
+    pack = export(poc, AssetRegistry.load(lib_root), load_navarasa(), load_pricing(poc))
     prompts = sorted(pack.glob("*/prompt.txt"))
     assert len(prompts) == 54
     text = (pack / "sc002_s005" / "prompt.txt").read_text()

@@ -42,6 +42,9 @@ providers:
 
 google:                            # used by the veo / gemini providers (see providers/google_ai.py)
   vertex: false                    # true = Vertex AI (GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION)
+  veo_location: null               # Vertex AI only: region per model, overrides GOOGLE_CLOUD_LOCATION
+  image_location: null             #   (Veo: us-central1; gemini-3-pro-image: global)
+  tts_location: null
   veo_model: veo-3.1-fast-generate-preview   # `nraiorbit google models` lists what your key can use
   veo_tier: fast                   # pricing tier of that model: standard | fast | lite
   veo_resolution: 720p             # generate 720p; the edit upscales to film.resolution

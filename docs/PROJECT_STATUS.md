@@ -56,14 +56,22 @@ _Last updated: 2026-10-13. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
     passed through chat, so replace it with a new key stored in the environment settings.
 - **Character photos built and approved by you:** 11 images for $1.47 (`reports/cost.jsonl`). Check on the Billing → Credits
   page that the $300 credit paid for them.
-- Not approved yet: any video, the budget caps, the 13 Telugu lines.
+- You approved the 13 Telugu lines and the trailer test ($70 cap).
+- **Trailer test done (2026-10-13, Vertex AI):** 17 Veo 3.1 clips at 1080p, 13 keyframes, 13 Telugu TTS lines ->
+  `11_master/trailer.mp4` (32 s, -13.4 LUFS) and `movie.mp4` (5 min; the other 37 shots are placeholder cards).
+  No shot was blocked or paid twice. Ledger: $56.18 for the run, $57.65 in total. The ledger counts Veo at the
+  with-audio rate ($0.40/s); Veo audio is off on Vertex, so the real bill should be lower. Check it on the Billing page.
+- A pre-flight review before the paid run found and fixed: lost/double-paid Veo jobs on interrupted polling
+  (now logged at submit and resumed from `inbox/video/.pending/`), no retries for images/TTS, uncaught Veo
+  operation errors, unused Veo audio billed on Vertex, a poll with no timeout.
+- Not approved yet: the full 5 minutes (about $121 more), music.
 
 ### Verified vs. not verified
 
 | Verified (here, with ffmpeg and a fake Google client) | Not verified yet |
 |---|---|
-| Every stage end to end, output files decode, loudness, subtitles, budget stop, safety-filter handling, caching, SDK signatures | Real Veo / Gemini TTS calls on Vertex AI |
-| Real Gemini pro image calls on Vertex AI (11 character photos, 2026-10-13) | |
+| Every stage end to end, output files decode, loudness, subtitles, budget stop, safety-filter handling, caching, SDK signatures | Lip-sync, music generation, InsightFace/SpeechBrain adapters, YouTube upload |
+| Real Veo 3.1, Gemini pro image and Gemini TTS calls on Vertex AI (trailer test, 2026-10-13) | |
 | | Claude API path for new stories (no Anthropic API key used) |
 | | Indic Parler-TTS, InsightFace and SpeechBrain adapters, YouTube upload |
 
@@ -91,7 +99,7 @@ The pipeline also has a manual hand-generation flow (`--manual`) and lower-cost 
 | 4 | Key check (`nraiorbit google models`), POC setup, estimate, dialogue export | Session | free |
 | 5 | Approve caps ($70 trailer test, $200 full film) and the 13 Telugu lines | You | — |
 | 6 | `nraiorbit identity build godavari5`, then approve the three faces (**done 2026-10-13, $1.47, faces approved**) | Session, then you | ≈ $1.50 |
-| 7 | `nraiorbit run godavari5 --only trailer`: 17 shots + 13 lines → trailer.mp4 | Session | ≈ $56 |
+| 7 | `nraiorbit run godavari5 --only trailer`: 17 shots + 13 lines → trailer.mp4 (**done 2026-10-13**) | Session | ≈ $56 |
 | 7b | `nraiorbit retake godavari5 <shot>` for any shot you don't like | Session | ≈ $3.33 per shot |
 | 8 | `nraiorbit run godavari5`: the other 37 shots → full 5-minute movie | Session | ≈ $121 |
 | 9 | `nraiorbit estimate godavari5`: actual spend → plan the feature (`actual ÷ 54 × ~1,400 shots`) | Session | free |
@@ -100,7 +108,7 @@ The pipeline also has a manual hand-generation flow (`--manual`) and lower-cost 
 
 | Gap | Why it matters | Plan | What we need from you |
 |---|---|---|---|
-| First real Google video run | Images work on Vertex AI; Veo and TTS are only checked against the SDK | Steps 1–8 above | Network + key + approvals |
+| First real Google video run | Done: trailer test on Vertex AI (2026-10-13) | Steps 1–8 above | Network + key + approvals |
 | **Lip-sync** | Mouths don't match the Telugu audio | LatentSync adapter on a Google Cloud g2-standard-4, one L4 GPU (≈ $1.50 for the POC) | Paid Google Cloud account + L4 GPU quota in asia-south1 ([GOOGLE_CLOUD_SETUP.md](GOOGLE_CLOUD_SETUP.md) step 8) |
 | **Music** | Cues are placeholder tones unless you supply tracks | Option A: Lyria music model through the same Google key. Option B: commissioned Telugu stems. Option C: your own tracks in `inbox/music/` | Choose A, B or C |
 | Automatic quality retakes | Today: one attempt per shot; you judge faces | Identity guard with a face model on each clip | Licence choice: InsightFace models are non-commercial (buy a licence and run it on the Google Cloud GPU), or AWS Rekognition (Google Cloud has no face-matching API) |

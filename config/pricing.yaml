@@ -1,9 +1,9 @@
 # Prices used by `nraiorbit estimate`. All USD.
 #
-# These are planning numbers. Veo and AWS figures come from third-party price trackers
+# These are planning numbers. Veo and cloud GPU figures come from third-party price trackers
 # (captured 2026-10, see docs/POC_RUNBOOK.md for sources); verify on the providers'
-# own pricing pages before budgeting. Edit this file, or override per project in
-# projects/<slug>/pricing.yaml.
+# own pricing pages before budgeting. Prices are before tax: Indian bills add 18% GST.
+# Edit this file, or override per project in projects/<slug>/pricing.yaml.
 
 attempts_per_clip:          # average generations per kept clip (identity/quality retakes)
   low: 1.3
@@ -43,12 +43,25 @@ gemini:                      # Gemini API, third-party estimates; verify on ai.g
   image_per_image: 0.04      # keyframes and identity-pack images (flash-image class, 1K)
   tts_per_minute: 0.02       # Telugu speech (~$10 per 1M audio tokens)
 
-aws:                         # lip-sync runs on one small NVIDIA GPU machine
-  instance: g6.xlarge        # 1x L4 24 GB; g5.xlarge (A10G) is ~1.21/h in Mumbai
-  hourly: 0.97               # ap-south-1 on-demand, Linux
+cloud: gcp                   # where lip-sync runs and media is backed up: gcp | aws
+
+gcp:                         # Google Cloud: the same project as the Gemini API key
+  name: Google Cloud
+  instance: g2-standard-4    # 1x NVIDIA L4 24 GB, asia-south1 (Mumbai)
+  hourly: 0.74               # on-demand, Linux; Spot is ~0.29/h but can be stopped at any time
   setup_hours: 1.0           # boot, install, model download, per session
   lipsync_minutes_per_shot: {low: 1.0, expected: 2.0, high: 4.0}
-  s3_per_gb_month: 0.025
+  storage: Cloud Storage
+  storage_per_gb_month: 0.023  # Standard class, single region
+
+aws:                         # alternative: the same L4 GPU on AWS
+  name: AWS
+  instance: g6.xlarge        # 1x L4 24 GB; g5.xlarge (A10G) is ~1.21/h in Mumbai
+  hourly: 0.97               # ap-south-1 on-demand, Linux
+  setup_hours: 1.0
+  lipsync_minutes_per_shot: {low: 1.0, expected: 2.0, high: 4.0}
+  storage: S3
+  storage_per_gb_month: 0.025
 
 mac:                         # your MacBook: no bill, only time
   keyframe_seconds_per_image: {low: 40, expected: 90, high: 180}

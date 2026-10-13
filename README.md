@@ -32,6 +32,7 @@ An agentic pipeline that turns a **story plot prompt** into a **Telugu feature f
 | [docs/TOOLS.md](docs/TOOLS.md) | Every tool and model per capability, with licence warnings and a starter stack |
 | [docs/INFRA_COST_ROADMAP.md](docs/INFRA_COST_ROADMAP.md) | Deployment, GPU hours and cost estimates, compliance checklist, phased roadmap |
 | [docs/POC_RUNBOOK.md](docs/POC_RUNBOOK.md) | **Start here:** the 5-minute POC on a Mac + Veo + DaVinci Resolve, with its bill |
+| [docs/GOOGLE_CLOUD_SETUP.md](docs/GOOGLE_CLOUD_SETUP.md) | Google Cloud account, billing, API key, budget alert and GPU quota, step by step |
 | [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) | What is done, next steps, and what is still needed end to end |
 | [docs/NEXT_SESSION_PROMPT.md](docs/NEXT_SESSION_PROMPT.md) | Copy-paste prompt to continue in a new Claude Code session |
 
@@ -92,9 +93,9 @@ you review pacing before any GPU spend. Plug real generators into
 | Planning | Structure templates, runtime rebalance + landmark checks, frame-exact shot fitting, rasa-driven cue planner | Teaser cut, song sequences |
 | Asset library | Manifest schemas, registry, search, version-pinned lockfile, licence/consent validation, example manifests | Embedding search (pgvector/Qdrant), media in LFS/DVC |
 | Guards | Identity guard (assignment, drift, swap, thresholds, retake loop wired into render), voice guard (speaker, Telugu CER, emotion, MOS), adapters for InsightFace and SpeechBrain | Body/costume guard, continuity critic, raga-conformance check, ASR/emotion adapters |
-| Generators | **Veo API** (keyframe or reference mode), **Gemini keyframes**, **Gemini Telugu TTS**, Gemini identity-pack builder; shot-pack export + inbox import for hand-made clips, recordings and music; mock animatic; Indic Parler-TTS adapter (not yet run) | Lip-sync (AWS), music generation, voice conversion, ComfyUI + LoRA path, SFX |
+| Generators | **Veo API** (keyframe or reference mode), **Gemini keyframes**, **Gemini Telugu TTS**, Gemini identity-pack builder; shot-pack export + inbox import for hand-made clips, recordings and music; mock animatic; Indic Parler-TTS adapter (not yet run) | Lip-sync (Google Cloud L4 GPU), music generation, voice conversion, ComfyUI + LoRA path, SFX |
 | Spend control | Cost preview + confirmation, budget cap, `reports/cost.jsonl` ledger, `--only trailer`, resumable without double payment | Per-provider rate limits |
-| Cost | `nraiorbit estimate`: Veo API/subscription, Claude, AWS lip-sync, storage, Mac time; actual Veo spend from the inbox | GPU-hour tracking per take |
+| Cost | `nraiorbit estimate`: Veo API/subscription, Claude, cloud GPU lip-sync (Google Cloud or AWS), storage, Mac time; actual Veo spend from the inbox | GPU-hour tracking per take |
 | Post | Per-scene assembly, sidechain-ducked music, loudness master, dialogue/music stems for DaVinci Resolve, SRT te/en, trailer cutter | OTIO/FCPXML timeline export, thumbnails |
 | Publish | YouTube metadata (chapters, disclosure), upload with captions | Scheduling / premieres |
 | Infra | File-based stage cache, review gates, guard/cost logs, CI | Temporal workflows, GPU worker pools, review UI |

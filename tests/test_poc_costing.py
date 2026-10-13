@@ -66,6 +66,17 @@ def test_estimate_for_poc(poc):
     assert "Veo 3.1 Fast" in report and "Claude Code" in report
 
 
+def test_lipsync_and_storage_follow_the_chosen_cloud(poc):
+    pricing = load_pricing(poc)
+    gcp = estimate(poc, pricing=pricing)
+    assert "| Google Cloud |" in render_markdown(gcp, pricing) and "AWS" not in render_markdown(gcp, pricing)
+    pricing_aws = deep_merge(pricing, {"cloud": "aws"})
+    aws = estimate(poc, pricing=pricing_aws)
+    assert "| AWS |" in render_markdown(aws, pricing_aws)
+    ratio = pricing["aws"]["hourly"] / pricing["gcp"]["hourly"]
+    assert aws.lipsync["expected"] == pytest.approx(gcp.lipsync["expected"] * ratio)
+
+
 def test_estimate_automatic_mode_counts_keyframes_and_tts(tmp_path):
     root = create_poc(tmp_path / "auto")
     e = estimate(root)

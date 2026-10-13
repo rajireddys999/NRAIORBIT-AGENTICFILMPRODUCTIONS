@@ -17,6 +17,7 @@ _Last updated: 2026-10-13. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
 | TOOLS.md | Every tool/model per stage, with licence warnings and a starter stack |
 | INFRA_COST_ROADMAP.md | Infrastructure, GPU and cost estimates, compliance, roadmap |
 | POC_RUNBOOK.md | Step-by-step 5-minute POC and trailer test, with the bill |
+| GOOGLE_CLOUD_SETUP.md | Google Cloud account, paid billing, project, API key, budget alert, GPU quota |
 
 ### Pipeline code (src/nraiorbit/)
 
@@ -57,7 +58,8 @@ _Last updated: 2026-10-13. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
 Video through the **Google Veo API**, with no compromise on quality:
 - **Video:** Veo 3.1 standard at native 1080p (8 s clips)
 - **Images:** Gemini's pro image model for the character photos and the first frame of each shot
-- **AWS:** lip-sync GPU and storage only
+- **Google Cloud for everything:** the Gemini API key, Cloud Storage backups and the
+  lip-sync GPU in one project, on one bill ([GOOGLE_CLOUD_SETUP.md](GOOGLE_CLOUD_SETUP.md))
 
 The 5-minute POC costs about $56 for the trailer test and about $177 in total. A full 1h45m
 film costs about $4,500 per pass, or roughly $6,000–$9,000 with retakes.
@@ -70,7 +72,7 @@ The pipeline also has a manual hand-generation flow (`--manual`) and lower-cost 
 | # | Step | Who | Cost |
 |---|---|---|---|
 | 1 | Environment → Network access: allow `pypi.org`, `files.pythonhosted.org`, `generativelanguage.googleapis.com` (keep "Allow package managers" ticked) | You | — |
-| 2 | Confirm `GEMINI_API_KEY` is a Google AI Studio key (`AIza…`) on a project with billing; revoke the `veo3_pat_…` token that was pasted in chat | You | — |
+| 2 | Set up Google Cloud and the `GEMINI_API_KEY` key (`AIza…`) with [GOOGLE_CLOUD_SETUP.md](GOOGLE_CLOUD_SETUP.md) steps 1–7; revoke the `veo3_pat_…` token that was pasted in chat | You | — |
 | 3 | Start a new session and paste the prompt from [NEXT_SESSION_PROMPT.md](NEXT_SESSION_PROMPT.md). Tell it that it may run commands that use `GEMINI_API_KEY` | You | — |
 | 4 | Key check (`nraiorbit google models`), POC setup, estimate, dialogue export | Session | free |
 | 5 | Approve caps ($70 trailer test, $200 full film) and the 13 Telugu lines | You | — |
@@ -85,9 +87,9 @@ The pipeline also has a manual hand-generation flow (`--manual`) and lower-cost 
 | Gap | Why it matters | Plan | What we need from you |
 |---|---|---|---|
 | First real Google run | Model names and parameters are only checked against the SDK | Steps 1–8 above | Network + key + approvals |
-| **Lip-sync** | Mouths don't match the Telugu audio | LatentSync adapter on an AWS g6.xlarge (≈ $2 for the POC) | AWS paid plan + GPU quota request ("Running On-Demand G and VT instances"), budget alarm |
+| **Lip-sync** | Mouths don't match the Telugu audio | LatentSync adapter on a Google Cloud g2-standard-4, one L4 GPU (≈ $1.50 for the POC) | Paid Google Cloud account + L4 GPU quota in asia-south1 ([GOOGLE_CLOUD_SETUP.md](GOOGLE_CLOUD_SETUP.md) step 8) |
 | **Music** | Cues are placeholder tones unless you supply tracks | Option A: Lyria music model through the same Google key. Option B: commissioned Telugu stems. Option C: your own tracks in `inbox/music/` | Choose A, B or C |
-| Automatic quality retakes | Today: one attempt per shot; you judge faces | Identity guard with a face model on each clip | Licence choice: InsightFace is non-commercial; AWS Rekognition is commercial |
+| Automatic quality retakes | Today: one attempt per shot; you judge faces | Identity guard with a face model on each clip | Licence choice: InsightFace models are non-commercial (buy a licence and run it on the Google Cloud GPU), or AWS Rekognition (Google Cloud has no face-matching API) |
 | Telugu quality | Dialogue was written by AI | Native review of every scene; recorded voices for leads | Your review, or a Telugu writer/voice artists with consent |
 | DaVinci Resolve timeline | Today: movie + stems, not an editable timeline | OTIO/FCPXML export | — |
 | Teaser, thumbnail | Not built | Teaser cutter (60 s), thumbnail from best keyframe | — |

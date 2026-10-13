@@ -1,8 +1,8 @@
 # 5-minute POC runbook: "Godavari Simham"
 
 Goal: produce a real 5-minute Telugu short and its trailer end to end on your setup
-(MacBook Pro, Google Veo, DaVinci Resolve, AWS, Claude), and measure what it actually
-costs.
+(MacBook Pro, Google Cloud with Veo, DaVinci Resolve, Claude), and measure what it
+actually costs.
 
 The story, screenplay (10 scenes, 13 Telugu lines), shot plan (54 shots, each ≤ 8 s for
 Veo) and music cue sheet are already written. They were written in Claude Code on your
@@ -34,7 +34,8 @@ These are the numbers `nraiorbit run` prints before it spends anything (one atte
 | Each retake of one shot (`nraiorbit retake`) | 8 s → $3.20 | $0.13 | — | **≈ $3.33** |
 
 - `nraiorbit estimate godavari5` shows the planning range with retakes: $225–$518 for 1.3–3 attempts per shot.
-- Lip-sync on AWS, when added, is about $2.
+- Lip-sync on a Google Cloud L4 GPU, when added, is about $1.50.
+- All prices are before tax. Indian Google Cloud bills add 18% GST (trailer test ≈ $66 with GST).
 - **Full 1h45m feature at this quality:** about 1,400 shots × 8 s × $0.40 ≈ **$4,500 per pass**, or roughly **$6,000–$9,000** with retakes. Measure the real retake rate on this POC before committing.
 
 **Spending safeguards:**
@@ -42,12 +43,11 @@ These are the numbers `nraiorbit run` prints before it spends anything (one atte
 - Every paid call is logged to `reports/cost.jsonl`.
 - Every Veo clip, first frame and voice line is kept, so a re-run, crash or budget stop never pays twice.
 
-Prices are in `config/pricing.yaml`; the pro image price is in `projects/godavari5/pricing.yaml`. They come from third-party trackers captured 2026-10, so verify them on Google's and AWS's own pricing pages:
+Prices are in `config/pricing.yaml`; the pro image price is in `projects/godavari5/pricing.yaml`. They come from third-party trackers captured 2026-10, so verify them on Google's own pricing pages:
 [Veo API per second](https://benchlm.ai/media-pricing/veo),
 [Flow credits per plan](https://www.hooked.so/compare/veo-3-pricing),
 [credits per clip](https://diyai.io/ai-tools/video-generation/google-veo-pricing/),
-[AWS g6.xlarge, Mumbai](https://www.doit.com/compute/spot/ap-south-1/g6.xlarge),
-[AWS g5.xlarge, Mumbai](https://www.doit.com/compute/spot/ap-south-1/g5.xlarge).
+[Google Cloud g2-standard-4 (L4), Mumbai](https://gcloud-compute.com/g2-standard-4.html).
 
 ## Steps (automatic)
 
@@ -64,8 +64,9 @@ nraiorbit demo godavari          # 30-second sanity check, no keys needed
 
 ### 2. Google key
 
-1. Create an API key in Google AI Studio (aistudio.google.com) on a project with
-   **billing enabled**. Veo has no free tier.
+1. Set up Google Cloud and create the key: follow
+   [GOOGLE_CLOUD_SETUP.md](GOOGLE_CLOUD_SETUP.md) steps 1–7 (account, paid billing,
+   project, Gemini API, restricted key, budget alert). Veo has no free tier.
 2. Export it:
    ```bash
    export GEMINI_API_KEY=...
@@ -156,7 +157,8 @@ The trailer shots from step 4 are reused for free; only the other 37 are generat
 ### Not automated yet
 
 - **Lip-sync.** Veo's mouth movement won't match the Telugu audio. That needs an NVIDIA
-  GPU, planned for an AWS g6.xlarge at about $2 for this POC.
+  GPU, planned for a Google Cloud g2-standard-4 (one L4) at about $1.50 for this POC
+  ([GOOGLE_CLOUD_SETUP.md](GOOGLE_CLOUD_SETUP.md) step 8).
 - **Music generation.**
 
 ## Alternative: generate clips by hand (any Veo plan, no API key)

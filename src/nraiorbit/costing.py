@@ -248,6 +248,11 @@ class Estimate:
         return d
 
 
+def gpu_cloud(pricing: dict) -> dict:
+    """The cloud that runs lip-sync and stores media (`cloud:` in pricing.yaml; Google Cloud by default)."""
+    return pricing[pricing.get("cloud", "gcp")]
+
+
 def estimate(project_dir: Path | None = None, runtime_minutes: float | None = None,
              pricing: dict | None = None, cfg: dict | None = None) -> Estimate:
     from .config import load_pipeline_config
@@ -295,12 +300,12 @@ def estimate(project_dir: Path | None = None, runtime_minutes: float | None = No
         n_chars = len(json.loads((project_dir / "01_story_bible.json").read_text(encoding="utf-8"))["characters"])
     identity = n_chars * 4 * gem.get("image_per_image", 0.04)     # front, 3/4 and ~2 costumes each
 
-    aws = pricing["aws"]
+    cloud = gpu_cloud(pricing)
     lip_shots = sum(1 for _, _, ls, _ in stats.shots if ls)
-    lip_hours = {lv: aws["setup_hours"] + lip_shots * att[lv] * aws["lipsync_minutes_per_shot"][lv] / 60
+    lip_hours = {lv: cloud["setup_hours"] + lip_shots * att[lv] * cloud["lipsync_minutes_per_shot"][lv] / 60
                  for lv in LEVELS}
-    lipsync = {lv: lip_hours[lv] * aws["hourly"] for lv in LEVELS}
-    storage = {lv: seconds * att[lv] * VEO_MB_PER_S / 1024 * aws["s3_per_gb_month"] for lv in LEVELS}
+    lipsync = {lv: lip_hours[lv] * cloud["hourly"] for lv in LEVELS}
+    storage = {lv: seconds * att[lv] * VEO_MB_PER_S / 1024 * cloud["storage_per_gb_month"] for lv in LEVELS}
 
     mac = pricing["mac"]
     n = len(stats.shots)
@@ -397,6 +402,7 @@ def _usd(v: float) -> str:
 
 def render_markdown(e: Estimate, pricing: dict) -> str:
     s, att, veo = e.stats, pricing["attempts_per_clip"], pricing["veo"]
+    cloud = gpu_cloud(pricing)
     lip_shots = sum(1 for _, _, ls, _ in s.shots if ls)
     src = "from the shot plan" if s.from_plan else "from runtime only (rough)"
     out = [
@@ -444,9 +450,9 @@ def render_markdown(e: Estimate, pricing: dict) -> str:
         *([f"| Claude agents, if run through the API instead | Anthropic | {_usd(e.claude_api['low'])} | "
            f"{_usd(e.claude_api['expected'])} | {_usd(e.claude_api['high'])} |"]
           if e.claude_logged or e.claude_billing == "subscription" else []),
-        f"| Lip-sync on {pricing['aws']['instance']} (${pricing['aws']['hourly']}/h) | AWS | "
+        f"| Lip-sync on {cloud['instance']} (${cloud['hourly']}/h) | {cloud['name']} | "
         + " | ".join(f"{_usd(e.lipsync[lv])} ({e.lipsync_hours[lv]:.1f} h)" for lv in LEVELS) + " |",
-        "| Storage, 1 month | AWS S3 | " + " | ".join(_usd(e.storage[lv]) for lv in LEVELS) + " |",
+        f"| Storage, 1 month | {cloud['name']} ({cloud['storage']}) | " + " | ".join(_usd(e.storage[lv]) for lv in LEVELS) + " |",
         f"| Keyframes (Veo API, {e.veo_mode} mode) | Google (Gemini image) | "
         + " | ".join(_usd(e.keyframes.get(lv, 0.0)) for lv in LEVELS) + " |",
         "| Telugu voices, if Gemini TTS | Google (Gemini TTS) | " + " | ".join(_usd(e.tts.get(lv, 0.0)) for lv in LEVELS) + " |",

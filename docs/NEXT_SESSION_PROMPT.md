@@ -3,10 +3,9 @@
 ## Before you start (once)
 
 1. **Environment variable:** `GEMINI_API_KEY` is your Google key (starts with `AIza`), on
-   a Google Cloud project with **billing enabled**. If AI Studio says "permission denied",
-   create it in the Google Cloud Console instead: new project → link billing → enable
-   "Generative Language API" → APIs & Services → Credentials → Create API key (restrict
-   it to the Generative Language API).
+   a Google Cloud project with **billing enabled**. Create it with
+   [GOOGLE_CLOUD_SETUP.md](GOOGLE_CLOUD_SETUP.md) steps 1–7: account, paid billing,
+   project, "Generative Language API", a key restricted to that API, and a budget alert.
 2. **Network access** (cloud environment menu → Edit → Network access): allow
    `pypi.org`, `files.pythonhosted.org` and `generativelanguage.googleapis.com`. Keep
    "Allow package managers" ticked.
@@ -21,7 +20,7 @@ Continue the NRAIORBIT Telugu film POC on branch claude/telugu-ai-movie-generato
 (check it out if needed). The design and the automated pipeline are already built: read
 README.md, docs/PROJECT_STATUS.md and docs/POC_RUNBOOK.md first.
 
-I added my Google AI Studio key as the environment variable GEMINI_API_KEY. You may run
+I added my Google Cloud Gemini API key as the environment variable GEMINI_API_KEY. You may run
 commands that use it: nraiorbit google models, identity build, run and retake.
 Never print, log or commit the key.
 

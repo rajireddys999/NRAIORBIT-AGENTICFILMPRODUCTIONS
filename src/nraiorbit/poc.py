@@ -2,7 +2,7 @@
 
 `nraiorbit poc <slug>` writes the story bible, outline, scene scripts, shot lists and cue
 sheet into a project. `nraiorbit run <slug>` then skips those stages and goes straight
-to casting, rendering and assembly, so the only bills are the generators (Veo, AWS
+to casting, rendering and assembly, so the only bills are the generators (Veo, Google Cloud
 lip-sync). Telugu dialogue should get a native-speaker review before recording.
 """
 

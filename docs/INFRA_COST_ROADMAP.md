@@ -14,7 +14,7 @@ flowchart TB
     Q --> W3["Audio workers<br/>TTS · VC · music · SFX"]
     Q --> W4["Finish workers<br/>lip-sync · upscale · RIFE"]
     ACT --> LLM["Anthropic API<br/>(Claude Opus 5.5)"]
-    W1 & W2 & W3 & W4 --> OBJ[("Object storage<br/>S3 / R2")]
+    W1 & W2 & W3 & W4 --> OBJ[("Object storage<br/>Cloud Storage / S3 / R2")]
     ACT --> PG[("Postgres + pgvector<br/>shots, takes, scores, costs")]
     W1 & W2 & W3 & W4 --> PG
     ACT --> OBS["Langfuse · Prometheus/Grafana · Sentry"]

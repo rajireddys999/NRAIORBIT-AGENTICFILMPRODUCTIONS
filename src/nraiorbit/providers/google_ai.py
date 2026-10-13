@@ -1,7 +1,7 @@
 """Google AI providers (google-genai SDK): Veo video, Gemini keyframe images, Gemini Telugu TTS.
 
     pip install google-genai
-    export GEMINI_API_KEY=...        # Google AI Studio key with billing enabled (Veo has no free tier)
+    export GEMINI_API_KEY=...        # Gemini API key, project with billing (docs/GOOGLE_CLOUD_SETUP.md)
     # or Vertex AI: set google.vertex: true and GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION
 
 Video modes (config google.veo_mode):
@@ -66,7 +66,8 @@ def google_client(google_cfg: dict):
         return genai.Client(vertexai=True) if google_cfg.get("vertex") else genai.Client()
     except ValueError as e:
         raise GoogleSetupError(
-            f"{e}\nSet GEMINI_API_KEY (Google AI Studio key with billing enabled), or set google.vertex: true "
+            f"{e}\nSet GEMINI_API_KEY (Gemini API key on a project with billing; see docs/GOOGLE_CLOUD_SETUP.md), "
+            "or set google.vertex: true "
             "with GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION for Vertex AI.") from None
 
 

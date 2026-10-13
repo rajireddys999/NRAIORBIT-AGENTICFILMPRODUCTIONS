@@ -89,7 +89,22 @@ film costs about $4,500 per pass, or roughly $6,000–$9,000 with retakes.
 The pipeline also has a manual hand-generation flow (`--manual`) and lower-cost tiers
 (Fast/Lite) in configuration, but this project does not use them.
 
-## 2. Next steps: the trailer test
+## 2. Next steps after the trailer test (2026-10-13)
+
+The project media is not in git. It is saved as a backup (14 parts in chat, plus the Google Cloud Storage bucket
+`gs://nraiorbit-agentic-film-product-media` once `storage.googleapis.com` is allowed). Restore it before any run;
+otherwise paid clips would be generated again. Setup and the copy-paste prompt: [NEXT_SESSION_PROMPT.md](NEXT_SESSION_PROMPT.md).
+
+| # | Step | Cost |
+|---|---|---|
+| 1 | You: new service account key (delete `71e11ffe…`), roles Vertex AI User + Storage Admin instead of Owner, env settings, network allow-list | — |
+| 2 | Restore the backup; free trailer rebuild with `--max-spend 57.80`; Cloud Storage backup | ≈ $0.02/month |
+| 3 | Full 5 minutes: `nraiorbit run godavari5 --yes --max-spend 200` | ≈ $121 on the ledger |
+| 4 | Retakes of shots you pick | ≈ $3.33 each |
+| 5 | Music: Lyria provider on Vertex, or your own tracks | to be estimated |
+| 6 | Lip-sync on a Google Cloud L4 GPU | ≈ $1.50 |
+
+## 2a. Earlier plan: the trailer test
 
 | # | Step | Who | Cost |
 |---|---|---|---|

@@ -261,3 +261,42 @@ def test_refused_key_type_points_to_vertex(monkeypatch, capsys):
     assert seen[-1]["vertex"] is True
     out = capsys.readouterr().out
     assert "Vertex AI" in out and "veo-3.1-generate-001" in out
+
+
+def test_prepaid_credit_used_up_says_what_to_do():
+    class Depleted(Exception):
+        pass
+
+    Depleted.__module__ = "google.genai.errors"
+
+    def depleted():
+        raise Depleted("402 RESOURCE_EXHAUSTED ... Your prepayment credits are depleted.")
+
+    with pytest.raises(google_ai.GoogleAPIError, match="nothing was charged.*Vertex AI"):
+        google_ai._call(depleted, "Gemini image")
+
+
+def test_vertex_auth_from_service_account_json(monkeypatch):
+    from google.oauth2 import service_account
+
+    seen = {}
+    monkeypatch.setattr(service_account.Credentials, "from_service_account_info",
+                        classmethod(lambda cls, info, scopes: seen.update(info=info, scopes=scopes) or "CREDS"))
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS_JSON",
+                       json.dumps({"type": "service_account", "project_id": "film-proj"}))
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
+    assert google_ai.vertex_auth() == {"credentials": "CREDS", "project": "film-proj", "location": "us-central1"}
+    assert seen["scopes"] == ["https://www.googleapis.com/auth/cloud-platform"]
+
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "other-proj")
+    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "asia-south1")
+    assert google_ai.vertex_auth()["project"] == "other-proj"
+    assert google_ai.vertex_auth()["location"] == "asia-south1"
+
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", "not json")
+    with pytest.raises(google_ai.GoogleSetupError, match="not a valid service account key"):
+        google_ai.vertex_auth()
+
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+    assert google_ai.vertex_auth() == {"project": "other-proj", "location": "asia-south1"}

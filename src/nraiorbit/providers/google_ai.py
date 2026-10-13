@@ -2,7 +2,8 @@
 
     pip install google-genai
     export GEMINI_API_KEY=...        # Gemini API key, project with billing (docs/GOOGLE_CLOUD_SETUP.md)
-    # or Vertex AI: set google.vertex: true and GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION
+    # or Vertex AI: set google.vertex: true and GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION, with
+    # GOOGLE_APPLICATION_CREDENTIALS_JSON (a service account key's JSON text) or the usual Google sign-in
 
 Video modes (config google.veo_mode):
   keyframe  - Gemini draws the first frame from the characters' reference images, then Veo
@@ -19,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import time
 import wave
@@ -52,6 +54,11 @@ FREE_TIER_HINT = ("The key's Google project is on the Gemini API free tier, whic
                   "nothing was charged. Link that project to a paid billing account: in AI Studio (API keys page) "
                   "the project must show a paid tier, not 'Free' (docs/GOOGLE_CLOUD_SETUP.md steps 2-3). Then re-run.")
 
+PREPAY_HINT = ("The key's Google project uses Gemini API prepaid billing and its credit is used up, so nothing was "
+               "charged. Add credit in AI Studio (Billing), or use Google Cloud credit through Vertex AI "
+               "(google.vertex: true with GOOGLE_APPLICATION_CREDENTIALS_JSON, GOOGLE_CLOUD_PROJECT and "
+               "GOOGLE_CLOUD_LOCATION). Then re-run.")
+
 
 def _call(fn, what: str, **kwargs):
     try:
@@ -62,6 +69,8 @@ def _call(fn, what: str, **kwargs):
                 hint = VERTEX_HINT
             elif "free_tier" in str(e):
                 hint = FREE_TIER_HINT
+            elif "prepayment credits" in str(e):
+                hint = PREPAY_HINT
             else:
                 hint = ("If the model name is wrong, check `nraiorbit google models` and set it under google: in "
                         "the project's pipeline.yaml. Re-run to resume.")
@@ -77,12 +86,38 @@ def google_client(google_cfg: dict):
     except ImportError:
         raise GoogleSetupError("google-genai is not installed: pip install google-genai") from None
     try:
-        return genai.Client(vertexai=True) if google_cfg.get("vertex") else genai.Client()
+        return genai.Client(vertexai=True, **vertex_auth()) if google_cfg.get("vertex") else genai.Client()
     except ValueError as e:
         raise GoogleSetupError(
             f"{e}\nSet GEMINI_API_KEY (Gemini API key on a project with billing; see docs/GOOGLE_CLOUD_SETUP.md), "
             "or set google.vertex: true "
             "with GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION for Vertex AI.") from None
+
+
+def vertex_auth() -> dict:
+    """Vertex AI sign-in from the environment: a service account key's JSON text in
+    GOOGLE_APPLICATION_CREDENTIALS_JSON (handy where only env vars can be set), else the SDK's default
+    (GOOGLE_APPLICATION_CREDENTIALS file or gcloud login). Passing project/location explicitly keeps the SDK
+    from switching to API-key express mode just because GEMINI_API_KEY is also set."""
+    kwargs: dict = {}
+    for name, key in (("GOOGLE_CLOUD_PROJECT", "project"), ("GOOGLE_CLOUD_LOCATION", "location")):
+        if os.environ.get(name):
+            kwargs[key] = os.environ[name]
+    raw = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON", "").strip()
+    if raw:
+        try:
+            info = json.loads(raw)
+            from google.oauth2 import service_account
+
+            creds = service_account.Credentials.from_service_account_info(
+                info, scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        except (ValueError, KeyError) as e:
+            raise GoogleSetupError(f"GOOGLE_APPLICATION_CREDENTIALS_JSON is not a valid service account key "
+                                   f"({type(e).__name__}). Paste the whole downloaded JSON file.") from None
+        kwargs["credentials"] = creds
+        kwargs.setdefault("project", info.get("project_id"))
+    kwargs.setdefault("location", "us-central1")
+    return kwargs
 
 
 def _types():

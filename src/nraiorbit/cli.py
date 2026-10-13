@@ -198,12 +198,15 @@ def cmd_identity(args) -> None:
 
 
 def cmd_google(args) -> None:
-    from .providers.google_ai import google_client
+    from .providers.google_ai import _call, google_client
 
-    cfg = load_pipeline_config()
-    client = google_client(cfg.get("google", {}))
+    g = dict(load_pipeline_config().get("google", {}))
+    if args.vertex:
+        g["vertex"] = True
+    client = google_client(g)
     wanted = ("veo", "image", "tts", "lyria")
-    for m in client.models.list():
+    print(f"Endpoint: {'Vertex AI' if g.get('vertex') else 'Gemini API'}")
+    for m in _call(client.models.list, "list models"):
         name = getattr(m, "name", str(m))
         if any(w in name for w in wanted):
             print(f"  {name}  {getattr(m, 'display_name', '') or ''}")
@@ -327,6 +330,8 @@ def main(argv: list[str] | None = None) -> None:
         _main(argv)
     except GoogleSetupError as e:
         sys.exit(f"Google setup needed: {e}")
+    except GoogleAPIError as e:
+        sys.exit(f"Google API error: {e}")
 
 
 def _main(argv: list[str] | None = None) -> None:
@@ -369,6 +374,7 @@ def _main(argv: list[str] | None = None) -> None:
 
     p = sub.add_parser("google", help="list the Veo / image / TTS models your Google key can use")
     p.add_argument("action", choices=["models"])
+    p.add_argument("--vertex", action="store_true", help="use the key through Vertex AI (express mode) instead")
     p.set_defaults(fn=cmd_google)
 
     p = sub.add_parser("poc", help="create the 5-minute Godavari Simham POC project")

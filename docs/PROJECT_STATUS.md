@@ -71,8 +71,8 @@ The pipeline also has a manual hand-generation flow (`--manual`) and lower-cost 
 
 | # | Step | Who | Cost |
 |---|---|---|---|
-| 1 | Environment → Network access: allow `pypi.org`, `files.pythonhosted.org`, `generativelanguage.googleapis.com` (keep "Allow package managers" ticked) | You | — |
-| 2 | Set up Google Cloud and the `GEMINI_API_KEY` key (`AIza…`) with [GOOGLE_CLOUD_SETUP.md](GOOGLE_CLOUD_SETUP.md) steps 1–7; revoke the `veo3_pat_…` token that was pasted in chat | You | — |
+| 1 | Environment → Network access: allow `pypi.org`, `files.pythonhosted.org`, `generativelanguage.googleapis.com`, `aiplatform.googleapis.com` (keep "Allow package managers" ticked) | You | — |
+| 2 | Set up Google Cloud and the `GEMINI_API_KEY` key (`AQ.…` or `AIza…`) with [GOOGLE_CLOUD_SETUP.md](GOOGLE_CLOUD_SETUP.md) steps 1–7; revoke the `veo3_pat_…` token that was pasted in chat | You | — |
 | 3 | Start a new session and paste the prompt from [NEXT_SESSION_PROMPT.md](NEXT_SESSION_PROMPT.md). Tell it that it may run commands that use `GEMINI_API_KEY` | You | — |
 | 4 | Key check (`nraiorbit google models`), POC setup, estimate, dialogue export | Session | free |
 | 5 | Approve caps ($70 trailer test, $200 full film) and the 13 Telugu lines | You | — |

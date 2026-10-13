@@ -230,3 +230,28 @@ def test_retake_generates_only_the_chosen_shot(setup):
     assert all(by_id[sid]["real"] for sid in trailer_ids)        # earlier paid clips still in the film
     plan = json.loads((setup.root / "10_edit" / "trailer_plan.json").read_text())
     assert len({c["shot_id"] for c in plan if c["shot_id"]}) > 3  # trailer still cut from all paid shots
+
+
+def test_refused_key_type_points_to_vertex(monkeypatch, capsys):
+    """New AQ. keys can get 401 ACCESS_TOKEN_TYPE_UNSUPPORTED on the Gemini API; the error must say what to do."""
+    from nraiorbit import cli
+
+    class Refused(Exception):
+        pass
+
+    Refused.__module__ = "google.genai.errors"
+
+    def refuse():
+        raise Refused("401 UNAUTHENTICATED ... ACCESS_TOKEN_TYPE_UNSUPPORTED")
+
+    with pytest.raises(google_ai.GoogleAPIError, match="google.vertex: true"):
+        google_ai._call(refuse, "list models")
+
+    seen = []
+    models = SimpleNamespace(list=lambda: [SimpleNamespace(name="publishers/google/models/veo-3.1-generate-001",
+                                                           display_name="Veo 3.1")])
+    monkeypatch.setattr(google_ai, "CLIENT_FACTORY", lambda cfg: seen.append(cfg) or SimpleNamespace(models=models))
+    cli.main(["google", "models", "--vertex"])
+    assert seen[-1]["vertex"] is True
+    out = capsys.readouterr().out
+    assert "Vertex AI" in out and "veo-3.1-generate-001" in out

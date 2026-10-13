@@ -2,12 +2,13 @@
 
 ## Before you start (once)
 
-1. **Environment variable:** `GEMINI_API_KEY` is your Google key (starts with `AIza`), on
+1. **Environment variable:** `GEMINI_API_KEY` is your Google key (starts with `AQ.` or `AIza`), on
    a Google Cloud project with **billing enabled**. Create it with
    [GOOGLE_CLOUD_SETUP.md](GOOGLE_CLOUD_SETUP.md) steps 1–7: account, paid billing,
    project, "Generative Language API", a key restricted to that API, and a budget alert.
 2. **Network access** (cloud environment menu → Edit → Network access): allow
-   `pypi.org`, `files.pythonhosted.org` and `generativelanguage.googleapis.com`. Keep
+   `pypi.org`, `files.pythonhosted.org`, `generativelanguage.googleapis.com` and
+   `aiplatform.googleapis.com`. Keep
    "Allow package managers" ticked.
 3. Start a **new session** on this repository, on branch
    `claude/telugu-ai-movie-generator-yhb6po`.
@@ -28,7 +29,9 @@ Do this in order:
 1. Check GEMINI_API_KEY is set without printing its value. If it is missing, stop and tell me.
 2. pip install -e ".[dev,google]" (ffmpeg is preinstalled), then run the test suite.
    If pypi.org or Google's API is blocked, tell me which host to allow and stop.
-3. Run `nraiorbit google models` (free). We chose quality first: Veo 3.1 standard
+3. Run `nraiorbit google models` (free). If an `AQ.` key gets 401 ACCESS_TOKEN_TYPE_UNSUPPORTED,
+   set google.vertex: true in projects/godavari5/pipeline.yaml (Vertex AI express mode, same
+   key) and use the Vertex model names it lists. We chose quality first: Veo 3.1 standard
    (veo-3.1-generate-preview) at 1080p, the pro image model (gemini-3-pro-image), and the
    best Telugu-capable TTS model. If names differ (e.g. a "-preview" suffix) or a newer
    top-tier Veo / pro image / pro TTS model is listed, pick the highest-quality one and

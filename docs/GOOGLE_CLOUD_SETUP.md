@@ -63,7 +63,8 @@ This is the Gemini API. Veo, Gemini image and Gemini TTS all go through it.
 2. Click **Edit API key**. Name it `nraiorbit-gemini`.
 3. Under **API restrictions** choose **Restrict key**, tick **Generative Language API**,
    then **Save**. A restricted key can't be used for other Google services if it leaks.
-4. Click **Show key** and copy it. It starts with `AIza`.
+4. Click **Show key** and copy it. New keys start with `AQ.`; older ones start with `AIza`.
+   Both work. If Google asks you to bind the key to a service account, accept.
 
 **Never paste the key into a chat, an email, or any file in this repository.**
 
@@ -86,15 +87,16 @@ denied", skip this; the key still works.
 **Claude Code cloud session.** Open the cloud environment menu in the session's title
 bar → **Edit**:
 - **Environment variables:** `GEMINI_API_KEY=` followed by your key.
-- **Network access:** allow `pypi.org`, `files.pythonhosted.org` and
-  `generativelanguage.googleapis.com`, with **Allow package managers** ticked
+- **Network access:** allow `pypi.org`, `files.pythonhosted.org`,
+  `generativelanguage.googleapis.com` and `aiplatform.googleapis.com`, with **Allow package
+  managers** ticked
   ([steps](https://code.claude.com/docs/en/cloud-environments#network-access)).
 - Start a **new session**, which picks up the change, and paste the prompt from
   [NEXT_SESSION_PROMPT.md](NEXT_SESSION_PROMPT.md).
 
 **Your Mac:**
 ```bash
-export GEMINI_API_KEY='AIza...'      # this terminal only; add the line to ~/.zshrc to keep it
+export GEMINI_API_KEY='AQ....'       # this terminal only; add the line to ~/.zshrc to keep it
 nraiorbit google models              # free: lists the Veo, image and TTS models your key can use
 ```
 
@@ -141,6 +143,7 @@ It costs about $0.023 per GB per month. Downloading back to your Mac costs about
 |---|---|
 | "Permission denied" creating a project or key | Personal Gmail with only that account signed in; accept the Terms of Service; otherwise Billing support |
 | `API key not valid` | The key is restricted to the wrong API, or Generative Language API is not enabled in the same project (steps 4–5) |
+| `401 ACCESS_TOKEN_TYPE_UNSUPPORTED` with an `AQ.` key | Some new keys are refused by the Gemini API endpoint. Set `google.vertex: true` in the project's `pipeline.yaml`: the same key then goes through Vertex AI (express mode, `aiplatform.googleapis.com`). Enable the **Vertex AI API**; if it says permission denied, give the key's service account the **Vertex AI User** role (IAM & Admin → IAM) |
 | "Free tier" limits, `429` or quota errors | Billing is not linked to the project, or the account is still a trial (steps 2–3) |
 | No Veo model in `nraiorbit google models` | Billing not active on the project; check steps 2–3, then try again |
 | GPU quota request refused | The account is still a trial (step 2), or ask for a different zone in asia-south1 |

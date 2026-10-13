@@ -45,13 +45,20 @@ class GoogleAPIError(RuntimeError):
     """A Google API call failed (bad model name, quota, invalid argument). The run can be resumed."""
 
 
+VERTEX_HINT = ("This key type is refused by the Gemini API endpoint. Use the same key through Vertex AI: set "
+               "google.vertex: true in the project's pipeline.yaml (check with `nraiorbit google models --vertex`; "
+               "needs aiplatform.googleapis.com and the Vertex AI API enabled).")
+
+
 def _call(fn, what: str, **kwargs):
     try:
         return fn(**kwargs)
     except Exception as e:  # SDK errors live in google.genai.errors; re-raise everything else unchanged
         if type(e).__module__.startswith("google."):
-            raise GoogleAPIError(f"{what}: {e}\nIf the model name is wrong, check `nraiorbit google models` and "
-                                 "set it under google: in the project's pipeline.yaml. Re-run to resume.") from None
+            hint = (VERTEX_HINT if "ACCESS_TOKEN_TYPE_UNSUPPORTED" in str(e) else
+                    "If the model name is wrong, check `nraiorbit google models` and set it under google: in the "
+                    "project's pipeline.yaml. Re-run to resume.")
+            raise GoogleAPIError(f"{what}: {e}\n{hint}") from None
         raise
 
 

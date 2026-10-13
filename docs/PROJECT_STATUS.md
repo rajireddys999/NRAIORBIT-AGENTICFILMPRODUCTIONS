@@ -41,15 +41,29 @@ _Last updated: 2026-10-13. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
 
 ### Execution so far
 
-- A cloud session was started with your `GEMINI_API_KEY` environment variable. It created the POC, ran the estimate and exported `DIALOGUE.md`.
-- It stopped before any paid call: the environment's network settings block `pypi.org` and Google's API, and it needs your permission to use the key.
-- Nothing has been spent yet.
+- 2026-10-13: the new paid `GEMINI_API_KEY` works (`nraiorbit google models` lists Veo 3.1, the pro image model and TTS).
+  But the AI Studio project uses **Gemini API prepaid billing with $0 credit**, so Gemini API calls fail with
+  `402 prepayment credits are depleted` (nothing charged).
+- The Google Cloud billing account has **$300 free-trial credit** (valid to January 2027). To spend it, the POC now runs
+  through **Vertex AI** with a service account (`nraiorbit-agentic-film-product@…`, project `nraiorbit-agentic-film-product`):
+  - Project `pipeline.yaml`: `google.vertex: true`, `veo_model: veo-3.1-generate-001`, `tts_model: gemini-2.5-flash-tts`
+    (Vertex names); `image_model: gemini-3-pro-image` needs `GOOGLE_CLOUD_LOCATION=global`.
+  - Sign-in: `GOOGLE_APPLICATION_CREDENTIALS_JSON` (key JSON text) or `GOOGLE_APPLICATION_CREDENTIALS` (file path),
+    plus `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION=global`.
+  - Network allow-list also needs `oauth2.googleapis.com`, `aiplatform.googleapis.com`,
+    `us-central1-aiplatform.googleapis.com`, `www.googleapis.com`.
+  - To do: the service account has the **Owner** role for now; change it to `roles/aiplatform.user`. The key file
+    passed through chat, so replace it with a new key stored in the environment settings.
+- **Character photos built and approved by you:** 11 images for $1.47 (`reports/cost.jsonl`). Check on the Billing → Credits
+  page that the $300 credit paid for them.
+- Not approved yet: any video, the budget caps, the 13 Telugu lines.
 
 ### Verified vs. not verified
 
 | Verified (here, with ffmpeg and a fake Google client) | Not verified yet |
 |---|---|
-| Every stage end to end, output files decode, loudness, subtitles, budget stop, safety-filter handling, caching, SDK signatures | Real Veo / Gemini image / Gemini TTS calls and model names on your key |
+| Every stage end to end, output files decode, loudness, subtitles, budget stop, safety-filter handling, caching, SDK signatures | Real Veo / Gemini TTS calls on Vertex AI |
+| Real Gemini pro image calls on Vertex AI (11 character photos, 2026-10-13) | |
 | | Claude API path for new stories (no Anthropic API key used) |
 | | Indic Parler-TTS, InsightFace and SpeechBrain adapters, YouTube upload |
 
@@ -76,7 +90,7 @@ The pipeline also has a manual hand-generation flow (`--manual`) and lower-cost 
 | 3 | Start a new session and paste the prompt from [NEXT_SESSION_PROMPT.md](NEXT_SESSION_PROMPT.md). Tell it that it may run commands that use `GEMINI_API_KEY` | You | — |
 | 4 | Key check (`nraiorbit google models`), POC setup, estimate, dialogue export | Session | free |
 | 5 | Approve caps ($70 trailer test, $200 full film) and the 13 Telugu lines | You | — |
-| 6 | `nraiorbit identity build godavari5`, then approve the three faces | Session, then you | ≈ $1.50 |
+| 6 | `nraiorbit identity build godavari5`, then approve the three faces (**done 2026-10-13, $1.47, faces approved**) | Session, then you | ≈ $1.50 |
 | 7 | `nraiorbit run godavari5 --only trailer`: 17 shots + 13 lines → trailer.mp4 | Session | ≈ $56 |
 | 7b | `nraiorbit retake godavari5 <shot>` for any shot you don't like | Session | ≈ $3.33 per shot |
 | 8 | `nraiorbit run godavari5`: the other 37 shots → full 5-minute movie | Session | ≈ $121 |
@@ -86,7 +100,7 @@ The pipeline also has a manual hand-generation flow (`--manual`) and lower-cost 
 
 | Gap | Why it matters | Plan | What we need from you |
 |---|---|---|---|
-| First real Google run | Model names and parameters are only checked against the SDK | Steps 1–8 above | Network + key + approvals |
+| First real Google video run | Images work on Vertex AI; Veo and TTS are only checked against the SDK | Steps 1–8 above | Network + key + approvals |
 | **Lip-sync** | Mouths don't match the Telugu audio | LatentSync adapter on a Google Cloud g2-standard-4, one L4 GPU (≈ $1.50 for the POC) | Paid Google Cloud account + L4 GPU quota in asia-south1 ([GOOGLE_CLOUD_SETUP.md](GOOGLE_CLOUD_SETUP.md) step 8) |
 | **Music** | Cues are placeholder tones unless you supply tracks | Option A: Lyria music model through the same Google key. Option B: commissioned Telugu stems. Option C: your own tracks in `inbox/music/` | Choose A, B or C |
 | Automatic quality retakes | Today: one attempt per shot; you judge faces | Identity guard with a face model on each clip | Licence choice: InsightFace models are non-commercial (buy a licence and run it on the Google Cloud GPU), or AWS Rekognition (Google Cloud has no face-matching API) |

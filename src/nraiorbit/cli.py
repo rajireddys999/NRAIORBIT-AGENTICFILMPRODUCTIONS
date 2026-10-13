@@ -235,7 +235,7 @@ def cmd_poc(args) -> None:
               f"  (generate clips into {root / 'inbox' / 'video'})\n  nraiorbit run {args.slug} --force render")
     else:
         print(f"Next (automatic, needs GEMINI_API_KEY):\n  nraiorbit estimate {args.slug}\n"
-              f"  nraiorbit identity build {args.slug}        # character reference images (~$0.50)\n"
+              f"  nraiorbit identity build {args.slug}        # character reference images (~$1.50)\n"
               f"  nraiorbit run {args.slug} --only trailer    # cheap first test: trailer shots only\n"
               f"  nraiorbit run {args.slug}                   # the full 5 minutes (reuses paid clips)")
     print("See docs/POC_RUNBOOK.md.")

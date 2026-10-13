@@ -8,6 +8,7 @@
   nraiorbit shotpack export|status <slug>                   Veo prompts per shot / which clips are in the inbox
   nraiorbit identity build <slug>                           character reference images (Gemini)
   nraiorbit run <slug> --only trailer [--max-spend 20]      paid run limited to trailer shots, with a budget cap
+  nraiorbit retake <slug> <shot_id>... [--use N]            redo chosen shots (paid) or pick an earlier attempt (free)
   nraiorbit google models                                   models your Google key can use
   nraiorbit approve <slug> <gate>                           approve a review gate
   nraiorbit status <slug>
@@ -121,6 +122,47 @@ def cmd_run(args) -> None:
     llm = ClaudeClient(model=cfg["llm"]["model"], max_tokens=cfg["llm"]["max_tokens"],
                        usage_log=root / "reports" / "llm_usage.jsonl")
     _run(Pipeline(root, llm, cfg=cfg), args.slug, args.until, args.force)
+
+
+def cmd_retake(args) -> None:
+    """Generate another attempt of chosen shots (or pick an earlier attempt with --use) and re-render."""
+    from .costing import load_takes
+    from .llm import ClaudeClient
+    from .schemas import ShotList
+    from .shotpack import clips_for
+
+    root = _project(args.slug)
+    known = {s.shot_id for p in (root / "04_shots").glob("*.json")
+             for s in ShotList.model_validate_json(p.read_text(encoding="utf-8")).shots}
+    unknown = [sid for sid in args.shots if sid not in known]
+    if unknown:
+        sys.exit(f"unknown shot ids: {', '.join(unknown)}")
+    takes_path = root / "takes.yaml"
+    before = takes_path.read_text(encoding="utf-8") if takes_path.exists() else None
+    takes = load_takes(root)
+    for sid in args.shots:
+        have = len(clips_for(root, sid))
+        if have == 0:
+            sys.exit(f"{sid} has not been generated yet; run it first (e.g. nraiorbit run {args.slug} --only {sid})")
+        if args.use is not None:
+            if not 1 <= args.use <= have:
+                sys.exit(f"{sid} has {have} attempt(s); --use must be between 1 and {have}")
+            takes[sid] = args.use
+        else:
+            takes[sid] = max(takes.get(sid, 1), have) + 1
+        print(f"  {sid}: using attempt {takes[sid]} ({have} already generated)")
+    takes_path.write_text(yaml.safe_dump(takes, sort_keys=True), encoding="utf-8")
+    cfg = _apply_run_options(load_pipeline_config(root), args)
+    cfg.setdefault("render", {})["only"] = list(args.shots)    # generate only these; other paid clips are reused
+    if not _preflight(root, cfg, args.yes):
+        if before is None:
+            takes_path.unlink()
+        else:
+            takes_path.write_text(before, encoding="utf-8")
+        return
+    llm = ClaudeClient(model=cfg["llm"]["model"], max_tokens=cfg["llm"]["max_tokens"],
+                       usage_log=root / "reports" / "llm_usage.jsonl")
+    _run(Pipeline(root, llm, cfg=cfg), args.slug)
 
 
 def cmd_identity(args) -> None:
@@ -303,10 +345,19 @@ def _main(argv: list[str] | None = None) -> None:
         p.add_argument("--until", choices=STAGES)
         p.add_argument("--force", nargs="*", choices=STAGES, default=[])
         if name == "run":
-            p.add_argument("--only", nargs="*", help="scene ids, shot ids and/or 'trailer'; others get placeholders")
+            p.add_argument("--only", nargs="*",
+                           help="generate only these scene ids, shot ids and/or 'trailer'; other shots reuse paid clips")
             p.add_argument("--max-spend", type=float, help="budget cap in USD for paid generation (overrides config)")
             p.add_argument("--yes", action="store_true", help="skip the spend confirmation")
         p.set_defaults(fn=fn)
+
+    p = sub.add_parser("retake", help="new attempt for chosen shots (paid), or --use N to pick an earlier one (free)")
+    p.add_argument("slug")
+    p.add_argument("shots", nargs="+", help="shot ids, e.g. sc002_s005")
+    p.add_argument("--use", type=int, help="use this existing attempt instead of generating a new one")
+    p.add_argument("--max-spend", type=float)
+    p.add_argument("--yes", action="store_true")
+    p.set_defaults(fn=cmd_retake)
 
     p = sub.add_parser("identity", help="generate character reference images with Gemini")
     p.add_argument("action", choices=["build"])

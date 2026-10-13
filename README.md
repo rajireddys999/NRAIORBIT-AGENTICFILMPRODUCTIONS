@@ -35,15 +35,16 @@ An agentic pipeline that turns a **story plot prompt** into a **Telugu feature f
 | [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) | What is done, next steps, and what is still needed end to end |
 | [docs/NEXT_SESSION_PROMPT.md](docs/NEXT_SESSION_PROMPT.md) | Copy-paste prompt to continue in a new Claude Code session |
 
-## 5-minute POC and trailer test (automatic, Google Veo + Gemini)
+## 5-minute POC and trailer test (automatic, quality-first: Veo 3.1 standard, 1080p)
 
 ```bash
 pip install -e ".[dev,google]" && export GEMINI_API_KEY=...
 nraiorbit poc godavari5                       # screenplay + 54 shots + cue sheet, already written
 nraiorbit estimate godavari5                  # the bill before spending anything
-nraiorbit identity build godavari5            # character reference images (~$0.44)
-nraiorbit run godavari5 --only trailer        # trailer test: 17 Veo shots, ~$12, asks before spending
-nraiorbit run godavari5                       # full 5 minutes, ~$21 more (trailer shots reused)
+nraiorbit identity build godavari5            # character reference images (~$1.50)
+nraiorbit run godavari5 --only trailer        # trailer test: 17 Veo 3.1 shots at 1080p, ~$56, asks first
+nraiorbit retake godavari5 sc002_s005         # redo one shot (~$3.33), earlier attempts are kept
+nraiorbit run godavari5                       # full 5 minutes, ~$121 more (trailer shots reused)
 ```
 
 Every run shows a cost preview and asks before spending. A budget cap stops it before

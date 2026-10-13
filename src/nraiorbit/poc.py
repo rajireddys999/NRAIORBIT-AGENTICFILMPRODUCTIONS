@@ -38,13 +38,16 @@ POC_CONFIG = {
     # Automatic: Veo API for video, Gemini TTS for lines without a recording in inbox/dialogue.
     "providers": {"video": "veo", "tts": "inbox", "music": "inbox"},
     "voice": {"inbox_fallback": "gemini"},
-    "google": {"veo_mode": "keyframe", "veo_model": "veo-3.1-fast-generate-preview", "veo_tier": "fast"},
-    "budget": {"max_usd": 50},
+    # Quality first: Veo 3.1 standard at native 1080p (8 s clips), Gemini's pro image model for faces/first frames.
+    "google": {"veo_mode": "keyframe", "veo_model": "veo-3.1-generate-preview", "veo_tier": "standard",
+               "veo_resolution": "1080p", "image_model": "gemini-3-pro-image"},
+    "budget": {"max_usd": 250},
     # Spending is guarded by the preview + confirmation and the budget, so the POC runs straight through.
     "review_gates": {g: {"auto_approve": True} for g in ("story", "cast", "pacing", "final_cut", "trailer")},
 }
 
-POC_PRICING = {"claude": {"billing": "subscription"}}
+POC_PRICING = {"claude": {"billing": "subscription"},
+               "gemini": {"image_per_image": 0.134}}     # pro image model, 1K-2K (third-party estimate; verify)
 MANUAL_OVERRIDES = {"providers": {"video": "shotpack"}, "voice": {"inbox_fallback": "mock"}}
 
 STORY_BIBLE = {

@@ -70,7 +70,7 @@ def setup(tmp_path, monkeypatch):
     fake = FakeGoogle(tmp_path)
     monkeypatch.setattr(google_ai, "CLIENT_FACTORY", lambda cfg: fake)
 
-    def make(budget=50.0, only=None, block_if=None):
+    def make(budget=500.0, only=None, block_if=None):
         if block_if is not None:
             fake.block_if = block_if
         cfg = deep_merge(load_pipeline_config(root), {
@@ -125,12 +125,12 @@ def test_trailer_only_run_then_full_run_reuses_paid_clips(setup):
     keyframed = [c for c in fake.video_calls if c["image"] is not None]
     assert len(keyframed) == len(with_leads)
     cfg0 = fake.video_calls[0]["config"]
-    assert cfg0.aspect_ratio == "16:9" and cfg0.resolution == "720p" and cfg0.duration_seconds in (4, 6, 8)
+    assert cfg0.aspect_ratio == "16:9" and cfg0.resolution == "1080p" and cfg0.duration_seconds == 8  # 1080p: 8 s
     assert "Arjun" in next(c["prompt"] for c in fake.video_calls if "Arjun" in c["prompt"])
 
     ledger = SpendLedger(root / "reports" / "cost.jsonl", None)
     veo_seconds = sum(r.get("seconds", 0) for r in ledger.records() if r["provider"] == "veo")
-    assert ledger.summary()["veo"] == pytest.approx(veo_seconds * 0.10)
+    assert ledger.summary()["veo"] == pytest.approx(veo_seconds * 0.40)          # Veo 3.1 standard
     assert (root / "inbox" / "video" / f"{trailer_shots[0].shot_id}.mp4").exists()
     timeline = json.loads((root / "10_edit" / "timeline.json").read_text())
     assert timeline["only"] == ["trailer"]
@@ -147,14 +147,15 @@ def test_trailer_only_run_then_full_run_reuses_paid_clips(setup):
 
 
 def test_budget_stops_the_run_and_keeps_paid_work(setup):
-    pipeline, _ = setup.make(budget=1.25)
+    ledger = SpendLedger(setup.root / "reports" / "cost.jsonl", None)
+    budget = ledger.spent() + 5.0                       # room for one 8 s standard clip ($3.20), not two
+    pipeline, _ = setup.make(budget=budget)
     with pytest.raises(PipelineBlocked, match="budget"):
         pipeline.run(until="render")
-    ledger = SpendLedger(setup.root / "reports" / "cost.jsonl", None)
-    assert ledger.spent() <= 1.25 + 1e-9
+    assert ledger.spent() <= budget + 1e-9
     paid_clips = len(list((setup.root / "inbox" / "video").glob("*.mp4")))
     assert paid_clips == len(setup.fake.video_calls) > 0
-    resumed, _ = setup.make(budget=100)
+    resumed, _ = setup.make(budget=500)
     resumed.run(until="render")
     assert len(setup.fake.video_calls) == 54                            # resumed without regenerating
 
@@ -208,3 +209,24 @@ def test_provider_calls_match_the_real_sdk():
             "reference_images"} <= set(types.GenerateVideosConfig.model_fields)
     assert {"voice_config", "language_code"} <= set(types.SpeechConfig.model_fields)
     assert "aspect_ratio" in types.ImageConfig.model_fields
+
+
+def test_retake_generates_only_the_chosen_shot(setup):
+    import yaml
+
+    first, _ = setup.make(only=["trailer"])
+    first.run()
+    calls = len(setup.fake.video_calls)
+    (setup.root / "takes.yaml").write_text(yaml.safe_dump({"sc002_s005": 2}))
+    again, cfg = setup.make(only=["sc002_s005"])               # what `nraiorbit retake` sets up
+    assert preview_run(setup.root, cfg, load_pricing(setup.root))["shots"] == 1
+    again.run()
+    assert len(setup.fake.video_calls) == calls + 1             # only the retaken shot was paid for
+    assert (setup.root / "inbox" / "video" / "sc002_s005_2.mp4").exists()
+    timeline = json.loads((setup.root / "10_edit" / "timeline.json").read_text())
+    by_id = {s["shot_id"]: s for s in timeline["shots"]}
+    assert by_id["sc002_s005"]["clip"].endswith("take_2.mp4")
+    trailer_ids = {s.shot_id for s in _selected_shots(setup.root, trailer_only=True)}
+    assert all(by_id[sid]["real"] for sid in trailer_ids)        # earlier paid clips still in the film
+    plan = json.loads((setup.root / "10_edit" / "trailer_plan.json").read_text())
+    assert len({c["shot_id"] for c in plan if c["shot_id"]}) > 3  # trailer still cut from all paid shots

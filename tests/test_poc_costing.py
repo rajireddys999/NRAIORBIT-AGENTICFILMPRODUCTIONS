@@ -56,7 +56,8 @@ def test_estimate_for_poc(poc):
     e = estimate(poc, pricing=pricing)
     assert len(e.stats.shots) == 54 and e.stats.lines == 13
     assert e.veo_clips == 54
-    assert e.video_options["fast"]["expected"] == pytest.approx(e.veo_seconds * 2.0 * 0.10)
+    fast_rate = pricing["veo"]["api_per_second"]["fast"][e.veo_resolution]
+    assert e.video_options["fast"]["expected"] == pytest.approx(e.veo_seconds * 2.0 * fast_rate)
     assert e.claude_billing == "subscription"
     # manual Veo: no pipeline keyframes or Gemini TTS; one-time reference images are still counted
     assert e.keyframes["expected"] == 0 and e.tts["expected"] == 0

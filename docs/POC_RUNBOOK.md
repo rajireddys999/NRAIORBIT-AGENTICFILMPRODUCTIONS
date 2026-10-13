@@ -18,33 +18,31 @@ automatically through your Google key:
 | Edit, ducked music bed, −14 LUFS master, te/en subtitles, trailer | the pipeline (ffmpeg) on your Mac | — |
 | Colour, final mix | DaVinci Resolve | — |
 
-## The bill
+## The bill (quality-first: Veo 3.1 standard, native 1080p)
 
-These are the numbers `nraiorbit run` prints before it spends anything (Veo 3.1 Fast,
-720p, one attempt per shot):
+**Decision: Option A with no compromise on quality.**
+- Video: Veo 3.1 standard (`veo-3.1-generate-preview`) at native 1080p. 1080p clips are 8 s each.
+- Character photos and first frames: Gemini's pro image model.
 
-| Run | Veo | Keyframes | Voices | **Total** |
+These are the numbers `nraiorbit run` prints before it spends anything (one attempt per shot):
+
+| Run | Veo | First frames | Voices | **Total** |
 |---|---|---|---|---|
-| Character reference images (once) | — | 11 images | — | **≈ $0.44** |
-| **Trailer test**: `--only trailer` (17 shots) | 114 s → $11.40 | 13 → $0.52 | 13 lines → $0.02 | **≈ $12** |
-| Full 5 minutes (54 shots; trailer shots are reused) | 320 s → $32.00 | 30 → $1.20 | $0.02 | **≈ $33** |
+| Character reference images (once) | — | 11 images | — | **≈ $1.50** |
+| **Trailer test**: `--only trailer` (17 shots) | 136 s → $54.40 | 13 → $1.74 | $0.02 | **≈ $56** |
+| Full 5 minutes (54 shots; the trailer's 17 are reused) | 432 s → $172.80 | 30 → $4.02 | $0.02 | **≈ $177 total (≈ $121 after the trailer)** |
+| Each retake of one shot (`nraiorbit retake`) | 8 s → $3.20 | $0.13 | — | **≈ $3.33** |
 
-- Retakes add cost. `nraiorbit estimate godavari5` shows the range at 1.3–3 attempts
-  per shot: $42–$96 total for Veo Fast.
-- Other Veo tiers: Lite is about half the Fast price; standard Veo 3.1 is 4×.
-- Lip-sync on AWS, if you add it, is about $2.
-- For the full 1h45m feature, the same assumptions give about $890 (Lite), $1,730 (Fast)
-  or $6,770 (standard). See `nraiorbit estimate --runtime 105`.
+- `nraiorbit estimate godavari5` shows the planning range with retakes: $225–$518 for 1.3–3 attempts per shot.
+- Lip-sync on AWS, when added, is about $2.
+- **Full 1h45m feature at this quality:** about 1,400 shots × 8 s × $0.40 ≈ **$4,500 per pass**, or roughly **$6,000–$9,000** with retakes. Measure the real retake rate on this POC before committing.
 
 **Spending safeguards:**
-- A budget cap (`budget.max_usd`, $50 for this project) stops the run before any call
-  that would cross it.
+- A budget cap (`budget.max_usd`, $250 for this project) stops the run before any call that would cross it.
 - Every paid call is logged to `reports/cost.jsonl`.
-- Every Veo clip, keyframe and voice line is kept, so a re-run, crash or budget stop
-  never pays twice for the same thing.
+- Every Veo clip, first frame and voice line is kept, so a re-run, crash or budget stop never pays twice.
 
-Prices are in `config/pricing.yaml`. They come from third-party trackers captured
-2026-10, so verify them on Google's and AWS's own pricing pages:
+Prices are in `config/pricing.yaml`; the pro image price is in `projects/godavari5/pricing.yaml`. They come from third-party trackers captured 2026-10, so verify them on Google's and AWS's own pricing pages:
 [Veo API per second](https://benchlm.ai/media-pricing/veo),
 [Flow credits per plan](https://www.hooked.so/compare/veo-3-pricing),
 [credits per clip](https://diyai.io/ai-tools/video-generation/google-veo-pricing/),
@@ -73,24 +71,26 @@ nraiorbit demo godavari          # 30-second sanity check, no keys needed
    export GEMINI_API_KEY=...
    nraiorbit google models          # check which Veo / image / TTS models your key can use
    ```
-3. If the listed names differ from `veo-3.1-fast-generate-preview`,
-   `gemini-2.5-flash-image` or `gemini-2.5-flash-preview-tts`, put the right ones into
-   `projects/godavari5/pipeline.yaml` under `google:`. Set `veo_tier` to match the model's
-   price tier (`standard`, `fast` or `lite`).
+3. This project is set for the best quality: `veo-3.1-generate-preview` (Veo 3.1 standard),
+   `gemini-3-pro-image` (pro image model) and `gemini-2.5-flash-preview-tts`. If
+   `google models` shows a newer or higher-tier name (for example a "-preview" suffix on
+   the pro image model, or a "pro" TTS model), put it into
+   `projects/godavari5/pipeline.yaml` under `google:`. If you change the Veo model, keep
+   `veo_tier` matching its price tier.
 
 ### 3. Create the POC and build the characters
 
 ```bash
 nraiorbit poc godavari5
 nraiorbit estimate godavari5                 # full bill table
-nraiorbit identity build godavari5           # ~$0.44; asks before spending
+nraiorbit identity build godavari5           # ~$1.50; asks before spending
 ```
 
 **Look at the images** in `library/characters/*/refs/` before going further. Every shot
 uses these faces. To regenerate one you don't like, delete it and run `identity build`
 again; only missing images are regenerated.
 
-### 4. Trailer test (about $12)
+### 4. Trailer test (about $56)
 
 ```bash
 nraiorbit run godavari5 --only trailer
@@ -106,16 +106,26 @@ shots and all 13 Telugu lines, and cuts:
 Watch the trailer. Check `reports/review_queue.jsonl` for any shot Veo's safety filter
 blocked. Check `reports/cost.jsonl` for exactly what you spent.
 
-### 5. Full 5 minutes (about $21 more)
+### 5. Retake any shot you don't like (≈ $3.33 each)
+
+```bash
+nraiorbit retake godavari5 sc002_s005 sc009_s004     # new attempt for these shots, then re-render
+nraiorbit retake godavari5 sc002_s005 --use 1        # go back to an earlier attempt (free)
+```
+
+Earlier attempts are kept in `inbox/video/` (`<shot>.mp4`, `<shot>_2.mp4`, ...). The
+attempt each shot uses is recorded in `projects/godavari5/takes.yaml`.
+
+### 6. Full 5 minutes (about $121 more)
 
 ```bash
 nraiorbit run godavari5
 ```
 
 The trailer shots from step 4 are reused for free; only the other 37 are generated. Use
-`--max-spend 40` to change the cap for one run, and `--yes` to skip the question.
+`--max-spend 200` to change the cap for one run, and `--yes` to skip the question.
 
-### 6. Finish
+### 7. Finish
 
 - **Music:** 9 cues are planned in `08_music/cue_sheet.json`. Run `nraiorbit shotpack
   export godavari5` for a readable cue sheet (`shotpack/MUSIC.md`). Save tracks as
@@ -138,9 +148,10 @@ The trailer shots from step 4 are reused for free; only the other 37 are generat
 |---|---|
 | `google.veo_mode: keyframe` (default) | Gemini draws the first frame from the reference images; Veo animates it. 4/6/8 s clips, cheapest |
 | `google.veo_mode: reference` | Veo gets the reference images directly. Clips are fixed 8 s, so more seconds are billed |
-| `google.veo_model` / `veo_tier` | Lite / Fast / standard: price vs. quality |
+| `google.veo_model` / `veo_tier` | This project: standard (best). Fast is ~3x cheaper, Lite ~5x |
+| `google.veo_resolution` | This project: 1080p (8 s clips). 720p allows 4/6/8 s clips |
 | `budget.max_usd` | Hard cap for this project |
-| `render.only` or `--only sc002 sc009_s004 trailer` | Generate only some scenes/shots; the rest get placeholder cards |
+| `render.only` or `--only sc002 sc009_s004 trailer` | Generate only some scenes/shots; the rest reuse clips already paid for, or show a placeholder card if not generated yet |
 
 ### Not automated yet
 

@@ -192,12 +192,10 @@ class VeoVideo:
         return out
 
     def _clip_seconds(self, shot: Shot, mode: str) -> int:
-        from ..costing import billed_seconds
+        from ..costing import veo_clip_seconds
 
-        veo = self.pricing["veo"]
-        if mode == "reference" and shot.characters_in_frame:
-            return veo.get("reference_clip_s", 8)
-        return min(billed_seconds(shot.duration_s, veo["durations_s"], veo["extension_s"])[0], max(veo["durations_s"]))
+        return veo_clip_seconds(shot.duration_s, self.pricing, self.g.get("veo_resolution", "720p"), mode,
+                                bool(shot.characters_in_frame))
 
     def _price_per_second(self) -> float:
         return self.pricing["veo"]["api_per_second"][self.g.get("veo_tier", "fast")][self.g.get("veo_resolution", "720p")]

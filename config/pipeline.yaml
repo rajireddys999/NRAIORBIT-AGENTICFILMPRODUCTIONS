@@ -57,7 +57,7 @@ budget:
   max_usd: 50                      # hard stop for paid generation in one project (cost.jsonl ledger)
 
 render:
-  only: []                         # [] = all shots; or scene ids, shot ids, and/or "trailer"
+  only: []                         # generate only these ([] = all): scene ids, shot ids, "trailer"; others reuse paid clips
 
 voice:
   mode: tts                        # performance_vc | tts | api_tts_vc  (see docs/VOICE_TELUGU.md)

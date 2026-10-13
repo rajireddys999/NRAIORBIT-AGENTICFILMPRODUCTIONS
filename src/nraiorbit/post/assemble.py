@@ -19,6 +19,7 @@ class TimelineShot:
     start_s: float          # position in the film
     duration_s: float
     clip: Path
+    real: bool = True       # False = placeholder card (not generated yet, or blocked)
 
 
 @dataclass

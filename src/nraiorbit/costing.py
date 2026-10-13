@@ -80,6 +80,29 @@ def billed_seconds(duration: float, durations: list[int], extension: int) -> tup
     return longest + extensions * extension, 1 + extensions
 
 
+def veo_durations(pricing: dict, resolution: str) -> list[int]:
+    """Clip lengths Veo accepts at this resolution (1080p is 8 s only)."""
+    veo = pricing["veo"]
+    return veo.get("durations_by_resolution", {}).get(resolution, veo["durations_s"])
+
+
+def veo_clip_seconds(duration: float, pricing: dict, resolution: str, mode: str, has_leads: bool) -> int:
+    """Seconds billed for one Veo generation of a shot (one clip, no extensions)."""
+    veo = pricing["veo"]
+    if mode == "reference" and has_leads:
+        return veo.get("reference_clip_s", 8)
+    durations = veo_durations(pricing, resolution)
+    return min(billed_seconds(duration, durations, veo["extension_s"])[0], max(durations))
+
+
+def load_takes(root: Path) -> dict[str, int]:
+    """Chosen attempt per shot (projects/<slug>/takes.yaml); missing shots use attempt 1."""
+    import yaml
+
+    path = root / "takes.yaml"
+    return {k: int(v) for k, v in (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).items()} if path.exists() else {}
+
+
 def approx_tokens(text: str) -> int:
     """~4 bytes per token: right for English JSON; Telugu (3 bytes/char) lands near 0.75 token/char."""
     return max(1, len(text.encode("utf-8")) // 4)
@@ -195,6 +218,7 @@ def claude_actual(project_dir: Path | None, pricing: dict) -> tuple[float, int] 
 class Estimate:
     stats: PlanStats
     veo_mode: str
+    veo_resolution: str
     veo_seconds: int                       # billed seconds for one attempt at every shot
     veo_clips: int                         # generations for one attempt (incl. extensions)
     video_options: dict[str, dict[str, float]]
@@ -234,14 +258,14 @@ def estimate(project_dir: Path | None = None, runtime_minutes: float | None = No
     stats = plan_stats(project_dir, runtime_minutes)
     att = pricing["attempts_per_clip"]
     veo = pricing["veo"]
-    res = veo["resolution"]
+    res = cfg.get("google", {}).get("veo_resolution") or veo["resolution"]
 
     seconds = clips = 0
     for _, dur, _, leads in stats.shots:
         if mode == "reference" and leads:
             s, c = veo.get("reference_clip_s", 8), 1
         else:
-            s, c = billed_seconds(dur, veo["durations_s"], veo["extension_s"])
+            s, c = billed_seconds(dur, veo_durations(pricing, res), veo["extension_s"])
         seconds += s
         clips += c
 
@@ -284,7 +308,7 @@ def estimate(project_dir: Path | None = None, runtime_minutes: float | None = No
                       + stats.lines * 3 * mac["tts_seconds_per_line"][lv]) / 3600 for lv in LEVELS}
 
     return Estimate(
-        stats=stats, veo_mode=mode, veo_seconds=seconds, veo_clips=clips, video_options=video, flow=flow,
+        stats=stats, veo_mode=mode, veo_resolution=res, veo_seconds=seconds, veo_clips=clips, video_options=video, flow=flow,
         keyframes=keyframes, tts=tts, identity_pack=identity, ledger=_ledger_summary(project_dir),
         claude_api=claude_api_estimate(stats, pricing), claude_billing=pricing["claude"].get("billing", "api"),
         claude_logged=claude_actual(project_dir, pricing), lipsync=lipsync, lipsync_hours=lip_hours,
@@ -308,7 +332,9 @@ def preview_run(root: Path, cfg: dict, pricing: dict) -> dict:
     mode = g.get("veo_mode", "keyframe")
     only = cfg.get("render", {}).get("only") or []
     veo = pricing["veo"]
-    per_s = veo["api_per_second"][g.get("veo_tier", "fast")][g.get("veo_resolution", "720p")]
+    res = g.get("veo_resolution", "720p")
+    per_s = veo["api_per_second"][g.get("veo_tier", "fast")][res]
+    takes = load_takes(root)
     image = pricing.get("gemini", {}).get("image_per_image", 0.04)
     out = {"shots": 0, "cached_shots": 0, "seconds": 0, "keyframes": 0, "lines": 0, "video_usd": 0.0,
            "keyframe_usd": 0.0, "tts_usd": 0.0}
@@ -319,16 +345,13 @@ def preview_run(root: Path, cfg: dict, pricing: dict) -> dict:
                 continue
             if prov.get("video") != "veo":
                 continue
-            if clips_for(root, shot.shot_id):
+            attempt = takes.get(shot.shot_id, 1)
+            if len(clips_for(root, shot.shot_id)) >= attempt:
                 out["cached_shots"] += 1
                 continue
             out["shots"] += 1
-            if mode == "reference" and shot.characters_in_frame:
-                secs = veo.get("reference_clip_s", 8)
-            else:
-                secs = min(billed_seconds(shot.duration_s, veo["durations_s"], veo["extension_s"])[0], max(veo["durations_s"]))
-            out["seconds"] += secs
-            keyframe = root / "06_keyframes" / shot.shot_id / "take_1.png"
+            out["seconds"] += veo_clip_seconds(shot.duration_s, pricing, res, mode, bool(shot.characters_in_frame))
+            keyframe = root / "06_keyframes" / shot.shot_id / f"take_{attempt}.png"
             if mode == "keyframe" and shot.characters_in_frame and not keyframe.exists():
                 out["keyframes"] += 1
     uses_gemini_tts = prov.get("tts") == "gemini" or (prov.get("tts") == "inbox"
@@ -384,17 +407,17 @@ def render_markdown(e: Estimate, pricing: dict) -> str:
         "",
         f"Attempts per clip: low {att['low']}× · expected {att['expected']}× · high {att['high']}×. "
         f"One attempt at every shot = {e.veo_clips} Veo generations, {e.veo_seconds} billed seconds "
-        f"(shots round up to {veo['durations_s']} s clips"
+        f"(shots round up to {veo_durations(pricing, e.veo_resolution)} s clips at {e.veo_resolution}"
         + ("; reference mode makes every shot with a lead an 8 s clip" if e.veo_mode == "reference" else "") + ").",
         "",
-        f"## Video: Google Veo (the main cost), {veo['resolution']}",
+        f"## Video: Google Veo (the main cost), {e.veo_resolution}",
         "",
         "| Option | Low | Expected | High |",
         "|---|---|---|---|",
     ]
     names = {"standard": "Veo 3.1", "fast": "Veo 3.1 Fast", "lite": "Veo 3.1 Lite"}
     for tier, v in e.video_options.items():
-        rate = veo["api_per_second"][tier][veo["resolution"]]
+        rate = veo["api_per_second"][tier][e.veo_resolution]
         out.append(f"| API: {names.get(tier, tier)} (${rate}/s) | {_usd(v['low'])} | {_usd(v['expected'])} | {_usd(v['high'])} |")
     plan = veo["flow_plan"]
     for tier, f in e.flow.items():

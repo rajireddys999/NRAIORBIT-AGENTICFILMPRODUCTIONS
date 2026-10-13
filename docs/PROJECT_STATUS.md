@@ -25,14 +25,14 @@ _Last updated: 2026-10-13. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
 | Agents | Story Analyst, Screenwriter, Dialogue Critic, Casting, Director, Music Director (Claude Opus 5.5, structured outputs, caching, refusal fallback) |
 | Planning | Telugu structure templates, runtime rebalance, frame-exact shot timing, rasa-driven cue plan |
 | Asset library | Manifests, search, version-pinned cast lockfile, licence and consent checks, example characters/voices/stems/actions |
-| Video | **Veo API** (keyframe mode: Gemini first frame → Veo; or reference mode), manual shot pack + inbox import, placeholder animatic |
+| Video | **Veo API** (keyframe mode: Gemini first frame → Veo; or reference mode), per-shot retakes (`nraiorbit retake`, earlier attempts kept), manual shot pack + inbox import, placeholder animatic |
 | Images | **Gemini** keyframes and character identity packs (`nraiorbit identity build`) |
 | Voice | **Gemini Telugu TTS** (voice per character, cached), recorded-line import, Indic Parler-TTS adapter (not yet run) |
 | Guards | Identity guard (face assignment, drift, swap; retake loop) and voice guard, with InsightFace/SpeechBrain adapters |
 | Post | Per-scene assembly, ducked music, −14 LUFS master, dialogue/music stems for DaVinci Resolve, te/en subtitles, trailer cutter |
 | Cost control | `nraiorbit estimate`, cost preview + confirmation before paid runs, budget cap, `reports/cost.jsonl` ledger, `--only trailer`, no double payment on re-runs |
 | Publish | YouTube metadata (chapters, AI disclosure, private by default) and upload code |
-| Quality | 65 tests, including the full automatic POC against a fake Google client; CI workflow; lint clean |
+| Quality | 66 tests, including the full automatic POC and retakes against a fake Google client; CI workflow; lint clean |
 
 ### POC content
 
@@ -52,6 +52,19 @@ _Last updated: 2026-10-13. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
 | | Claude API path for new stories (no Anthropic API key used) |
 | | Indic Parler-TTS, InsightFace and SpeechBrain adapters, YouTube upload |
 
+## Decision: Option A, quality first
+
+Video through the **Google Veo API**, with no compromise on quality:
+- **Video:** Veo 3.1 standard at native 1080p (8 s clips)
+- **Images:** Gemini's pro image model for the character photos and the first frame of each shot
+- **AWS:** lip-sync GPU and storage only
+
+The 5-minute POC costs about $56 for the trailer test and about $177 in total. A full 1h45m
+film costs about $4,500 per pass, or roughly $6,000–$9,000 with retakes.
+
+The pipeline also has a manual hand-generation flow (`--manual`) and lower-cost tiers
+(Fast/Lite) in configuration, but this project does not use them.
+
 ## 2. Next steps: the trailer test
 
 | # | Step | Who | Cost |
@@ -60,10 +73,11 @@ _Last updated: 2026-10-13. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
 | 2 | Confirm `GEMINI_API_KEY` is a Google AI Studio key (`AIza…`) on a project with billing; revoke the `veo3_pat_…` token that was pasted in chat | You | — |
 | 3 | Start a new session and paste the prompt from [NEXT_SESSION_PROMPT.md](NEXT_SESSION_PROMPT.md). Tell it that it may run commands that use `GEMINI_API_KEY` | You | — |
 | 4 | Key check (`nraiorbit google models`), POC setup, estimate, dialogue export | Session | free |
-| 5 | Approve caps ($15 trailer test, $40 full film), the Veo tier (Fast), and the 13 Telugu lines | You | — |
-| 6 | `nraiorbit identity build godavari5`, then approve the three faces | Session, then you | ≈ $0.44 |
-| 7 | `nraiorbit run godavari5 --only trailer`: 17 shots + 13 lines → trailer.mp4 | Session | ≈ $12 |
-| 8 | `nraiorbit run godavari5`: the other 37 shots → full 5-minute movie | Session | ≈ $21 |
+| 5 | Approve caps ($70 trailer test, $200 full film) and the 13 Telugu lines | You | — |
+| 6 | `nraiorbit identity build godavari5`, then approve the three faces | Session, then you | ≈ $1.50 |
+| 7 | `nraiorbit run godavari5 --only trailer`: 17 shots + 13 lines → trailer.mp4 | Session | ≈ $56 |
+| 7b | `nraiorbit retake godavari5 <shot>` for any shot you don't like | Session | ≈ $3.33 per shot |
+| 8 | `nraiorbit run godavari5`: the other 37 shots → full 5-minute movie | Session | ≈ $121 |
 | 9 | `nraiorbit estimate godavari5`: actual spend → plan the feature (`actual ÷ 54 × ~1,400 shots`) | Session | free |
 
 ## 3. Still required for the full end-to-end pipeline
@@ -79,5 +93,5 @@ _Last updated: 2026-10-13. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
 | Teaser, thumbnail | Not built | Teaser cutter (60 s), thumbnail from best keyframe | — |
 | YouTube upload | Code exists, never run | Test upload as private | Google Cloud OAuth client + verified channel (needed for videos over 15 min) |
 | New stories automatically | Story/screenplay agents need the Claude API | Use an Anthropic API key, or keep writing stories in Claude Code | API key from console.anthropic.com (optional) |
-| Feature-length scale | 1h45m ≈ 1,400 shots, ≈ $890–$6,770 in Veo fees | Temporal workflows, review UI, music stem library, consented voice bank | Budget and timeline decision |
+| Feature-length scale | 1h45m ≈ 1,400 shots, ≈ $4,500 per pass at Veo 3.1 standard 1080p (≈ $6,000–$9,000 with retakes) | Temporal workflows, review UI, music stem library, consented voice bank | Budget and timeline decision |
 | Merge to main | Work is on a feature branch | Pull request | Say "open a PR" |

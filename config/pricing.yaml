@@ -22,6 +22,9 @@ veo:
   durations_s: [4, 6, 8]     # clip lengths Veo can generate; a shot is billed at the next one up
   extension_s: 7             # each "extend" adds this much for shots longer than 8 s
   reference_clip_s: 8        # reference-image mode generates fixed 8 s clips
+  durations_by_resolution:   # 1080p clips are 8 s only
+    720p: [4, 6, 8]
+    1080p: [8]
   resolution: 720p           # 720p | 1080p (generate 720p, upscale finals)
   api_per_second:            # Gemini API, billed per generated second
     standard: {720p: 0.40, 1080p: 0.40}

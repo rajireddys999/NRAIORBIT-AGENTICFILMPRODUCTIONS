@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 from .agents import CastingAgent, DialogueCritic, Director, MusicDirector, Screenwriter, StoryAnalyst
 from .config import REPO_ROOT, load_navarasa, load_pipeline_config
-from .costing import BudgetExceeded, SpendLedger, load_pricing
+from .costing import BudgetExceeded, SpendLedger, load_pricing, load_takes
 from .guards.identity import IdentityGuard, IdentityThresholds
 from .guards.voice import VoiceGuard, VoiceTake, VoiceThresholds
 from .library.registry import AssetRegistry
@@ -35,7 +35,7 @@ from .post.trailer import plan_trailer
 from .providers import RenderContext, get_provider
 from .providers.google_ai import GoogleAPIError, ShotFiltered
 from .providers.mock import MockTTS, MockVideo
-from .shotpack import selected
+from .shotpack import clips_for, selected
 from .schemas import CastLock, Critique, Cue, CueSheet, Outline, SceneScript, ShotList, StoryBible
 
 STAGES = ["story_bible", "outline", "scenes", "cast", "shots", "music_plan", "render", "assemble", "trailer"]
@@ -96,6 +96,7 @@ class Pipeline:
         self.library = library or AssetRegistry.load(REPO_ROOT / "library")
         self.pricing = load_pricing(self.p.root)
         self.ledger = SpendLedger(self.p.reports / "cost.jsonl", self.cfg.get("budget", {}).get("max_usd"))
+        self.takes = load_takes(self.p.root)
         self.log = log
         self.story_analyst = StoryAnalyst(llm, self.cfg)
         self.screenwriter = Screenwriter(llm, self.cfg)
@@ -344,9 +345,10 @@ class Pipeline:
         timeline_path = self.p.edit / "timeline.json"
         only = list(self.cfg.get("render", {}).get("only") or [])
         if timeline_path.exists():
-            if json.loads(timeline_path.read_text(encoding="utf-8")).get("only", []) == only:
+            previous = json.loads(timeline_path.read_text(encoding="utf-8"))
+            if previous.get("only", []) == only and previous.get("takes", {}) == self.takes:
                 return
-            self.log(f"  shot selection changed to {only or 'all shots'}: re-rendering (paid clips are reused)")
+            self.log("  shot selection or chosen takes changed: re-rendering (paid clips are reused)")
             self.invalidate("render")
         outline = self._load(self.p.outline, Outline)
         lock = self._lock()
@@ -360,6 +362,7 @@ class Pipeline:
             else tuple(self._film["resolution"])
         fps = self._film["fps"]
 
+        uses_inbox = prov["video"] in ("veo", "shotpack")     # paid / hand-made clips live in inbox/video
         shots_out, dialogue_out = [], []
         starts = scene_start_times(outline)
         for sc in outline.scenes:
@@ -369,12 +372,19 @@ class Pipeline:
             ctx = RenderContext(cast=lock, scene_id=sc.scene_id, resolution=resolution, fps=fps)
             t, scene_end, placed = starts[sc.scene_id], starts[sc.scene_id] + sc.target_seconds, set()
             for shot in shot_list.shots:
+                take = self.takes.get(shot.shot_id, 1)
+                paid = clips_for(self.p.root, shot.shot_id) if uses_inbox else []
                 if selected(shot, sc.scene_id, only):
                     clip = self._render_shot(video, shot, ctx, face_guard)
+                elif len(paid) >= take:                    # outside --only but already generated: use it, free
+                    clip = ffmpeg.conform_clip(paid[take - 1], self.p.video / shot.shot_id / f"take_{take}.mp4",
+                                               shot.duration_s, ctx.resolution, ctx.fps)
                 else:
                     clip = MockVideo().render_shot(shot, self.p.video / shot.shot_id / "placeholder.mp4", ctx,
-                                                   note="not in this run (--only)")
-                shots_out.append(assemble.TimelineShot(shot.shot_id, sc.scene_id, round(t, 3), shot.duration_s, clip))
+                                                   note="not generated yet")
+                real = not uses_inbox or bool(clips_for(self.p.root, shot.shot_id))
+                shots_out.append(assemble.TimelineShot(shot.shot_id, sc.scene_id, round(t, 3), shot.duration_s,
+                                                       clip, real))
                 cursor = t + DIALOGUE_LEAD_IN_S
                 for bid in shot.block_ids:
                     block = blocks.get(bid)
@@ -399,6 +409,7 @@ class Pipeline:
 
         timeline = {
             "only": only,
+            "takes": self.takes,
             "film_seconds": sum(s.target_seconds for s in outline.scenes),
             "shots": [{**asdict(s), "clip": str(s.clip)} for s in shots_out],
             "dialogue": [{**asdict(e), "path": str(e.path)} for e in dialogue_out],
@@ -409,9 +420,11 @@ class Pipeline:
         self.log(f"  rendered {len(shots_out)} shots, {len(dialogue_out)} lines, {len(music_out)} cues")
 
     def _render_shot(self, video, shot, ctx: RenderContext, face_guard) -> Path:
-        max_takes = self.cfg["retakes"]["max_per_shot"] if face_guard else 1
+        # Without a face guard you choose the take (takes.yaml, `nraiorbit retake`); with one, it retakes itself.
+        first = 1 if face_guard else self.takes.get(shot.shot_id, 1)
+        last = self.cfg["retakes"]["max_per_shot"] if face_guard else first
         clip, last_result = None, None
-        for take in range(1, max_takes + 1):
+        for take in range(first, last + 1):
             clip = self.p.video / shot.shot_id / f"take_{take}.mp4"
             if not clip.exists():
                 try:
@@ -576,11 +589,11 @@ class Pipeline:
             outline = self._load(self.p.outline, Outline)
             tl = json.loads((self.p.edit / "timeline.json").read_text(encoding="utf-8"))
             starts = {s["shot_id"]: s["start_s"] for s in tl["shots"]}
-            only = tl.get("only", [])
+            real = {s["shot_id"] for s in tl["shots"] if s.get("real", True)}
             all_shots = []
             for sc in outline.scenes:
                 for shot in self._load(self.p.shots / f"{sc.scene_id}.json", ShotList).shots:
-                    if selected(shot, sc.scene_id, only):      # never cut placeholders into the trailer
+                    if shot.shot_id in real:                     # never cut placeholders into the trailer
                         all_shots.append((shot, starts[shot.shot_id]))
             plan = plan_trailer(all_shots, bible, tl["film_seconds"], self._film["trailer_seconds"])
             (self.p.edit / "trailer_plan.json").write_text(

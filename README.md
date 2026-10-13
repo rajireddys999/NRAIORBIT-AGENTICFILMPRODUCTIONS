@@ -31,6 +31,21 @@ An agentic pipeline that turns a **story plot prompt** into a **Telugu feature f
 | [docs/ASSET_LIBRARY.md](docs/ASSET_LIBRARY.md) | The asset repository: layout, manifests, retrieval, building it in 90 days |
 | [docs/TOOLS.md](docs/TOOLS.md) | Every tool and model per capability, with licence warnings and a starter stack |
 | [docs/INFRA_COST_ROADMAP.md](docs/INFRA_COST_ROADMAP.md) | Deployment, GPU hours and cost estimates, compliance checklist, phased roadmap |
+| [docs/POC_RUNBOOK.md](docs/POC_RUNBOOK.md) | **Start here:** the 5-minute POC on a Mac + Veo + DaVinci Resolve, with its bill |
+
+## 5-minute POC and its bill
+
+```bash
+nraiorbit poc godavari5                 # screenplay + 54 shots + cue sheet, already written
+nraiorbit estimate godavari5            # expected ≈ $34 (Veo Lite) / $66 (Veo Fast) / $258 (Veo) in total
+nraiorbit shotpack export godavari5     # Veo prompts, reference images, recording script, cue sheet
+# generate clips in Veo -> projects/godavari5/inbox/video/<shot_id>.mp4
+nraiorbit run godavari5 --force render  # 1080p movie, stems for Resolve, te/en subtitles
+nraiorbit estimate godavari5            # now with "Actual so far"
+```
+
+Full steps in [docs/POC_RUNBOOK.md](docs/POC_RUNBOOK.md). `nraiorbit estimate --runtime 105`
+estimates a full feature before any plan exists.
 
 ## Quick start
 
@@ -71,8 +86,9 @@ you review pacing before any GPU spend. Plug real generators into
 | Planning | Structure templates, runtime rebalance + landmark checks, frame-exact shot fitting, rasa-driven cue planner | Teaser cut, song sequences |
 | Asset library | Manifest schemas, registry, search, version-pinned lockfile, licence/consent validation, example manifests | Embedding search (pgvector/Qdrant), media in LFS/DVC |
 | Guards | Identity guard (assignment, drift, swap, thresholds, retake loop wired into render), voice guard (speaker, Telugu CER, emotion, MOS), adapters for InsightFace and SpeechBrain | Body/costume guard, continuity critic, raga-conformance check, ASR/emotion adapters |
-| Generators | Mock video/TTS/music (ffmpeg animatic) | ComfyUI keyframes + identity LoRA, Wan/API video, Telugu TTS + voice conversion, lip-sync, stem-based score, SFX |
-| Post | Per-scene assembly, sidechain-ducked music, loudness master, SRT te/en, trailer cutter | Colour grade, OTIO export, thumbnails |
+| Generators | Mock video/TTS/music (ffmpeg animatic); Veo shot-pack export + inbox import for video, voice and music; Indic Parler-TTS Telugu adapter (written from the model card, not yet run) | Veo API automation, ComfyUI keyframes + identity LoRA, voice conversion, lip-sync (AWS), stem-based score, SFX |
+| Cost | `nraiorbit estimate`: Veo API/subscription, Claude, AWS lip-sync, storage, Mac time; actual Veo spend from the inbox | GPU-hour tracking per take |
+| Post | Per-scene assembly, sidechain-ducked music, loudness master, dialogue/music stems for DaVinci Resolve, SRT te/en, trailer cutter | OTIO/FCPXML timeline export, thumbnails |
 | Publish | YouTube metadata (chapters, disclosure), upload with captions | Scheduling / premieres |
 | Infra | File-based stage cache, review gates, guard/cost logs, CI | Temporal workflows, GPU worker pools, review UI |
 

@@ -1,0 +1,48 @@
+# Prices used by `nraiorbit estimate`. All USD.
+#
+# These are planning numbers. Veo and AWS figures come from third-party price trackers
+# (captured 2026-10, see docs/POC_RUNBOOK.md for sources); verify on the providers'
+# own pricing pages before budgeting. Edit this file, or override per project in
+# projects/<slug>/pricing.yaml.
+
+attempts_per_clip:          # average generations per kept clip (identity/quality retakes)
+  low: 1.3
+  expected: 2.0
+  high: 3.0
+
+claude:                      # Anthropic API, per million tokens
+  model: claude-opus-5-5
+  input: 4.00
+  output: 20.00
+  cache_write: 5.00          # ~1.25x input (5-minute cache)
+  cache_read: 0.20
+  thinking_multiplier: 1.5   # extra output tokens spent on adaptive thinking (assumption)
+
+veo:
+  durations_s: [4, 6, 8]     # clip lengths Veo can generate; a shot is billed at the next one up
+  extension_s: 7             # each "extend" adds this much for shots longer than 8 s
+  resolution: 720p           # 720p | 1080p (generate 720p, upscale finals)
+  api_per_second:            # Gemini API, billed per generated second
+    standard: {720p: 0.40, 1080p: 0.40}
+    fast:     {720p: 0.10, 1080p: 0.12}
+    lite:     {720p: 0.05, 1080p: 0.08}
+  flow_credits_per_clip:     # Gemini app / Flow subscription (non-Ultra accounts)
+    standard: 100
+    fast: 20
+    lite: 10
+  flow_plan:                 # used to turn credits into months of subscription
+    name: Google AI Pro
+    monthly_usd: 19.99
+    monthly_credits: 1000
+
+aws:                         # lip-sync runs on one small NVIDIA GPU machine
+  instance: g6.xlarge        # 1x L4 24 GB; g5.xlarge (A10G) is ~1.21/h in Mumbai
+  hourly: 0.97               # ap-south-1 on-demand, Linux
+  setup_hours: 1.0           # boot, install, model download, per session
+  lipsync_minutes_per_shot: {low: 1.0, expected: 2.0, high: 4.0}
+  s3_per_gb_month: 0.025
+
+mac:                         # your MacBook: no bill, only time
+  keyframe_seconds_per_image: {low: 40, expected: 90, high: 180}
+  keyframe_candidates_per_shot: 4
+  tts_seconds_per_line: {low: 10, expected: 25, high: 60}

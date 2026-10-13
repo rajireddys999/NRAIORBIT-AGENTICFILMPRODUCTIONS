@@ -71,8 +71,7 @@ def cut_segments(source: Path, segments: list[tuple[float | None, float]], out: 
     work.mkdir(parents=True, exist_ok=True)
     w, h = resolution
     font = ffmpeg.font_file()
-    encode = ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-r", str(fps),
-              "-c:a", "aac", "-ar", "48000", "-ac", "2"]
+    encode = [*ffmpeg.VIDEO_ENCODE, "-r", str(fps), "-c:a", "aac", "-ar", "48000", "-ac", "2"]
     parts: list[Path] = []
     for i, (start, dur) in enumerate(segments):
         part = work / f"seg_{i:03d}.mp4"

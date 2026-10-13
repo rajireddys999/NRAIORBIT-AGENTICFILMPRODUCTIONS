@@ -77,7 +77,8 @@ class ProjectPaths:
             "music_plan": [self.music / "cue_sheet.json"],
             "render": [self.edit / "timeline.json", self.dialogue, self.video]
                       + sorted(self.music.glob("cue*.wav")),
-            "assemble": [self.master / "movie.mp4", self.edit / "film_dialogue.mp4", self.edit / "scenes"],
+            "assemble": [self.master / "movie.mp4", self.edit / "film_dialogue.mp4", self.edit / "scenes",
+                         self.master / "stems"],
             "trailer": [self.master / "trailer.mp4", self.edit / "trailer_plan.json"],
         }[stage]
 
@@ -340,10 +341,9 @@ class Pipeline:
         outline = self._load(self.p.outline, Outline)
         lock = self._lock()
         prov = self.cfg["providers"]
-        video = get_provider("video", prov["video"])
-        tts_kwargs = {"pitch_by_voice": self._voice_pitches(lock)} if prov["tts"] == "mock" else {}
-        tts = get_provider("tts", prov["tts"], **tts_kwargs)
-        music = get_provider("music", prov["music"])
+        video = get_provider("video", prov["video"], **self._provider_kwargs("video", prov["video"], lock))
+        tts = get_provider("tts", prov["tts"], **self._provider_kwargs("tts", prov["tts"], lock))
+        music = get_provider("music", prov["music"], **self._provider_kwargs("music", prov["music"], lock))
         face_guard = self._face_guard(lock)
         voice_guard, speaker_embedder = self._voice_guard(lock)
         resolution = tuple(self.cfg.get("animatic", {}).get("resolution", [640, 360])) if self._animatic() \
@@ -429,12 +429,24 @@ class Pipeline:
             best = max(results, key=lambda r: r.score)
         return files[best.take_id]
 
-    def _voice_pitches(self, lock: CastLock) -> dict[str, str]:
-        out = {}
-        for entry in lock.characters.values():
-            if entry.voice_asset:
-                out[entry.voice_asset] = getattr(self.library.resolve(entry.voice_asset), "pitch", None) or "mid"
-        return out
+    def _provider_kwargs(self, capability: str, name: str, lock: CastLock) -> dict:
+        """Constructor arguments for providers that need project context."""
+        voices = {e.voice_asset: self.library.resolve(e.voice_asset).model_dump()
+                  for e in lock.characters.values() if e.voice_asset}
+        if name in ("shotpack", "inbox") and capability in ("video", "music"):
+            return {"project_root": self.p.root}
+        if capability != "tts":
+            return {}
+        if name == "mock":
+            return {"pitch_by_voice": {ref: v.get("pitch") or "mid" for ref, v in voices.items()}}
+        if name == "indic_parler":
+            return {"voices": voices}
+        if name == "inbox":
+            fallback = self.cfg.get("voice", {}).get("inbox_fallback", "mock")
+            fallback = "mock" if fallback == "inbox" else fallback
+            return {"project_root": self.p.root, "fallback": fallback,
+                    **self._provider_kwargs("tts", fallback, lock)}
+        return {}
 
     def _centroid(self, ref: str, key: str) -> np.ndarray:
         asset = self.library.resolve(ref)
@@ -496,9 +508,19 @@ class Pipeline:
             film = ffmpeg.concat(scene_files, self.p.edit / "film_dialogue.mp4")
             audio = self.cfg["audio"]
             assemble.master(film, music, movie, audio["master_lufs"], audio["true_peak_db"])
+            self._write_stems(film, movie)
             self._write_subtitles(dialogue)
             self.log(f"  master: {movie} ({ffmpeg.duration(movie) / 60:.1f} min)")
         self.gate("pacing" if self._animatic() else "final_cut")
+
+    def _write_stems(self, film_with_dialogue: Path, movie: Path) -> None:
+        """Separate dialogue and music tracks for mixing in DaVinci Resolve (Fairlight)."""
+        stems = self.p.master / "stems"
+        stems.mkdir(parents=True, exist_ok=True)
+        ffmpeg.run(["-i", str(film_with_dialogue), "-vn", "-c:a", "pcm_s24le", str(stems / "dialogue.wav")])
+        music_bed = movie.parent / f".{movie.stem}" / "music.wav"
+        if music_bed.exists():
+            shutil.copy2(music_bed, stems / "music.wav")
 
     def _write_subtitles(self, dialogue: list[assemble.AudioEvent]) -> None:
         blocks = {}

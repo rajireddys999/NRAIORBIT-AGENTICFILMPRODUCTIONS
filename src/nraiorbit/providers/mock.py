@@ -25,7 +25,7 @@ RAGA_TONIC_HZ = 220.0
 
 @register("video", "mock")
 class MockVideo:
-    def render_shot(self, shot: Shot, out: Path, ctx: RenderContext) -> Path:
+    def render_shot(self, shot: Shot, out: Path, ctx: RenderContext, note: str | None = None) -> Path:
         out.parent.mkdir(parents=True, exist_ok=True)
         w, h = ctx.resolution
         colour = RASA_COLOURS.get(shot.rasa, "0x333333")
@@ -35,14 +35,15 @@ class MockVideo:
             label = out.with_suffix(".label.txt")
             label.write_text(
                 f"{shot.shot_id}  {shot.size}  {shot.camera_move}\n"
-                f"{shot.rasa} {shot.intensity}/10  {', '.join(shot.characters_in_frame) or '-'}",
+                f"{shot.rasa} {shot.intensity}/10  {', '.join(shot.characters_in_frame) or '-'}"
+                + (f"\n{note}" if note else ""),
                 encoding="utf-8",
             )
             vf = ["-vf", f"drawtext=fontfile={font}:textfile={label}:fontcolor=white:fontsize={h // 18}:"
                          f"x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=8"]
         ffmpeg.run([
             "-f", "lavfi", "-i", f"color=c={colour}:s={w}x{h}:r={ctx.fps}:d={shot.duration_s:.3f}",
-            *vf, "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(out),
+            *vf, *ffmpeg.VIDEO_ENCODE, str(out),
         ])
         if font:
             out.with_suffix(".label.txt").unlink()

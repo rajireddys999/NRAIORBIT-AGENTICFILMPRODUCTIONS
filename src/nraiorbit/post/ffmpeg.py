@@ -8,9 +8,14 @@ import subprocess
 from pathlib import Path
 
 SAMPLE_RATE = 48000
+# Every clip that is later joined with stream copy must share these settings, or players
+# (QuickTime, Resolve) can mis-decode the segments after a join.
+VIDEO_ENCODE = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-profile:v", "high", "-pix_fmt", "yuv420p"]
 FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",      # macOS
+    "/System/Library/Fonts/Helvetica.ttc",               # macOS
     "/Library/Fonts/Arial.ttf",
     "C:/Windows/Fonts/arial.ttf",
 ]

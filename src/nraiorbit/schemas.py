@@ -296,6 +296,7 @@ class VoiceAsset(AssetBase):
     age_range: tuple[int, int] | None = None
     pitch: Literal["low", "mid", "high"] | None = None
     timbre_tags: list[str] = []
+    tts_speaker: str | None = None      # named speaker of the TTS model, for a consistent voice
     emotion_refs: dict[str, list[dict]] = {}
 
 

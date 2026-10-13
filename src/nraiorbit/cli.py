@@ -3,6 +3,9 @@
   nraiorbit new <slug> --story examples/story_godavari.md   create a project from a plot file
   nraiorbit run <slug> [--until STAGE] [--force STAGE]      run (or resume) the pipeline with Claude
   nraiorbit demo <slug>                                     offline demo: recorded agents + animatic render
+  nraiorbit poc <slug>                                      5-minute POC project (screenplay + shots pre-written)
+  nraiorbit estimate [<slug>] [--runtime 105]               bill estimate before (and actuals after) generating
+  nraiorbit shotpack export|status <slug>                   Veo prompts per shot / which clips are in the inbox
   nraiorbit approve <slug> <gate>                           approve a review gate
   nraiorbit status <slug>
   nraiorbit library validate [--strict]
@@ -54,7 +57,8 @@ def _run(pipeline: Pipeline, slug: str, until=None, force=()) -> None:
         return
     except PipelineBlocked as b:
         sys.exit(f"\nBlocked: {b}")
-    print(f"\nDone. Outputs in {pipeline.p.master}")
+    if until is None:
+        print(f"\nDone. Outputs in {pipeline.p.master}")
 
 
 def cmd_run(args) -> None:
@@ -77,6 +81,52 @@ def cmd_demo(args) -> None:
         paths.story_input.write_text(DEMO_PLOT, encoding="utf-8")
         (root / "pipeline.yaml").write_text(yaml.safe_dump(DEMO_CONFIG, sort_keys=False), encoding="utf-8")
     _run(Pipeline(root, demo_llm()), args.slug, args.until, args.force)
+
+
+def cmd_poc(args) -> None:
+    from .poc import create_poc
+
+    root = PROJECTS / args.slug
+    create_poc(root)
+    print(f"created the 5-minute POC in {root}: story, screenplay, 54 shots and cue sheet are written.\n"
+          f"Next:\n  nraiorbit estimate {args.slug}            # the bill before you spend anything\n"
+          f"  nraiorbit shotpack export {args.slug}     # Veo prompts + reference images per shot\n"
+          f"  (generate clips into {root / 'inbox' / 'video'})\n"
+          f"  nraiorbit run {args.slug} --force render  # assemble the film with your clips\n"
+          f"See docs/POC_RUNBOOK.md.")
+
+
+def cmd_estimate(args) -> None:
+    from .costing import estimate, load_pricing, render_markdown
+
+    root = _project(args.slug) if args.slug else None
+    pricing = load_pricing(root)
+    report = render_markdown(estimate(root, runtime_minutes=args.runtime, pricing=pricing), pricing)
+    print(report)
+    if root is not None:
+        (root / "reports").mkdir(exist_ok=True)
+        (root / "reports" / "cost_estimate.md").write_text(report, encoding="utf-8")
+
+
+def cmd_shotpack(args) -> None:
+    from . import shotpack
+    from .config import load_navarasa
+    from .costing import load_pricing
+    from .llm import ClaudeClient
+
+    root = _project(args.slug)
+    if args.action == "export":
+        if not ProjectPaths(root).lock.exists():
+            # casting is library-first; Claude is only called for characters the library lacks
+            _run(Pipeline(root, ClaudeClient()), args.slug, until="cast")
+        pack = shotpack.export(root, AssetRegistry.load(REPO_ROOT / "library"), load_navarasa(), load_pricing(root))
+        print(f"shot pack written to {pack}/SHOTPACK.md; save clips into {shotpack.inbox_dir(root, 'video')}")
+    else:
+        st = shotpack.status(root)
+        total = len(st["done"]) + len(st["missing"])
+        print(f"{len(st['done'])}/{total} shots have clips ({st['attempts']} attempts in inbox/video)")
+        if st["missing"]:
+            print("missing: " + ", ".join(st["missing"]))
 
 
 def cmd_approve(args) -> None:
@@ -146,6 +196,20 @@ def main(argv: list[str] | None = None) -> None:
         p.add_argument("--until", choices=STAGES)
         p.add_argument("--force", nargs="*", choices=STAGES, default=[])
         p.set_defaults(fn=fn)
+
+    p = sub.add_parser("poc", help="create the 5-minute Godavari Simham POC project")
+    p.add_argument("slug")
+    p.set_defaults(fn=cmd_poc)
+
+    p = sub.add_parser("estimate", help="bill estimate for a project, or for a runtime")
+    p.add_argument("slug", nargs="?")
+    p.add_argument("--runtime", type=float, help="minutes, when there is no project/shot plan")
+    p.set_defaults(fn=cmd_estimate)
+
+    p = sub.add_parser("shotpack", help="Veo prompts + references per shot, and import status")
+    p.add_argument("action", choices=["export", "status"])
+    p.add_argument("slug")
+    p.set_defaults(fn=cmd_shotpack)
 
     p = sub.add_parser("approve")
     p.add_argument("slug")

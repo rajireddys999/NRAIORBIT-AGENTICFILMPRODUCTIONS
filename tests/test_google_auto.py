@@ -247,6 +247,12 @@ def test_refused_key_type_points_to_vertex(monkeypatch, capsys):
     with pytest.raises(google_ai.GoogleAPIError, match="google.vertex: true"):
         google_ai._call(refuse, "list models")
 
+    def free_tier():
+        raise Refused("429 RESOURCE_EXHAUSTED ... generate_content_free_tier_requests, limit: 0")
+
+    with pytest.raises(google_ai.GoogleAPIError, match="free tier.*paid billing account"):
+        google_ai._call(free_tier, "Gemini image")
+
     seen = []
     models = SimpleNamespace(list=lambda: [SimpleNamespace(name="publishers/google/models/veo-3.1-generate-001",
                                                            display_name="Veo 3.1")])

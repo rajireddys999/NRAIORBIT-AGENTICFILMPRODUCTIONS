@@ -144,7 +144,8 @@ It costs about $0.023 per GB per month. Downloading back to your Mac costs about
 | "Permission denied" creating a project or key | Personal Gmail with only that account signed in; accept the Terms of Service; otherwise Billing support |
 | `API key not valid` | The key is restricted to the wrong API, or Generative Language API is not enabled in the same project (steps 4–5) |
 | `401 ACCESS_TOKEN_TYPE_UNSUPPORTED` with an `AQ.` key | Some new keys are refused by the Gemini API endpoint. Set `google.vertex: true` in the project's `pipeline.yaml`: the same key then goes through Vertex AI (express mode, `aiplatform.googleapis.com`). Enable the **Vertex AI API**; if it says permission denied, give the key's service account the **Vertex AI User** role (IAM & Admin → IAM) |
-| "Free tier" limits, `429` or quota errors | Billing is not linked to the project, or the account is still a trial (steps 2–3) |
+| `429 RESOURCE_EXHAUSTED ... free_tier_requests, limit: 0` | The key's project is on the Gemini API free tier (nothing is charged). Check the key is in the project that has billing (APIs & Services → Credentials), link that project to the paid billing account (☰ → Billing → Account management), and in AI Studio's API keys page make sure the project shows a paid tier, not "Free". Wait a few minutes, then re-run |
+| Other `429` or quota errors | Too many requests per minute; wait and re-run (paid work is never repeated) |
 | No Veo model in `nraiorbit google models` | Billing not active on the project; check steps 2–3, then try again |
 | GPU quota request refused | The account is still a trial (step 2), or ask for a different zone in asia-south1 |
 

@@ -48,6 +48,9 @@ class GoogleAPIError(RuntimeError):
 VERTEX_HINT = ("This key type is refused by the Gemini API endpoint. Use the same key through Vertex AI: set "
                "google.vertex: true in the project's pipeline.yaml (check with `nraiorbit google models --vertex`; "
                "needs aiplatform.googleapis.com and the Vertex AI API enabled).")
+FREE_TIER_HINT = ("The key's Google project is on the Gemini API free tier, which does not include this model, so "
+                  "nothing was charged. Link that project to a paid billing account: in AI Studio (API keys page) "
+                  "the project must show a paid tier, not 'Free' (docs/GOOGLE_CLOUD_SETUP.md steps 2-3). Then re-run.")
 
 
 def _call(fn, what: str, **kwargs):
@@ -55,9 +58,13 @@ def _call(fn, what: str, **kwargs):
         return fn(**kwargs)
     except Exception as e:  # SDK errors live in google.genai.errors; re-raise everything else unchanged
         if type(e).__module__.startswith("google."):
-            hint = (VERTEX_HINT if "ACCESS_TOKEN_TYPE_UNSUPPORTED" in str(e) else
-                    "If the model name is wrong, check `nraiorbit google models` and set it under google: in the "
-                    "project's pipeline.yaml. Re-run to resume.")
+            if "ACCESS_TOKEN_TYPE_UNSUPPORTED" in str(e):
+                hint = VERTEX_HINT
+            elif "free_tier" in str(e):
+                hint = FREE_TIER_HINT
+            else:
+                hint = ("If the model name is wrong, check `nraiorbit google models` and set it under google: in "
+                        "the project's pipeline.yaml. Re-run to resume.")
             raise GoogleAPIError(f"{what}: {e}\n{hint}") from None
         raise
 

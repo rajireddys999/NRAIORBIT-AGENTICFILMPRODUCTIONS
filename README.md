@@ -32,6 +32,8 @@ An agentic pipeline that turns a **story plot prompt** into a **Telugu feature f
 | [docs/TOOLS.md](docs/TOOLS.md) | Every tool and model per capability, with licence warnings and a starter stack |
 | [docs/INFRA_COST_ROADMAP.md](docs/INFRA_COST_ROADMAP.md) | Deployment, GPU hours and cost estimates, compliance checklist, phased roadmap |
 | [docs/POC_RUNBOOK.md](docs/POC_RUNBOOK.md) | **Start here:** the 5-minute POC on a Mac + Veo + DaVinci Resolve, with its bill |
+| [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) | What is done, next steps, and what is still needed end to end |
+| [docs/NEXT_SESSION_PROMPT.md](docs/NEXT_SESSION_PROMPT.md) | Copy-paste prompt to continue in a new Claude Code session |
 
 ## 5-minute POC and trailer test (automatic, Google Veo + Gemini)
 

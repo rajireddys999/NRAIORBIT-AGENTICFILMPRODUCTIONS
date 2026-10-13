@@ -22,6 +22,12 @@ pytestmark = pytest.mark.skipif(not ffmpeg.available(), reason="ffmpeg not insta
 pytest.importorskip("google.genai")
 
 
+class HiccupError(Exception):
+    def __init__(self, code):
+        super().__init__(f"{code} UNAVAILABLE")
+        self.code = code
+
+
 class FakeGoogle:
     """Mimics the google-genai surface the providers use."""
 
@@ -35,6 +41,7 @@ class FakeGoogle:
         t = np.arange(24000) / 24000
         self.pcm = (np.sin(2 * np.pi * 220 * t) * 8000).astype("<i2").tobytes()
         self.block_if = block_if
+        self.poll_failures, self.op_error = 0, None
         self.video_calls, self.image_calls, self.tts_calls = [], [], []
         self.models = SimpleNamespace(generate_videos=self._videos, generate_content=self._content, list=lambda: [])
         self.operations = SimpleNamespace(get=self._get)
@@ -42,14 +49,21 @@ class FakeGoogle:
 
     def _videos(self, *, model, prompt=None, image=None, config=None):
         self.video_calls.append({"model": model, "prompt": prompt, "image": image, "config": config})
-        return SimpleNamespace(done=False, error=None, response=None, result=None, blocked=self.block_if(prompt))
+        return SimpleNamespace(name=f"projects/p/locations/us-central1/publishers/google/models/{model}/operations/"
+                                    f"{len(self.video_calls)}",
+                               done=False, error=None, response=None, result=None, blocked=self.block_if(prompt))
 
     def _get(self, operation):           # same keyword as google.genai Operations.get
-        op = operation
+        if self.poll_failures:           # a brief server hiccup while polling
+            self.poll_failures -= 1
+            raise HiccupError(503)
+        blocked = getattr(operation, "blocked", False)    # a resumed job is a real GenerateVideosOperation
+        if self.op_error:
+            return SimpleNamespace(done=True, error=self.op_error, result=None, response=None)
         clip = self.clip
-        videos = [] if op.blocked else [SimpleNamespace(video=SimpleNamespace(save=lambda p: shutil.copy(clip, p)))]
-        return SimpleNamespace(done=True, error=None, result=None, blocked=op.blocked, response=SimpleNamespace(
-            generated_videos=videos, rai_media_filtered_reasons=["test filter"] if op.blocked else None))
+        videos = [] if blocked else [SimpleNamespace(video=SimpleNamespace(save=lambda p: shutil.copy(clip, p)))]
+        return SimpleNamespace(done=True, error=None, result=None, blocked=blocked, response=SimpleNamespace(
+            generated_videos=videos, rai_media_filtered_reasons=["test filter"] if blocked else None))
 
     def _content(self, *, model, contents, config):
         audio = config.response_modalities == ["AUDIO"]
@@ -313,7 +327,9 @@ def test_vertex_location_per_model(monkeypatch):
         def __init__(self, **kw):
             made.append(kw)
 
-    fake_genai = SimpleNamespace(Client=FakeGenaiClient)
+    from google.genai import types
+
+    fake_genai = SimpleNamespace(Client=FakeGenaiClient, types=types)
     monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
     monkeypatch.setattr(sys.modules["google"], "genai", fake_genai, raising=False)
     monkeypatch.setattr(google_ai, "CLIENT_FACTORY", None)
@@ -328,7 +344,67 @@ def test_vertex_location_per_model(monkeypatch):
     google_ai.google_client(g)
     assert [m["location"] for m in made] == ["us-central1", "global", "global", "global"]
     assert all(m["vertexai"] is True and m["project"] == "film-proj" for m in made)
+    assert [m.get("http_options") is not None for m in made] == [False, True, True, False]  # no auto-retry for Veo
+    assert made[1]["http_options"].retry_options.attempts == 5
 
     made.clear()
     google_ai.google_client({"vertex": False, "veo_location": "us-central1"}, "veo")
     assert made == [{}]                                     # Gemini API: no project/location at all
+
+
+SHOT = "sc002_s005"                                         # Arjun's market entrance, a trailer shot with a keyframe
+
+
+def _veo_records(root, shot_id=SHOT):
+    return [r for r in SpendLedger(root / "reports" / "cost.jsonl", None).records()
+            if r["provider"] == "veo" and r["item"] == shot_id]
+
+
+def test_interrupted_veo_job_is_collected_not_paid_again(setup):
+    """A job that is still running when the run stops (timeout, crash, Ctrl-C) is logged and resumed by name."""
+    pipeline, cfg = setup.make(only=[SHOT])
+    cfg["google"]["timeout_seconds"] = -1                   # stop right after the job is submitted
+    with pytest.raises(PipelineBlocked, match="already paid for"):
+        pipeline.run(until="render")
+    pending = setup.root / "inbox" / "video" / ".pending" / f"{SHOT}.json"
+    assert pending.exists() and len(setup.fake.video_calls) == 1
+    assert sum(r["usd"] for r in _veo_records(setup.root)) == pytest.approx(3.20)   # counts toward the budget
+
+    resumed, _ = setup.make(only=[SHOT])
+    resumed.run(until="render")
+    assert len(setup.fake.video_calls) == 1                  # collected, not submitted again
+    assert sum(r["usd"] for r in _veo_records(setup.root)) == pytest.approx(3.20)   # and not logged twice
+    assert (setup.root / "inbox" / "video" / f"{SHOT}.mp4").exists() and not pending.exists()
+
+
+def test_veo_polling_rides_out_a_server_hiccup(setup):
+    setup.fake.poll_failures = 2
+    pipeline, _ = setup.make(only=[SHOT])
+    pipeline.run(until="render")
+    assert len(setup.fake.video_calls) == 1 and (setup.root / "inbox" / "video" / f"{SHOT}.mp4").exists()
+
+
+def test_veo_operation_errors(setup):
+    """A policy refusal becomes a placeholder + review queue entry; other errors stop cleanly. Neither is billed."""
+    setup.fake.op_error = {"code": 3, "message": "The prompt could not be submitted: it violates usage guidelines."}
+    pipeline, _ = setup.make(only=[SHOT])
+    pipeline.run(until="render")
+    queue = [json.loads(line) for line in (setup.root / "reports" / "review_queue.jsonl").read_text().splitlines()]
+    assert [q["shot_id"] for q in queue] == [SHOT]
+    assert sum(r["usd"] for r in _veo_records(setup.root)) == pytest.approx(0.0)
+
+    setup.fake.op_error = {"code": 13, "message": "Internal error."}
+    other = "sc009_s004"
+    pipeline, _ = setup.make(only=[other])
+    with pytest.raises(PipelineBlocked, match="Veo sc009_s004 failed: Internal error"):
+        pipeline.run(until="render")
+    assert sum(r["usd"] for r in _veo_records(setup.root, other)) == pytest.approx(0.0)
+    assert not list((setup.root / "inbox" / "video" / ".pending").glob("*.json"))
+
+
+def test_vertex_veo_turns_off_unused_audio(setup):
+    pipeline, cfg = setup.make(only=[SHOT])
+    cfg["google"]["vertex"] = True
+    pipeline.run(until="render")
+    config = setup.fake.video_calls[-1]["config"]
+    assert config.generate_audio is False and config.number_of_videos == 1

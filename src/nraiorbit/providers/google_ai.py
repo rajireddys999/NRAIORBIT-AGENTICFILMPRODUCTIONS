@@ -78,6 +78,14 @@ def _call(fn, what: str, **kwargs):
         raise
 
 
+def _transient(e: Exception) -> bool:
+    """A brief network or server hiccup worth polling through: 429/5xx, or a dropped connection."""
+    code = getattr(e, "code", None)
+    if isinstance(code, int) and (code == 429 or code >= 500):
+        return True
+    return type(e).__module__.split(".")[0] in ("httpx", "httpcore") or isinstance(e, ConnectionError)
+
+
 def google_client(google_cfg: dict, role: str = ""):
     """role ("veo", "image", "tts"): on Vertex AI, google.<role>_location picks that model's region, because one
     region may not serve all of them (Veo is regional, e.g. us-central1; the pro image model is served from global)."""
@@ -88,9 +96,14 @@ def google_client(google_cfg: dict, role: str = ""):
     except ImportError:
         raise GoogleSetupError("google-genai is not installed: pip install google-genai") from None
     try:
+        # Images and voices retry a brief 429/5xx (a refused call is not billed). Veo submissions never retry
+        # automatically: a retry after an ambiguous error could start, and pay for, a second job.
+        extra = {"http_options": _types().HttpOptions(retry_options=_types().HttpRetryOptions(
+            attempts=5, initial_delay=2, max_delay=60))} if role in ("image", "tts") else {}
         if google_cfg.get("vertex"):
-            return genai.Client(vertexai=True, **vertex_auth(google_cfg.get(f"{role}_location") if role else None))
-        return genai.Client()
+            return genai.Client(vertexai=True, **extra,
+                                **vertex_auth(google_cfg.get(f"{role}_location") if role else None))
+        return genai.Client(**extra)
     except ValueError as e:
         raise GoogleSetupError(
             f"{e}\nSet GEMINI_API_KEY (Gemini API key on a project with billing; see docs/GOOGLE_CLOUD_SETUP.md), "
@@ -256,6 +269,14 @@ class VeoVideo:
     def _price_per_second(self) -> float:
         return self.pricing["veo"]["api_per_second"][self.g.get("veo_tier", "fast")][self.g.get("veo_resolution", "720p")]
 
+    def _poll(self, operation):
+        try:
+            return self.client.operations.get(operation=operation)
+        except Exception as e:
+            if _transient(e):                             # the job keeps running on Google's side: ask again later
+                return operation
+            raise
+
     # -- provider API
 
     def render_shot(self, shot: Shot, out: Path, ctx: RenderContext) -> Path:
@@ -266,58 +287,93 @@ class VeoVideo:
         if attempt <= len(existing):                     # already paid for: reuse
             return ffmpeg.conform_clip(existing[attempt - 1], out, shot.duration_s, ctx.resolution, ctx.fps)
 
-        scene = next(s for s in self.outline.scenes if s.scene_id == ctx.scene_id)
-        prompt = veo_prompt(shot, scene, self.bible, ctx.cast, self.navarasa, self._speaker(shot, ctx.scene_id))
-        mode = self.g.get("veo_mode", "keyframe")
-        seconds = self._clip_seconds(shot, mode)
-        cost = seconds * self._price_per_second()
-        self.ledger.check(cost, f"Veo {shot.shot_id} ({seconds} s)")
-
+        dest = inbox_dir(self.root, "video") / (f"{shot.shot_id}.mp4" if attempt == 1 else f"{shot.shot_id}_{attempt}.mp4")
+        pending = dest.parent / ".pending" / f"{dest.stem}.json"
         types = _types()
-        config = dict(duration_seconds=seconds, aspect_ratio="16:9", resolution=self.g.get("veo_resolution", "720p"),
-                      negative_prompt=NEGATIVE)
-        if self.g.get("person_generation"):
-            config["person_generation"] = self.g["person_generation"]
-        kwargs: dict[str, Any] = {"model": self.g.get("veo_model", "veo-3.1-fast-generate-preview"), "prompt": prompt}
+        if pending.exists():                              # submitted and paid earlier; collect it, don't pay again
+            job = json.loads(pending.read_text(encoding="utf-8"))
+            operation = types.GenerateVideosOperation(name=job["operation"])
+            model, mode, seconds, cost = job["model"], job["mode"], job["seconds"], job["usd"]
+        else:
+            scene = next(s for s in self.outline.scenes if s.scene_id == ctx.scene_id)
+            prompt = veo_prompt(shot, scene, self.bible, ctx.cast, self.navarasa, self._speaker(shot, ctx.scene_id))
+            mode = self.g.get("veo_mode", "keyframe")
+            seconds = self._clip_seconds(shot, mode)
+            cost = seconds * self._price_per_second()
+            self.ledger.check(cost, f"Veo {shot.shot_id} ({seconds} s)")
 
-        refs = self._refs(shot, ctx.cast, 3) if shot.characters_in_frame else []
-        if refs and mode == "reference":
-            config["reference_images"] = [
-                types.VideoGenerationReferenceImage(image=types.Image.from_file(location=str(p)),
-                                                    reference_type=types.VideoGenerationReferenceType.ASSET)
-                for _, paths in refs for p in paths]
-        elif refs:                                       # keyframe mode; shots without leads go text-to-video
-            keyframe = self.root / "06_keyframes" / shot.shot_id / f"take_{attempt}.png"
-            if not keyframe.exists():
-                self.images.generate(keyframe_prompt(shot, prompt, [(n, len(p)) for n, p in refs]), keyframe,
-                                     refs=[p for _, paths in refs for p in paths], item=f"keyframe {shot.shot_id}")
-            kwargs["image"] = types.Image.from_file(location=str(keyframe))
+            config = dict(duration_seconds=seconds, aspect_ratio="16:9", resolution=self.g.get("veo_resolution", "720p"),
+                          negative_prompt=NEGATIVE, number_of_videos=1)
+            if self.g.get("vertex"):                      # Veo audio is dropped in the edit (dialogue is TTS); on
+                config["generate_audio"] = bool(self.g.get("veo_audio", False))  # Vertex it is billed extra
+            if self.g.get("person_generation"):
+                config["person_generation"] = self.g["person_generation"]
+            model = self.g.get("veo_model", "veo-3.1-fast-generate-preview")
+            kwargs: dict[str, Any] = {"model": model, "prompt": prompt}
 
-        operation = _call(self.client.models.generate_videos, f"Veo {shot.shot_id}", **kwargs,
-                          config=types.GenerateVideosConfig(**config))
-        deadline = time.time() + self.g.get("timeout_seconds", 900)
+            refs = self._refs(shot, ctx.cast, 3) if shot.characters_in_frame else []
+            if refs and mode == "reference":
+                config["reference_images"] = [
+                    types.VideoGenerationReferenceImage(image=types.Image.from_file(location=str(p)),
+                                                        reference_type=types.VideoGenerationReferenceType.ASSET)
+                    for _, paths in refs for p in paths]
+            elif refs:                                   # keyframe mode; shots without leads go text-to-video
+                keyframe = self.root / "06_keyframes" / shot.shot_id / f"take_{attempt}.png"
+                if not keyframe.exists():
+                    self.images.generate(keyframe_prompt(shot, prompt, [(n, len(p)) for n, p in refs]), keyframe,
+                                         refs=[p for _, paths in refs for p in paths], item=f"keyframe {shot.shot_id}")
+                kwargs["image"] = types.Image.from_file(location=str(keyframe))
+
+            operation = _call(self.client.models.generate_videos, f"Veo {shot.shot_id}", **kwargs,
+                              config=types.GenerateVideosConfig(**config))
+            # Logged as soon as the job exists, so a crash, timeout or Ctrl-C while it runs still counts toward the
+            # budget, and the job's name is kept so the next run collects the clip instead of paying for a new one.
+            self.ledger.record("veo", shot.shot_id, cost, seconds=seconds, model=model, mode=mode, attempt=attempt)
+            if getattr(operation, "name", None):
+                pending.parent.mkdir(parents=True, exist_ok=True)
+                pending.write_text(json.dumps({"operation": operation.name, "model": model, "mode": mode,
+                                               "seconds": seconds, "usd": cost}), encoding="utf-8")
+
+        timeout = self.g.get("timeout_seconds", 900)
+        deadline = time.time() + timeout
         while not operation.done:
             if time.time() > deadline:
-                raise TimeoutError(f"Veo {shot.shot_id}: no result after {self.g.get('timeout_seconds', 900)} s")
+                raise GoogleAPIError(f"Veo {shot.shot_id}: still running after {timeout} s. It is already paid for and "
+                                     "will be collected, not paid again, when you re-run.")
             time.sleep(self.g.get("poll_seconds", 10))
-            operation = _call(self.client.operations.get, f"Veo {shot.shot_id} status", operation=operation)
+            try:
+                operation = _call(self._poll, f"Veo {shot.shot_id} status", operation=operation)
+            except GoogleAPIError as e:
+                if not pending.exists():
+                    raise
+                raise GoogleAPIError(f"{e}\nIf Google no longer knows this job, delete {pending} to submit the shot "
+                                     "again (that is paid again).") from None
+
+        def not_billed(**why) -> None:                    # the job ended without a clip
+            self.ledger.record("veo", shot.shot_id, -cost, seconds=-seconds, note="no clip: not billed", **why)
+            pending.unlink(missing_ok=True)
+
         if operation.error:
-            raise RuntimeError(f"Veo {shot.shot_id}: {operation.error}")
+            err = operation.error if isinstance(operation.error, dict) else {"message": str(operation.error)}
+            message = str(err.get("message", err))
+            if err.get("code") == 3 or any(w in message.lower() for w in ("guideline", "safety", "policy")):
+                not_billed(filtered=message)
+                raise ShotFiltered(f"Veo refused {shot.shot_id}: {message}")
+            not_billed(error=message)
+            raise GoogleAPIError(f"Veo {shot.shot_id} failed: {message}\nRe-run to try this shot again.")
         result = operation.response or operation.result
         videos = getattr(result, "generated_videos", None) or []
         if not videos:
             reasons = getattr(result, "rai_media_filtered_reasons", None)
-            self.ledger.record("veo", shot.shot_id, 0.0, seconds=0, filtered=str(reasons))
+            not_billed(filtered=str(reasons))
             raise ShotFiltered(f"Veo filtered {shot.shot_id}: {reasons}")
 
-        dest = inbox_dir(self.root, "video") / (f"{shot.shot_id}.mp4" if attempt == 1 else f"{shot.shot_id}_{attempt}.mp4")
         dest.parent.mkdir(parents=True, exist_ok=True)
         video = videos[0].video
         if not self.g.get("vertex"):
             _call(self.client.files.download, f"Veo {shot.shot_id} download", file=video)
         video.save(str(dest))
-        self.ledger.record("veo", shot.shot_id, cost, seconds=seconds, model=kwargs["model"], mode=mode,
-                           attempt=attempt)
+        pending.unlink(missing_ok=True)
         return ffmpeg.conform_clip(dest, out, shot.duration_s, ctx.resolution, ctx.fps)
 
 

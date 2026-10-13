@@ -50,6 +50,7 @@ google:                            # used by the veo / gemini providers (see pro
   veo_resolution: 720p             # generate 720p; the edit upscales to film.resolution
   veo_mode: keyframe               # keyframe (Gemini first frame -> Veo) | reference (Veo asset references, 8 s)
   person_generation: allow_adult
+  veo_audio: false                 # Vertex AI only: Veo's own audio (dropped in the edit; dialogue is TTS) costs extra
   poll_seconds: 10
   timeout_seconds: 900
   image_model: gemini-2.5-flash-image

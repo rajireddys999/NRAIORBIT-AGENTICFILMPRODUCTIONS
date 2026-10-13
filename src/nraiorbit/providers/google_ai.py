@@ -63,7 +63,9 @@ PREPAY_HINT = ("The key's Google project uses Gemini API prepaid billing and its
 def _call(fn, what: str, **kwargs):
     try:
         return fn(**kwargs)
-    except Exception as e:  # SDK errors live in google.genai.errors; re-raise everything else unchanged
+    except Exception as e:  # SDK errors live in google.genai.errors; network errors come from httpx
+        if type(e).__module__.split(".")[0] in ("httpx", "httpcore"):
+            raise GoogleAPIError(f"{what}: network error ({type(e).__name__}: {e}). Re-run to resume.") from None
         if type(e).__module__.startswith("google."):
             if "ACCESS_TOKEN_TYPE_UNSUPPORTED" in str(e):
                 hint = VERTEX_HINT
@@ -270,8 +272,10 @@ class VeoVideo:
         return self.pricing["veo"]["api_per_second"][self.g.get("veo_tier", "fast")][self.g.get("veo_resolution", "720p")]
 
     def _poll(self, operation):
-        try:
-            return self.client.operations.get(operation=operation)
+        types = _types()
+        try:                                              # a silently dropped connection times out instead of hanging
+            return self.client.operations.get(operation=operation, config=types.GetOperationConfig(
+                http_options=types.HttpOptions(timeout=120_000)))
         except Exception as e:
             if _transient(e):                             # the job keeps running on Google's side: ask again later
                 return operation
@@ -288,6 +292,8 @@ class VeoVideo:
             return ffmpeg.conform_clip(existing[attempt - 1], out, shot.duration_s, ctx.resolution, ctx.fps)
 
         dest = inbox_dir(self.root, "video") / (f"{shot.shot_id}.mp4" if attempt == 1 else f"{shot.shot_id}_{attempt}.mp4")
+        if dest.exists():                                 # this attempt's clip, even if attempt numbers have gaps
+            return ffmpeg.conform_clip(dest, out, shot.duration_s, ctx.resolution, ctx.fps)
         pending = dest.parent / ".pending" / f"{dest.stem}.json"
         types = _types()
         if pending.exists():                              # submitted and paid earlier; collect it, don't pay again

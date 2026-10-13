@@ -41,7 +41,7 @@ class FakeGoogle:
         t = np.arange(24000) / 24000
         self.pcm = (np.sin(2 * np.pi * 220 * t) * 8000).astype("<i2").tobytes()
         self.block_if = block_if
-        self.poll_failures, self.op_error = 0, None
+        self.poll_failures, self.op_error, self.poll_configs = 0, None, []
         self.video_calls, self.image_calls, self.tts_calls = [], [], []
         self.models = SimpleNamespace(generate_videos=self._videos, generate_content=self._content, list=lambda: [])
         self.operations = SimpleNamespace(get=self._get)
@@ -53,7 +53,8 @@ class FakeGoogle:
                                     f"{len(self.video_calls)}",
                                done=False, error=None, response=None, result=None, blocked=self.block_if(prompt))
 
-    def _get(self, operation):           # same keyword as google.genai Operations.get
+    def _get(self, operation, config=None):   # same keywords as google.genai Operations.get
+        self.poll_configs.append(config)
         if self.poll_failures:           # a brief server hiccup while polling
             self.poll_failures -= 1
             raise HiccupError(503)
@@ -382,6 +383,34 @@ def test_veo_polling_rides_out_a_server_hiccup(setup):
     pipeline, _ = setup.make(only=[SHOT])
     pipeline.run(until="render")
     assert len(setup.fake.video_calls) == 1 and (setup.root / "inbox" / "video" / f"{SHOT}.mp4").exists()
+    assert setup.fake.poll_configs[-1].http_options.timeout == 120_000      # a dead connection can't hang the run
+
+
+def test_network_error_stops_cleanly():
+    import httpx
+
+    def drop():
+        raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+
+    with pytest.raises(google_ai.GoogleAPIError, match="network error.*Re-run to resume"):
+        google_ai._call(drop, "Veo sc002_s005")
+
+
+def test_clip_on_disk_is_reused_by_attempt_number(setup):
+    """A take whose number skips one (e.g. take 3 after a failed take 2) is still never paid for twice."""
+    from nraiorbit.providers.base import RenderContext
+
+    pipeline, cfg = setup.make(only=[SHOT])
+    pipeline.run(until="render")
+    inbox = setup.root / "inbox" / "video"
+    shutil.copy(inbox / f"{SHOT}.mp4", inbox / f"{SHOT}_3.mp4")            # attempt 3 exists, attempt 2 doesn't
+    video = google_ai.VeoVideo(setup.root, setup.library, cfg, load_pricing(setup.root), pipeline.ledger, {},
+                               client=setup.fake)
+    calls = len(setup.fake.video_calls)
+    shot = next(s for s in _selected_shots(setup.root, trailer_only=False) if s.shot_id == SHOT)
+    ctx = RenderContext(scene_id="sc002", cast=pipeline._lock(), resolution=(320, 180), fps=24, seed=3)
+    video.render_shot(shot, setup.root / "take_3.mp4", ctx)
+    assert len(setup.fake.video_calls) == calls
 
 
 def test_veo_operation_errors(setup):

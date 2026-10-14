@@ -23,6 +23,8 @@ import subprocess
 import wave
 from pathlib import Path
 
+import numpy as np
+
 from ..costing import SpendLedger, lyria_price
 from ..post import ffmpeg
 from ..planning.score import load_styles, slot_for
@@ -144,7 +146,11 @@ def cue_prompt(cue: Cue, model: str = DEFAULT_MODEL, chars: dict[str, tuple[str,
     big = cue.peak or cue.cue_type == "trailer"
     level = ("gentle and restrained" if cue.intensity <= 3 else "moderate" if cue.intensity <= 6
              else "strong and driving" if cue.intensity <= 8 else "maximum intensity, huge")
-    parts = ["Instrumental Telugu film background score (BGM). No vocals, no lyrics, no spoken words.",
+    voices = big or bool(VOCAL_TEXTURES & set(cue.instruments)) or bool((style or {}).get("wordless_vocals"))
+    opening = ("Telugu film background score (BGM). Wordless vocals only: no lyrics, no sung or spoken words."
+               if voices else "Instrumental Telugu film background score (BGM). Instrumental only, no vocals, no lyrics, "
+                              "no spoken words.")   # "instrumental" removes every voice, so not when a choir is wanted
+    parts = [opening,
              f"Mood: {RASA_MOOD.get(cue.rasa, _words(cue.rasa))} ({cue.rasa} rasa), intensity {cue.intensity}/10, "
              f"{level}. Cue: {_words(cue.cue_type)}."]
     if cue.raga in NO_RAGA:
@@ -174,7 +180,7 @@ def cue_prompt(cue: Cue, model: str = DEFAULT_MODEL, chars: dict[str, tuple[str,
     else:
         parts.append("Leave space for dialogue: not too dense in the mid range (voice frequencies), "
                      "no busy lead melody all the way through.")
-    if big or VOCAL_TEXTURES & set(cue.instruments) or (style or {}).get("wordless_vocals"):
+    if voices:
         parts.append("The only voices allowed are wordless textures (chant, alaap, hum: pure vowels, never words).")
     target = min(seconds, CLIP_SECONDS) if "clip" in model else seconds
     parts.append(f"Length: about {round(target)} seconds"
@@ -182,7 +188,19 @@ def cue_prompt(cue: Cue, model: str = DEFAULT_MODEL, chars: dict[str, tuple[str,
     if cue.notes.strip():
         notes = cue.notes.strip()
         parts.append(f"Structure (follow these timings): {notes}{'' if notes[-1] in '.!?' else '.'}")
-    parts.append("Cinematic, high-fidelity stereo mix.")
+    emotional = cue.rasa in ("karuna", "vatsalya") or (style or {}).get("shape") == "emotion"
+    if big:
+        parts.append("Mix: strong dynamic contrast, quiet builds well below the hits, one decisive silence before the "
+                     "main impact, impacts layered from transient, body and sub-bass; cinematic, high-fidelity stereo.")
+        parts.append("Avoid: lyrics, pop vocals, four-on-the-floor EDM kick, cheerful or comedic tone, a constant wall "
+                     "of sound.")
+    elif emotional:
+        parts.append("Mix: wide dynamic range from very soft to very loud; at the peak push the upper strings, the high "
+                     "voice and the reed forward; long hall reverb; cinematic, high-fidelity stereo.")
+        parts.append("Avoid: lyrics, drums in the opening, cheerful tone, heavy compression before the climax.")
+    else:
+        parts.append("Cinematic, high-fidelity stereo mix.")
+        parts.append("Avoid: lyrics, sung words, a busy lead over dialogue.")
     return " ".join(parts)
 
 
@@ -241,12 +259,43 @@ def _store(data: bytes, mime: str, folder: Path, key: str) -> Path:
     return dest
 
 
-def fit_to_cue(src: Path, seconds: float, out: Path) -> Path:
-    """Exactly `seconds` of 48 kHz stereo: a longer track is trimmed with a 1.5 s fade-out, a shorter one is
-    looped with crossfades until long enough, then trimmed and faded."""
+HIT_MARK = re.compile(r"\[(\d+):(\d\d) - \d+:\d\d\] Hit:")
+HIT_SEARCH_S = (-3.0, 20.0)       # where to look for the generated hit, around the planned one
+ENV_HOP_S = 0.05
+
+
+def planned_hit(cue: Cue) -> float | None:
+    """Seconds into the cue where the timed sections (planning/score.py) put the big hit."""
+    m = HIT_MARK.search(cue.notes)
+    return int(m.group(1)) * 60 + int(m.group(2)) if m else None
+
+
+def find_hit(src: Path, near: float) -> float | None:
+    """Time of the strongest sudden loudness jump around `near` (the generated hit); None if none stands out.
+    Generators drift by seconds and stretch intros, so the hit is found in the audio, not trusted to the prompt."""
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(src), "-ac", "1", "-ar", "8000", "-f", "s16le", "-"],
+                         capture_output=True, check=True).stdout
+    a = np.frombuffer(raw, "<i2").astype(np.float64)
+    hop = int(8000 * ENV_HOP_S)
+    if len(a) < hop * 40:
+        return None
+    rms = np.sqrt(np.convolve(a ** 2, np.ones(hop) / hop, "valid")[::hop]) + 1e-9
+    db = 20 * np.log10(rms / 32768)
+    back = int(1.0 / ENV_HOP_S)                       # loudness jump against the previous second
+    jump = np.array([db[i] - db[max(0, i - back):i].mean() if i else 0.0 for i in range(len(db))])
+    lo, hi = (max(1, int((near + d) / ENV_HOP_S)) for d in HIT_SEARCH_S)
+    window = jump[lo:min(hi, len(jump))]
+    if not len(window) or window.max() < 6.0:         # no clear impact (at least +6 dB over the last second)
+        return None
+    return (lo + int(window.argmax())) * ENV_HOP_S
+
+
+def fit_to_cue(src: Path, seconds: float, out: Path, start: float = 0.0) -> Path:
+    """Exactly `seconds` of 48 kHz stereo from `start` s into the track: a longer track is trimmed with a 1.5 s
+    fade-out, a shorter one is looped with crossfades until long enough, then trimmed and faded."""
     out.parent.mkdir(parents=True, exist_ok=True)
     try:
-        have = ffmpeg.duration(src)
+        have = ffmpeg.duration(src) - start
     except (subprocess.CalledProcessError, KeyError, ValueError):   # an audio format ffmpeg cannot read
         raise GoogleAPIError(f"{src}: ffmpeg cannot decode this generation. Delete it to generate again "
                              "(paid again), or put a track in inbox/music/.") from None
@@ -255,8 +304,11 @@ def fit_to_cue(src: Path, seconds: float, out: Path) -> Path:
     norm = f"aresample={ffmpeg.SAMPLE_RATE},aformat=sample_fmts=fltp:channel_layouts=stereo"
     end = f"atrim=0:{seconds:.3f},afade=t=out:st={max(0.0, seconds - FADE_OUT_S):.3f}:d={min(FADE_OUT_S, seconds):.3f}"
     if have + 0.05 >= seconds:
-        ffmpeg.run(["-i", str(src), "-af", f"{norm},apad,{end}", "-ar", str(ffmpeg.SAMPLE_RATE), "-ac", "2", str(out)])
+        ffmpeg.run([*(["-ss", f"{start:.3f}"] if start > 0 else []), "-i", str(src), "-af", f"{norm},apad,{end}",
+                    "-ar", str(ffmpeg.SAMPLE_RATE), "-ac", "2", str(out)])
         return out
+    start = 0.0                                       # too short to drop a head: loop it whole
+    have = ffmpeg.duration(src)
     xf = min(2.0, have / 3)                           # n copies with n-1 crossfades last n*have - (n-1)*xf
     n = max(2, math.ceil((seconds - xf) / (have - xf)))
     graph = [f"[{i}:a]{norm}[s{i}]" for i in range(n)]
@@ -299,7 +351,10 @@ class LyriaMusic:
             return self.inbox.render_cue(cue, out)
         prompt = self.prompt(cue)
         raw = cached_raw(self.root, self.model, prompt) or self._generate(cue, prompt)
-        return fit_to_cue(raw, cue_seconds(cue), out)
+        planned = planned_hit(cue)
+        found = find_hit(raw, planned) if planned is not None else None
+        late = found - planned if found is not None else 0.0
+        return fit_to_cue(raw, cue_seconds(cue), out, start=late if late > 0.3 else 0.0)   # hit lands on the picture
 
     def _generate(self, cue: Cue, prompt: str) -> Path:
         what = f"Lyria {cue.cue_id}"

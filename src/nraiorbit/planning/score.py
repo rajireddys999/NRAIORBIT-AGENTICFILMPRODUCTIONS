@@ -20,6 +20,7 @@ STYLE_FILE = DEFAULT_CONFIG_DIR / "music_styles.yaml"
 DROP_S = 0.8          # near-silence right before an elevation hit
 HIT_S = 2.5
 OUTRO_S = 3.0
+BREATH_S = 1.2        # near-silence before an emotional peak
 
 
 def slot_for(cue: Cue) -> str:
@@ -73,7 +74,7 @@ def _clock(s: float) -> str:
 
 
 def _sections(rows: list[tuple[float, float, str, str]]) -> str:
-    return " ".join(f"[{_clock(a)} - {_clock(b)}] {name}: {text.strip().rstrip('.')}."
+    return " ".join(f"[{_clock(a)} - {_clock(b)}] {name}: {' '.join(text.split()).rstrip('.')}."
                     for a, b, name, text in rows if b - a >= 0.75 and text)
 
 
@@ -84,7 +85,9 @@ def timed_structure(cue: Cue, preset: dict, peak_at: float | None) -> str:
         p = min(max(peak_at if peak_at is not None else 0.7 * length, 0.45 * length), length - 5)
         rise = 0.45 * p
         top = min(length - OUTRO_S, p + 0.22 * length)
-        return _sections([(0, rise, "Opening", sec.get("opening", "")), (rise, p, "Build", sec.get("build", "")),
+        return _sections([(0, rise, "Opening", sec.get("opening", "")),
+                          (rise, p - BREATH_S, "Build", sec.get("build", "")),
+                          (p - BREATH_S, p, "Breath", sec.get("breath", "")),   # silence before the swell: chills
                           (p, top, "Peak", sec.get("peak", "")), (top, length, "Release", sec.get("release", ""))])
     p = min(max(peak_at if peak_at is not None else 0.4 * length, min(6.0, 0.3 * length)), length - 6)
     intro = 0.4 * p if p >= 8 else 0.0

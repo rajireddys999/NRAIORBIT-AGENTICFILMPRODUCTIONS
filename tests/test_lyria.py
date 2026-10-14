@@ -83,7 +83,7 @@ def test_prompt_carries_raga_instruments_and_notes():
     nav = load_navarasa()
     bed = cue(rasa="bhakti", cue_type="temple", raga="mayamalavagowla", instruments=["nadaswaram", "thavil", "temple_bells"])
     p = cue_prompt(bed, chars=ARJUN, navarasa=nav)
-    assert p.startswith("Instrumental Telugu film background score (BGM). No vocals, no lyrics, no spoken words.")
+    assert p.startswith("Instrumental Telugu film background score (BGM). Instrumental only, no vocals")
     assert "Mayamalavagowla" in p and "devotional, dramatic minor colour" in p and "C Db E F G Ab B" in p
     assert "piercing nadaswaram, thunderous thavil, temple bells" in p and "about 141 BPM" in p and "Adi tala" in p
     assert "leitmotif for Arjun, the hero" in p and "Length: about 8 seconds." in p
@@ -308,3 +308,33 @@ def test_budget_stop_on_a_music_cue_ends_the_run_cleanly(root, tmp_path, monkeyp
     with pytest.raises(SystemExit, match="Blocked: budget .*Lyria cue001"):
         cli._run(pipeline, root.name, until="render")
     assert fake.calls == []
+
+
+@needs_ffmpeg
+def test_generated_hit_is_aligned_to_the_picture(root, tmp_path):
+    """Generators drift: a hit planned at 0:10 that arrives at 14 s is moved back onto the hero reveal."""
+    from nraiorbit.providers.lyria import find_hit, fit_to_cue, planned_hit
+
+    src = tmp_path / "late_hit.wav"
+    rate = 48000
+    t = np.arange(int(rate * 30)) / rate
+    quiet = 0.01 * np.sin(2 * np.pi * 110 * t)
+    loud = np.where(t >= 14.0, 0.6 * np.sin(2 * np.pi * 80 * t), 0.0)
+    pcm = ((quiet + loud) * 32767).astype("<i2")
+    with wave.open(str(src), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(pcm.tobytes())
+    c = cue().model_copy(update={"duration_s": 20.0, "silence_before_s": 0.0,
+                                 "notes": "[0:00 - 0:09] Build: x. [0:09 - 0:10] Drop: y. [0:10 - 0:12] Hit: z."})
+    assert planned_hit(c) == 10
+    assert find_hit(src, 10) == pytest.approx(14.0, abs=0.1)
+    out = fit_to_cue(src, 20.0, tmp_path / "aligned.wav", start=find_hit(src, 10) - 10)
+    with wave.open(str(out)) as w:
+        a = np.frombuffer(w.readframes(w.getnframes()), "<i2").astype(float)[::2]
+    hop = 4800
+    level = [np.abs(a[i:i + hop]).mean() for i in range(0, len(a) - hop, hop)]
+    assert np.argmax(np.diff(level)) + 1 in (99, 100, 101)        # the hit now starts at 10.0 s (100 x 0.1 s)
+    assert find_hit(tmp_path / "aligned.wav", 10) == pytest.approx(10.0, abs=0.1)
+    assert planned_hit(cue()) is None

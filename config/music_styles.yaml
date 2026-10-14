@@ -4,94 +4,121 @@
 #     styles: {elevation: folk_mass, emotion: violin_swell}     # trailer defaults to the elevation pick
 #
 # slot: which cues use it (planning/score.py slot_for): elevation (veera peaks), action, villain (raudra), emotion
-# (karuna/vatsalya), romance, tension, calm, trailer. shape: elevation (intro, build, drop, hit, drive, outro;
-# the hit lands on the cue's strongest shot) or emotion (opening, build, peak, release; peak on the most intense shot).
+# (karuna/vatsalya), romance, tension, calm, trailer. shape: elevation (intro, build, drop, hit, drive, outro; the
+# hit lands on the cue's strongest shot, and the provider aligns the generated hit to it) or emotion (opening, build,
+# breath, peak, release; the peak lands on the cue's most intense shot).
+# The cue keeps its own raga and tempo from the music plan; presets describe sound, playing and arrangement.
 # Describe the music itself: never name real composers, films or songs (generators refuse imitation; copyright).
+# Sources for the craft: docs/MUSIC_TELUGU.md, plus research notes (2026-10-14): Telugu mass scores built on live
+# chenda/thavil/dappu ensembles, large wordless chant choirs, low brass motifs and a silence before the impact; frisson
+# studies (Sloboda 1991, Grewe 2007, Bannister & Eerola 2018, Salimpoor 2011): crescendo, a solo voice entering,
+# a breath of silence then a sudden tutti, a surprising major lift, upper-mid presence at the peak.
 
 presets:
   # ---------------------------------------------------------------- elevation (hero intro, interval, fight peaks)
   folk_mass:
     slot: elevation
     shape: elevation
-    label: "Folk-percussion mass"
+    label: "Folk-percussion mass (teenmaar elevation)"
     style: >-
-      Raw Telugu folk mass: a stomping teenmaar dappu groove, thunderous thavil rolls, urumi drone, piercing nadaswaram
-      hero theme, conch calls, crowd whistles and claps, punchy low brass; earthy, rustic and overwhelming.
+      Raw Telugu folk mass for a hero-introduction elevation: a fast 6/8 teenmaar folk groove with a half-time
+      slow-motion feel on the big hits; interlocking dappu frame drums, thavil rim cracks and deep bass strokes, urumi
+      friction-drum growls, a chenda ensemble with sharp stick rolls, a big festival bass drum on beats 1 and 4; a
+      nadaswaram lead with fast ornamental bends plays a bold 5-note hero motif, answered by trombones and French horns
+      in octaves; conch blasts, male gang voices shouting rhythmic wordless "Hey! Hah!", crowd whistles; dry, upfront,
+      punchy drums.
     sections:
-      intro: low urumi drone, a distant dappu heartbeat and an echoing conch call
-      build: dappu and thavil accelerate into a teenmaar groove, a rising low-brass ostinato, claps and whistles join
-      drop: sudden near-silence, one held conch tone
-      hit: massive full-band impact on the downbeat, every drum, a brass stab and a wordless shouted choir vowel together
-      drive: full-power teenmaar stomp, the nadaswaram plays the hero theme over pounding thavil, whistles and claps
-      outro: a final triple hit and a ringing conch tail
+      intro: tonic drone, a single dappu heartbeat, a distant urumi growl, very soft
+      build: thavil and dappu lock into the interlocking teenmaar groove, the nadaswaram teases the first notes of the hero motif, then a chenda roll crescendo doubling from eighths to sixteenths with a rising riser and brass swell
+      drop: near-silence, only a breath and a sub tail
+      hit: impact on the hero reveal, conch, gong, full-ensemble hit and sub drop, the slow motion begins
+      drive: the full hero theme on nadaswaram with trombones and horns in octaves over the full teenmaar groove, half-time accent hits, gang "Hey!" on beat 4, whistles, very loud, with a short solo thavil break before the ensemble returns harder
+      outro: stop-time tag of three unison hits in a 3+3+2 feel, a final boom with a long reverb tail
 
   epic_mythic:
     slot: elevation
     shape: elevation
-    label: "Orchestral-epic mythic"
+    label: "Orchestral-epic mythic (divine fury)"
     style: >-
-      Grand mythic film orchestra with Indian percussion: huge taiko and chenda drums, trombones and French horns,
-      a large wordless Sanskrit-style choir, timpani, string ostinatos; slow-motion grandeur, god-like and majestic.
+      Epic mythological action score for an Indian hero's divine-fury moment: low strings and taiko on a relentless
+      3+3+2 eighth-note ostinato; a massive male choir chanting low Sanskrit-style syllables (wordless) in call and
+      response with a priestly solo voice; damaru rattles, temple bells, conch shells, a chenda and thavil ensemble
+      doubling the taiko; a full symphony orchestra with eight French horns and trombones in octaves stating a slow,
+      noble hero theme, a trumpet fanfare countermelody, tuba and contrabassoon on the bass.
     sections:
-      intro: low strings and a deep choir hum, slow timpani heartbeat
-      build: driving string ostinato and rising horns, chenda rolls swelling, choir climbing
-      drop: a breath of silence, only a high string harmonic
-      hit: colossal orchestral and choir hit with taiko, cymbals and brass on the hero reveal
-      drive: the hero theme blazes on horns and trombones over taiko and chenda, choir chanting wordless vowels
-      outro: a final giant hit and a long choir and brass decay
+      intro: low drone on cellos, basses and sub, a whispered male chant, one temple bell, very soft
+      build: the 3+3+2 ostinato enters on low strings and soft taiko with damaru rattles, then the choir opens into call-and-response chant with the solo priestly voice, horns swell, an orchestral riser and a chenda roll
+      drop: one second of silence, a single breath or reverse-cymbal tail
+      hit: tutti impact with gong, conch, a choir shout, taiko and sub boom
+      drive: the hero theme in horns and trombones in octaves with the chanting choir, taiko, thavil and chenda at full power, the trumpet counterline, the ostinato moving to sixteenths, fortissimo, final statement up a half step
+      outro: a unison orchestral and drum hit with a choir "Om" cut off sharply
 
   hybrid_trap_folk:
     slot: elevation
     shape: elevation
-    label: "Modern hybrid (trap + folk)"
+    label: "Modern hybrid (trap + folk swag)"
     style: >-
-      Modern hybrid mass: hard trap and EDM drums, booming 808 sub-bass, distorted synth bass, layered with thavil and
-      dappu, a nadaswaram hook, brass stabs, synth risers and impacts; swaggering, punchy, stadium-sized.
+      Modern hybrid mass-hero theme where dark trap meets South Indian folk percussion: a half-time trap groove,
+      distorted 808 sub-bass with pitch glides, triplet hi-hat rolls, a hard clap on beat 3, layered with chopped thavil
+      and dappu loops and urumi growls; drop-tuned distorted guitar chugs palm-muted in 3+3+2; brass-section stabs; a
+      saturated nadaswaram lead with heavy pitch bends playing a swaggering 4-note hook; low male gang chants of short
+      wordless syllables, whistle calls and a crowd roar; loud, punchy low end, crisp highs.
     sections:
-      intro: filtered synth pulse, sub-bass swells and ticking hi-hats
-      build: thavil and dappu rolls over a rising synth riser, snare roll accelerating, brass stabs getting louder
-      drop: total cut to silence with a reversed cymbal
-      hit: a huge beat drop with 808, distorted bass and a brass stab on the hero reveal
-      drive: trap groove with folk percussion, the nadaswaram hook on top, whistles and crowd shouts as wordless texture
-      outro: stutter edit into a final impact and a sub-bass boom
+      intro: a low-pass filtered dark pad, a ticking clock, a distant urumi, an 808 heartbeat kick every two beats
+      build: sparse hi-hats and a filtered thavil loop, the nadaswaram hook teased behind the filter, then the filter opens and a snare and thavil roll accelerates from eighths to sixteenths to thirty-seconds over a white-noise riser and guitar feedback, a single shouted "Hey!"
+      drop: tape-stop into dead silence
+      hit: the drop on the hero reveal, 808 glide, distorted guitars, brass stabs and full folk drums together
+      drive: the nadaswaram hook in call and response with the gang chant over trap and folk drums, whistles, a two-bar solo thavil and dappu break, then the ensemble returns harder
+      outro: three stop-hits and a final 808 boom with a reverse-reverb tail
 
   # ---------------------------------------------------------------- emotion (mother sentiment, loss, flashback, sacrifice)
   violin_swell:
     slot: emotion
     shape: emotion
-    label: "Solo violin + strings swell"
+    label: "Solo violin lament to string tutti"
     style: >-
-      Heart-wrenching solo Carnatic violin with gamakas over a tanpura drone, warm cello, then the full string orchestra
-      swelling; intimate at first, overwhelming at the peak; goosebumps, tears.
+      Emotional Indian cinematic score built to give goosebumps: a rubato opening then a slow steady pulse; a solo South
+      Indian classical violin in vocal style, high register, slow glides and oscillating ornaments, sighing appoggiaturas
+      resolving downward; tanpura drone, low cello pedal, soft felt piano; violas and cellos with warm sustained minor
+      chords and a soft low frame-drum heartbeat; a long gradual crescendo to a sudden full string orchestra tutti with
+      French horns, timpani and a cymbal swell; concert-hall reverb.
     sections:
-      opening: solo violin alone over a soft tanpura drone, slow and aching, with long held notes
-      build: cellos and violas enter underneath, the melody climbs higher, a soft heartbeat of low drums
-      peak: the full string orchestra swells to fortissimo on a rising key change, the violin soaring on its highest note
-      release: everything falls away to the solo violin, ending on a long unresolved note
+      opening: near silence, tanpura drone, low cello pedal and two soft piano notes, then the solo violin alone, high and rubato, with glides and sighing figures
+      build: violas and cellos enter with sustained chords and a soft frame-drum heartbeat, the violin section doubles the melody, piano arpeggios, a low brass pad and a timpani roll in a long crescendo
+      breath: everything cuts except the solo violin holding one high note
+      peak: subito tutti, full strings, horns, timpani and cymbal swell, the melody an octave higher, the harmony lifting through an unexpected bright major chord, the solo violin soaring on top, fortissimo
+      release: the orchestra falls away to the solo violin and drone, a last sighing note resolving, long reverb
 
   alaap_choir:
     slot: emotion
     shape: emotion
-    label: "Female alaap + choir crescendo"
+    label: "Female alaap to choir crescendo"
     style: >-
-      A wordless female alaap (pure vowels) over tanpura and soft piano, strings rising beneath, then a large wordless
-      choir and timpani crescendo; spiritual, cathartic, spine-tingling.
+      Emotional Indian cinematic score: a wordless female classical alaap on an open "aa" vowel, intimate and breathy,
+      long melismatic glides and quick ornamental turns; tanpura drone and a soft string pad; a low male chorus humming
+      "mmm" as a dark drone; harp notes; a bamboo flute answering each vocal phrase; a slow deep frame-drum heartbeat;
+      a building crescendo into full mixed choir and orchestra with brass and cymbals, the female voice soaring above.
     wordless_vocals: true
     sections:
-      opening: solo wordless female alaap, free and close, over tanpura and sparse piano notes
-      build: strings and a soft harp enter, the voice rises, a male choir hum joins underneath
-      peak: full choir and orchestra crescendo with a timpani roll, the female voice soaring on top
-      release: the choir fades, the lone female voice returns softly and ends on a breath
+      opening: tanpura drone and a faint string pad, then the female alaap alone in free time, low-middle register, slow glides and gentle ornaments
+      build: the low male chorus hum enters with sparse harp, the bamboo flute answers each phrase, a deep frame-drum heartbeat, cellos with slow chords, then strings climb in suspended chords with a timpani roll as the chorus opens from humming to "aa" and the female voice reaches the upper octave
+      breath: one second of complete silence, a breath
+      peak: full mixed choir, orchestra, brass and cymbals burst in together, the female voice soaring on a high sustained note above the choir, the harmony lifting into a bright major
+      release: the choir fades, the lone female voice returns softly over the drone and ends on a breath
 
   nadaswaram_lament:
     slot: emotion
     shape: emotion
-    label: "Nadaswaram/shehnai lament rising"
+    label: "Nadaswaram/shehnai lament to temple-orchestra tutti"
     style: >-
-      A mournful shehnai and nadaswaram lament answered by bansuri flute, slow mridangam heartbeat, rising to full
-      orchestra and choir; temple-like grief turning into strength.
+      Epic emotional South Indian film score: a lone South Indian double-reed oboe (nadaswaram or shehnai timbre)
+      playing a mournful lament with long pitch bends and wavering held notes over a tanpura drone and low cello pedal;
+      veena plucks and a soft temple bell answering; a barrel drum and mridangam with a slow heavy pulse; a low male
+      chorus on sustained vowels; rising to a massive tutti of orchestra, brass, thunderous temple drums and full chorus
+      with the reed wailing on top.
     sections:
-      opening: slow, mournful shehnai solo with bends, a distant bansuri answering
-      build: the nadaswaram takes the melody, a slow mridangam heartbeat and low strings grow
-      peak: full orchestra and wordless choir lift the lament into a powerful, defiant climax
-      release: a last shehnai phrase over a fading drone
+      opening: drone and low cello pedal, the reed lament alone in free time with long bends, veena plucks and a temple bell answering
+      build: barrel drum and mridangam in a slow heavy cycle, a low string ostinato, then the reed climbs to its piercing upper octave as strings tremolo, temple drums roll and the low male chorus swells on "aa"
+      breath: a sudden stop, the reed alone holding a high note over silence
+      peak: massive tutti, full orchestra, brass, big temple drums, cymbals and male chorus, the reed wailing over, the harmony turning to a bright surprise major cadence, fortissimo
+      release: a last reed phrase over a fading drone

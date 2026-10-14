@@ -51,14 +51,14 @@ def test_elevation_hit_lands_on_the_strongest_shot():
     assert list(marks) == ["Intro", "Build", "Drop", "Hit", "Drive", "Outro"]
     assert marks["Hit"][0] in (13, 14) and marks["Drop"][1] == marks["Hit"][0]
     assert marks["Outro"][1] == round(c.duration_s - c.silence_before_s)
-    assert "conch" in notes and "Composer" not in notes
+    assert "conch" in notes and "Composer" not in notes and "  " not in notes
 
 
 def test_emotion_peaks_late_and_releases():
     c = cue(cue_id="cue007", rasa="karuna", peak=False, duration_s=60.0, silence_before_s=0.0)
     notes = timed_structure(c, load_styles(STYLES)["emotion"], 48.0)
     names = re.findall(r"\] (\w+):", notes)
-    assert names == ["Opening", "Build", "Peak", "Release"] and "[0:48 - " in notes
+    assert names == ["Opening", "Build", "Breath", "Peak", "Release"] and "[0:48 - " in notes
 
 
 def test_cue_with_notes_or_without_preset_is_unchanged():
@@ -73,6 +73,8 @@ def test_prompt_uses_the_preset_style_line():
     styles = load_styles({"music": {"styles": {"emotion": "alaap_choir"}}})
     c = cue(cue_id="cue007", rasa="karuna", peak=False, instruments=["strings"], notes="[0:00 - 0:20] Opening: x.")
     p = cue_prompt(c, style=styles["emotion"])
-    assert "Style: A wordless female alaap" in p and "wordless textures" in p and "Structure (follow these timings)" in p
+    assert "Style: Emotional Indian cinematic score: a wordless female classical alaap" in p
+    assert p.startswith("Telugu film background score (BGM). Wordless vocals only")        # not "instrumental"
+    assert "wordless textures" in p and "Structure (follow these timings)" in p and "Avoid: lyrics" in p
     villain = cue_prompt(cue(rasa="raudra"))
     assert "Villain menace" in villain and "hero style" not in villain

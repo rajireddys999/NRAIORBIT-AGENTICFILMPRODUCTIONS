@@ -152,6 +152,12 @@ def _line_window(line: TrailerLine, length: float, spans: list[list[float]]) -> 
     return None
 
 
+def _spoken_on_screen(shot: Shot, lines: list[TrailerLine]) -> set[str]:
+    """Lines whose speaker is in frame in this shot. The video model animates that speaker's mouth, so the shot may
+    only appear in the trailer with that very line on the soundtrack (and lip-synced), never silent."""
+    return {ln.line_id for ln in lines if ln.line_id in shot.block_ids and ln.speaker in shot.characters_in_frame}
+
+
 def _carry_lines(shots: list[tuple[Shot, float]], lines: list[TrailerLine], roles: dict[str, str],
                  film_seconds: float, target_seconds: float, budgets: dict[str, float], max_line_s: float,
                  max_lines: int, fps: int) -> dict[str, TrailerClip]:
@@ -176,6 +182,9 @@ def _carry_lines(shots: list[tuple[Shot, float]], lines: list[TrailerLine], role
                 continue
             if any(start < c.film_start_s + c.duration_s and c.film_start_s < start + length for c in carried.values()):
                 continue                                         # same picture twice
+            if any(t < start + length and start < t + s.duration_s and _spoken_on_screen(s, lines) - {ln.line_id}
+                   for s, t in shots):
+                continue                                         # another speaker would mouth words with no voice
             extra = max(0.0, length - budgets[section])
             if extra > sum(spare.values()) + 1e-9 or length > room + 1e-9:
                 continue
@@ -214,6 +223,8 @@ def plan_trailer(shots: list[tuple[Shot, float]], bible: StoryBible, film_second
         for shot, start in shots:
             pos = start / film_seconds
             if shot.shot_id in used or pos > SPOILER_CUTOFF or not _section_fits(section, shot, roles):
+                continue
+            if _spoken_on_screen(shot, list(lines)):          # a talking face needs its line: only carried clips
                 continue
             if pos > CLIMAX_REGION and section != "escalation":
                 continue

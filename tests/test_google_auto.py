@@ -515,3 +515,29 @@ def test_vertex_veo_turns_off_unused_audio(setup):
     pipeline.run(until="render")
     config = setup.fake.video_calls[-1]["config"]
     assert config.generate_audio is False and config.number_of_videos == 1
+
+
+def test_lip_sync_redraws_only_on_screen_speakers_with_their_own_lines(setup):
+    from nraiorbit.providers.mock import MockLipSync
+    from nraiorbit.schemas import SceneScript
+
+    MockLipSync.calls.clear()
+    pipeline, cfg = setup.make(only=["trailer"])
+    cfg["providers"]["lipsync"] = "mock"
+    pipeline.run()
+    timeline = json.loads((setup.root / "10_edit" / "timeline.json").read_text())
+    synced = {s["shot_id"] for s in timeline["shots"] if s["clip"].endswith("_lipsync.mp4")}
+    speaker = {b.block_id: b.character_id for p in (setup.root / "03_scenes").glob("*.json")
+               for b in SceneScript.model_validate_json(p.read_text()).blocks if b.kind == "dialogue"}
+    real = {s["shot_id"] for s in timeline["shots"] if s["real"]}
+    shots = {s.shot_id: s for s in _selected_shots(setup.root, trailer_only=False)}
+    expected = {sid for sid, s in shots.items() if sid in real
+                and any(speaker.get(b) in s.characters_in_frame for b in s.block_ids)}
+    assert synced == expected and synced and len(MockLipSync.calls) == len(synced)
+    for video, audio in MockLipSync.calls:                       # the audio is exactly the shot's length
+        sid = video.parent.name
+        assert ffmpeg.duration(audio) == pytest.approx(shots[sid].duration_s, abs=0.02)
+    for s in timeline["shots"]:
+        if s["shot_id"] in synced:                               # conformed back for stream-copy joins
+            assert ffmpeg.duration(s["clip"]) == pytest.approx(s["duration_s"], abs=0.05)
+    assert ffmpeg.duration(setup.root / "11_master" / "trailer.mp4") > 10

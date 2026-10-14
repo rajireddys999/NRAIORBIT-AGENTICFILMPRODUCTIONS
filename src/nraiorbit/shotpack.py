@@ -92,8 +92,11 @@ def veo_prompt(shot: Shot, scene: SceneOutline, bible: StoryBible, lock: CastLoc
         people = "; ".join(character_line(c, shot.costume_ids[i] if i < len(shot.costume_ids) else None, bible, lock)
                            for i, c in enumerate(shot.characters_in_frame))
         parts.append(f"Characters (match the reference images exactly): {people}.")
-    if speaking:
-        parts.append(f"{speaking} is speaking, mouth moving naturally; no audible dialogue needed.")
+    if speaking:   # lip sync later redraws the mouth to the Telugu line; the face must be clearly visible for it
+        parts.append(f"{speaking} is speaking, face clearly visible to camera, mouth moving naturally; "
+                     "no audible dialogue needed. Everyone else keeps their mouth closed.")
+    elif shot.characters_in_frame:
+        parts.append("Nobody is talking: mouths closed and still, no lip movement.")
     atmosphere = ", ".join(look.get("atmosphere", []))
     parts.append(f"Setting: {scene.heading.title()}, {bible.era_and_region}.")
     parts.append(f"Look: {look['palette'].replace('_', ' ')} palette, {look['contrast'].replace('_', ' ')} contrast"

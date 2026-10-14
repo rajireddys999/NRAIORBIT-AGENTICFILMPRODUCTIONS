@@ -365,13 +365,14 @@ class Pipeline:
         fps = self._film["fps"]
 
         uses_inbox = prov["video"] in ("veo", "shotpack")     # paid / hand-made clips live in inbox/video
-        shots_out, dialogue_out, spans = [], [], []
+        shots_out, dialogue_out, spans, speaker_of = [], [], [], {}
         starts = scene_start_times(outline)
         film_end = sum(s.target_seconds for s in outline.scenes)
         prev_end = -DIALOGUE_GAP_S                            # end of the last placed line, across shots and scenes
         for sc in outline.scenes:
             script = self._load(self.p.scenes / f"{sc.scene_id}.json", SceneScript)
             blocks = {b.block_id: b for b in script.blocks}
+            speaker_of.update({b.block_id: b.character_id for b in script.blocks if b.kind == "dialogue"})
             shot_list = self._load(self.p.shots / f"{sc.scene_id}.json", ShotList)
             ctx = RenderContext(cast=lock, scene_id=sc.scene_id, resolution=resolution, fps=fps)
             t, placed = starts[sc.scene_id], set()
@@ -407,6 +408,11 @@ class Pipeline:
                     prev_end = start + dur
                 t += shot.duration_s
 
+        lipsync = prov.get("lipsync") or "none"
+        if lipsync != "none":                          # the speaker's mouth redrawn to the Telugu line, shot by shot
+            syncer = get_provider("lipsync", lipsync, **self._provider_kwargs("lipsync", lipsync, lock))
+            shots_out = self._lip_sync(syncer, shots_out, spans, dialogue_out, speaker_of, resolution, fps)
+
         sheet = self._load(self.p.music / "cue_sheet.json", CueSheet)
         styles = load_styles(self.cfg)                 # music.styles: timed sections scored to the picture
         music_out = []
@@ -429,6 +435,31 @@ class Pipeline:
         self.p.edit.mkdir(parents=True, exist_ok=True)
         timeline_path.write_text(json.dumps(timeline, indent=1), encoding="utf-8")
         self.log(f"  rendered {len(shots_out)} shots, {len(dialogue_out)} lines, {len(music_out)} cues")
+
+    def _lip_sync(self, syncer, shots_out: list, spans: list, dialogue: list, speaker_of: dict[str, str],
+                  resolution: tuple[int, int], fps: int) -> list:
+        """Every generated shot that was filmed with a speaker in frame (the video model animates that mouth) gets the
+        mouth redrawn to that speaker's own lines, as they fall inside the shot, and to silence everywhere else, so a
+        face never mouths words without a voice. Off-screen voices never drive a face; placeholders are skipped."""
+        out = []
+        for ts, (t, shot) in zip(shots_out, spans):
+            spoken = {b for b in shot.block_ids if speaker_of.get(b) in shot.characters_in_frame}
+            if not ts.real or not spoken:
+                out.append(ts)
+                continue
+            events = [(e.path, e.start_s - t, 0.0) for e in dialogue
+                      if e.ref_id in spoken and e.start_s < t + ts.duration_s and e.start_s + e.duration_s > t]
+            work = self.p.video / shot.shot_id
+            audio = ffmpeg.place_audio(events, ts.duration_s, work / f"{ts.clip.stem}.lipsync.wav")
+            try:
+                raw = syncer.apply(ts.clip, audio, work / f"{ts.clip.stem}_lipsync_raw.mp4")
+            except (BudgetExceeded, GoogleAPIError) as stop:
+                raise PipelineBlocked(str(stop)) from None
+            # back to the edit's exact length, size, frame rate and codec, so scenes still join by stream copy
+            synced = ffmpeg.conform_clip(raw, work / f"{ts.clip.stem}_lipsync.mp4", ts.duration_s, resolution, fps)
+            out.append(replace(ts, clip=synced))
+        self.log(f"  lip-sync: {sum(a.clip != b.clip for a, b in zip(out, shots_out))} shots")
+        return out
 
     def _render_shot(self, video, shot, ctx: RenderContext, face_guard) -> Path:
         # Without a face guard you choose the take (takes.yaml, `nraiorbit retake`); with one, it retakes itself.
@@ -487,6 +518,9 @@ class Pipeline:
         """Constructor arguments for providers that need project context."""
         voices = {e.voice_asset: self.library.resolve(e.voice_asset).model_dump()
                   for e in lock.characters.values() if e.voice_asset}
+        if capability == "lipsync":
+            return {} if name == "mock" else {"project_root": self.p.root, "cfg": self.cfg, "pricing": self.pricing,
+                                              "ledger": self.ledger}
         if name in ("shotpack", "inbox") and capability in ("video", "music"):
             return {"project_root": self.p.root}
         if capability == "video" and name == "veo":
@@ -625,10 +659,16 @@ class Pipeline:
             resolution = tuple(self.cfg.get("animatic", {}).get("resolution", [640, 360])) if self._animatic() \
                 else tuple(self._film["resolution"])
             # Picture only: the film's sound would chop lines at every cut. Whole lines are laid over it instead.
+            title_image = next((p for p in (self.p.root / "inbox" / f"title{e}" for e in (".png", ".jpg", ".jpeg"))
+                                if p.exists()), None)       # a designed title card, if there is one
+            title_at = next((i for i, c in enumerate(plan) if c.shot_id is None), 0)
+            behind = next((c for c in reversed(plan[:title_at]) if c.shot_id), None)   # the punch shot, blurred
             raw = assemble.cut_segments(
                 self.p.edit / "film_dialogue.mp4",
                 [(None if c.shot_id is None else c.film_start_s, c.duration_s) for c in plan],
-                self.p.edit / "trailer_raw.mp4", title=bible.title_en, resolution=resolution, fps=fps, audio=False)
+                self.p.edit / "trailer_raw.mp4", title=bible.title_en, resolution=resolution, fps=fps, audio=False,
+                title_image=title_image,
+                title_backdrop_s=behind.film_start_s + behind.duration_s / 2 if behind else None)
             total = round(sum(c.duration_s for c in plan), 4)
             wavs = {e["ref_id"]: Path(e["path"]) for e in tl["dialogue"]}
             dialogue = ffmpeg.place_audio([(wavs[c.line_id], c.line_at_s, 0.0) for c in plan if c.line_id], total,

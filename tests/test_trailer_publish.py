@@ -150,3 +150,21 @@ def test_srt_format(tmp_path):
     text = out.read_text(encoding="utf-8")
     assert text.startswith("1\n00:00:01,000 --> 00:00:02,500\nఒకటి\n")
     assert "2\n00:01:05,500 --> 00:01:10,250\nరెండు" in text
+
+
+def test_trailer_never_shows_a_talking_face_without_its_line():
+    """The video model animates the speaker's mouth in a dialogue shot: such a shot is only used with that line."""
+    shots, total = _film_shots()
+    lines = _film_lines(shots)
+    by_id = {s.shot_id: s for s, _ in shots}
+    plan = plan_trailer(shots, StoryBible.model_validate(STORY_BIBLE), total, 45, lines)
+    speaker = {ln.line_id: ln.speaker for ln in lines}
+    starts = {s.shot_id: t for s, t in shots}
+    for c in plan:
+        if not c.shot_id:
+            continue
+        for sid, t in starts.items():                     # every shot whose picture this clip shows
+            if t < c.film_start_s + c.duration_s - 1e-3 and c.film_start_s < t + by_id[sid].duration_s - 1e-3:
+                talking = {b for b in by_id[sid].block_ids if speaker.get(b) in by_id[sid].characters_in_frame}
+                assert talking <= ({c.line_id} if c.line_id else set()), (c.shot_id, sid, talking)
+    assert any(c.line_id for c in plan)

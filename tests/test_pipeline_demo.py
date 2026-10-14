@@ -252,3 +252,25 @@ def test_identity_guard_drives_retakes(tmp_path):
     assert {d["take"] for d in decisions} == {1, 2}
     assert all(d["passed"] == (d["take"] == 2) for d in decisions)
     assert not (root / "reports" / "review_queue.jsonl").exists()
+
+
+def test_title_card_is_cinematic_not_text_on_black(tmp_path):
+    from nraiorbit.post import assemble
+
+    src = tmp_path / "film.mp4"
+    ffmpeg.run(["-f", "lavfi", "-i", "testsrc2=s=320x180:r=24:d=4", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src)])
+    out = assemble.cut_segments(src, [(None, 2.0)], tmp_path / "t.mp4", title="Godavari Simham",
+                                resolution=(320, 180), fps=24, audio=False, title_backdrop_s=1.0)
+    assert ffmpeg.duration(out) == pytest.approx(2.0, abs=0.05)
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", "1.0", "-i", str(out), "-frames:v", "1",
+                                        "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True).stdout
+    frame = np.frombuffer(raw, np.uint8).reshape(180, 320, 3).astype(float)
+    assert frame.mean() > 8                                   # a blurred film frame behind it, not black
+    edge = subprocess.run(["ffmpeg", "-v", "error", "-i", str(out), "-frames:v", "1", "-f", "rawvideo",
+                                         "-pix_fmt", "gray", "-"], capture_output=True).stdout
+    assert np.frombuffer(edge, np.uint8).mean() < frame.mean()  # faded in from dark
+    designed = tmp_path / "title.png"
+    ffmpeg.run(["-f", "lavfi", "-i", "color=c=0xAA6622:s=640x360", "-frames:v", "1", str(designed)])
+    with_image = assemble.cut_segments(src, [(None, 2.0)], tmp_path / "ti.mp4", resolution=(320, 180), fps=24,
+                                       audio=False, title_image=designed)
+    assert ffmpeg.duration(with_image) == pytest.approx(2.0, abs=0.05)

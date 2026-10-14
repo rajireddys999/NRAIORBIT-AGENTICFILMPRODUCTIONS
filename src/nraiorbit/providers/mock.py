@@ -8,6 +8,7 @@ cue's tempo.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from ..post import ffmpeg
@@ -84,4 +85,17 @@ class MockMusic:
                    f"afade=t=in:d=0.5,afade=t=out:st={max(0.0, dur - 1.0):.3f}:d=1.0",
             "-ac", "2", str(out),
         ])
+        return out
+
+
+@register("lipsync", "mock")
+class MockLipSync:
+    """Copies the clip (tests and dry runs); records what a real lip-sync model would have been given."""
+
+    calls: list[tuple[Path, Path]] = []
+
+    def apply(self, video: Path, audio: Path, out: Path) -> Path:
+        MockLipSync.calls.append((video, audio))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(video, out)
         return out

@@ -83,37 +83,68 @@ def master(film_with_dialogue: Path, music_events: list[AudioEvent], out: Path,
         f"loudnorm=I={lufs}:TP={true_peak}:LRA=11[aout]"
     )
     ffmpeg.run(["-i", str(film_with_dialogue), "-i", str(music), "-filter_complex", graph,
-                "-map", "0:v", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "-b:a", "256k",
+                "-map", "0:v", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "-b:a", "256k", "-shortest",
                 "-ar", "48000", str(out)])
     return out
 
 
+TITLE_FONTS = ["/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+               "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf"]
+TITLE_GOLD = "0xE8B44C"
+
+
+def _title_card(source: Path, dur: float, w: int, h: int, fps: int, title: str, work: Path,
+                image: Path | None, backdrop_s: float | None) -> tuple[list[str], str]:
+    """Inputs and filter for a cinematic title card: a designed title image with a slow push-in, or the title in gold
+    over a dark, blurred frame of the film (black if none), always faded in and out. Never plain text on black."""
+    n = max(1, int(round(dur * fps)))
+    fade = f"fade=t=in:st=0:d={min(0.35, dur / 4):.3f},fade=t=out:st={max(0.0, dur - 0.45):.3f}:d={min(0.45, dur / 3):.3f}"
+    if image is not None and image.exists():
+        return (["-loop", "1", "-framerate", str(fps), "-i", str(image)],
+                f"scale={w * 2}:{h * 2}:force_original_aspect_ratio=increase,crop={w * 2}:{h * 2},"
+                f"zoompan=z='1+0.06*on/{n}':d={n}:s={w}x{h}:fps={fps},{fade}")
+    frame = work / "title_backdrop.png"
+    if backdrop_s is not None:                        # one frame of the film, as a still: an exact frame count after
+        ffmpeg.run(["-ss", f"{backdrop_s:.3f}", "-i", str(source), "-frames:v", "1", "-update", "1", str(frame)])
+    if backdrop_s is not None and frame.exists():
+        inputs = ["-loop", "1", "-framerate", str(fps), "-i", str(frame)]
+        still = f"scale={w}:{h},boxblur=lr={max(8, w // 80)}:lp=2,eq=brightness=-0.32:saturation=0.6,format=yuv420p"
+    else:
+        inputs = ["-f", "lavfi", "-i", f"color=c=black:s={w}x{h}:r={fps}"]
+        still = "format=yuv420p"
+    text = ""
+    font = next((f for f in TITLE_FONTS if Path(f).exists()), None) or ffmpeg.font_file()
+    if font and title:
+        label = work / "title.txt"
+        label.write_text(title.upper(), encoding="utf-8")
+        text = (f",drawtext=fontfile={font}:textfile={label}:fontcolor={TITLE_GOLD}:fontsize={h // 8}:"
+                f"x=(w-text_w)/2:y=(h-text_h)/2:shadowcolor=black@0.85:shadowx={max(2, h // 270)}:"
+                f"shadowy={max(2, h // 270)}:borderw={max(1, h // 540)}:bordercolor=0x5A3A0A")
+    return inputs, f"{still}{text},{fade}"
+
+
 def cut_segments(source: Path, segments: list[tuple[float | None, float]], out: Path, title: str = "",
-                 resolution: tuple[int, int] = (640, 360), fps: int = 24, audio: bool = True) -> Path:
+                 resolution: tuple[int, int] = (640, 360), fps: int = 24, audio: bool = True,
+                 title_image: Path | None = None, title_backdrop_s: float | None = None) -> Path:
     """Cut (start_s, duration_s) segments from `source` and join them in order, each in whole frames.
 
-    A segment with start None becomes a black title card showing `title`. audio=False cuts picture only (the
-    trailer lays whole dialogue lines over it instead of the film's sound).
+    A segment with start None becomes the title card: `title_image` (a designed title) if given, else `title` in gold
+    over a blurred, darkened frame of the film at `title_backdrop_s`. audio=False cuts picture only (the trailer lays
+    whole dialogue lines over it instead of the film's sound).
     """
     work = out.parent / f".{out.stem}"
     work.mkdir(parents=True, exist_ok=True)
     w, h = resolution
-    font = ffmpeg.font_file()
     encode = [*ffmpeg.VIDEO_ENCODE, "-r", str(fps), *(["-c:a", "aac", "-ar", "48000", "-ac", "2"] if audio else ["-an"])]
     parts: list[Path] = []
     for i, (start, dur) in enumerate(segments):
         part = work / f"seg_{i:03d}.mp4"
         frames = ["-frames:v", str(max(1, int(round(dur * fps))))]
         if start is None:
-            vf = []
-            if font and title:
-                label = work / "title.txt"
-                label.write_text(title, encoding="utf-8")
-                vf = ["-vf", f"drawtext=fontfile={font}:textfile={label}:fontcolor=white:"
-                             f"fontsize={h // 9}:x=(w-text_w)/2:y=(h-text_h)/2"]
+            inputs, vf = _title_card(source, dur, w, h, fps, title, work, title_image, title_backdrop_s)
             silence = ["-f", "lavfi", "-t", f"{dur:.3f}", "-i", "anullsrc=r=48000:cl=stereo", "-shortest"] if audio else []
-            ffmpeg.run(["-f", "lavfi", "-i", f"color=c=black:s={w}x{h}:r={fps}:d={dur:.3f}",
-                        *silence, *vf, *encode, *frames, str(part)])
+            ffmpeg.run([*inputs, *silence, "-vf", vf, "-map", "0:v", *(["-map", "1:a"] if audio else []),
+                        *encode, *frames, str(part)])
         else:
             ffmpeg.run(["-ss", f"{start:.3f}", "-i", str(source), "-t", f"{dur:.3f}",
                         "-vf", f"scale={w}:{h}", *encode, *frames, str(part)])

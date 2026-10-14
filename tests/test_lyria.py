@@ -86,7 +86,7 @@ def test_prompt_carries_raga_instruments_and_notes():
     assert p.startswith("Instrumental Telugu film background score (BGM). Instrumental only, no vocals")
     assert "Mayamalavagowla" in p and "devotional, dramatic minor colour" in p and "C Db E F G Ab B" in p
     assert "piercing nadaswaram, thunderous thavil, temple bells" in p and "about 141 BPM" in p and "Adi tala" in p
-    assert "leitmotif for Arjun, the hero" in p and "Length: about 8 seconds." in p
+    assert "leitmotif for Arjun, the hero" in p and "Length: about 11 seconds." in p   # 8.5 s cue: ceil + 2 s, trimmed later
     assert "Leave space for dialogue" in p and "Structure" not in p and "Mass elevation" not in p
 
     trailer = cue(cue_id="trailer", cue_type="trailer", peak=True, silence_before_s=0.0, duration_s=44.2,
@@ -95,12 +95,12 @@ def test_prompt_carries_raga_instruments_and_notes():
     assert "Structure (follow these timings): 0-8 s low drone; 8-20 s rising dappu roll; 21 s HIT." in p
     assert "thunderous thavil and dappu" in p and "brass stabs" in p and "wordless" in p
     assert "Leave space for dialogue" not in p and "Arc:" not in p        # the notes replace the generic arc
-    assert "Nattai" in p and "C D# E F G A# B" in p and "about 44 seconds" in p
+    assert "Nattai" in p and "C D# E F G A# B" in p and "about 47 seconds" in p
     assert "Arc:" in cue_prompt(trailer.model_copy(update={"notes": ""}))
 
     long_bed = cue(duration_s=61.5, peak=False)
     assert "about 30 seconds, seamlessly loopable" in cue_prompt(long_bed, model="lyria-3-clip-preview")
-    assert "about 60 seconds." in cue_prompt(long_bed, model="lyria-3-pro-preview")
+    assert "about 62 seconds." in cue_prompt(long_bed, model="lyria-3-pro-preview")
 
 
 @needs_ffmpeg

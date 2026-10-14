@@ -36,6 +36,7 @@ from .inbox import InboxMusic, _find_audio
 DEFAULT_MODEL = "lyria-3-pro-preview"
 CLIP_SECONDS = 30                 # Lyria 3 Clip's fixed length
 FADE_OUT_S = 1.5
+EXTRA_S = 2                       # ask for a little more than the cue needs; the edit trims (timing drifts)
 EXT = {"audio/wav": ".wav", "audio/x-wav": ".wav", "audio/wave": ".wav", "audio/vnd.wave": ".wav", "audio/mpeg": ".mp3",
        "audio/mp3": ".mp3", "audio/ogg": ".ogg", "audio/ogg_opus": ".ogg", "audio/opus": ".opus", "audio/flac": ".flac",
        "audio/x-flac": ".flac", "audio/aac": ".aac", "audio/mp4": ".m4a", "audio/m4a": ".m4a", "audio/x-m4a": ".m4a",
@@ -182,9 +183,10 @@ def cue_prompt(cue: Cue, model: str = DEFAULT_MODEL, chars: dict[str, tuple[str,
                      "no busy lead melody all the way through.")
     if voices:
         parts.append("The only voices allowed are wordless textures (chant, alaap, hum: pure vowels, never words).")
-    target = min(seconds, CLIP_SECONDS) if "clip" in model else seconds
-    parts.append(f"Length: about {round(target)} seconds"
-                 + (", seamlessly loopable: steady groove, no intro or ending." if target < seconds - 0.5 else "."))
+    loop = "clip" in model and seconds > CLIP_SECONDS + 0.5
+    target = CLIP_SECONDS if "clip" in model else math.ceil(seconds) + EXTRA_S   # aim long and trim: a short track
+    parts.append(f"Length: about {target} seconds"                                # would loop its opening back in
+                 + (", seamlessly loopable: steady groove, no intro or ending." if loop else "."))
     if cue.notes.strip():
         notes = cue.notes.strip()
         parts.append(f"Structure (follow these timings): {notes}{'' if notes[-1] in '.!?' else '.'}")

@@ -238,6 +238,29 @@ def test_gemini_tts_shortens_pauses_and_keeps_the_paid_take(tmp_path):
         pytest.approx(3.9, abs=0.02)
 
 
+def test_gemini_tts_accepts_a_wav_answer(tmp_path):
+    """Some TTS models answer with a WAV file instead of raw L16; its header must not become a click."""
+    import io
+    import wave
+
+    fake = FakeGoogle(tmp_path)
+    tone = (np.sin(2 * np.pi * 220 * np.arange(24000) / 24000) * 8000).astype("<i2")
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes(tone.tobytes())
+    fake.pcm = buf.getvalue()
+    ledger = SpendLedger(tmp_path / "reports" / "cost.jsonl", None)
+    tts = google_ai.GeminiTTS({}, {"google": {}, "voice": {"max_pause_s": None}}, {}, ledger, client=fake)
+    out = tmp_path / "take_1.wav"
+    assert tts.synthesize(_line(), None, out) == pytest.approx(1.0, abs=0.02)            # not 1.0 s + header noise
+    with wave.open(str(out)) as w:
+        head = np.frombuffer(w.readframes(480), "<i2").astype(float)
+    assert np.abs(head[:40]).max() < 3000                                               # no RIFF bytes as samples
+
+
 def test_trailer_test_run_end_to_end(setup):
     """`nraiorbit run <slug> --only trailer`: movie with placeholders, trailer cut only from generated shots."""
     pipeline, _ = setup.make(only=["trailer"])

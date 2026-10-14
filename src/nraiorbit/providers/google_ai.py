@@ -466,11 +466,14 @@ class GeminiTTS:
                 rate = int(piece.split("=")[1])
         out.parent.mkdir(parents=True, exist_ok=True)
         raw = out.with_suffix(".pcm.wav")
-        with wave.open(str(raw), "wb") as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(rate)
-            w.writeframes(pcm)
+        if pcm[:4] == b"RIFF":                            # some TTS models answer with a WAV file, not raw L16
+            raw.write_bytes(pcm)
+        else:
+            with wave.open(str(raw), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(rate)
+                w.writeframes(pcm)
         ffmpeg.run(["-i", str(raw), "-ar", str(ffmpeg.SAMPLE_RATE), "-ac", "2", str(out)])
         raw.unlink()
         seconds = ffmpeg.duration(out)

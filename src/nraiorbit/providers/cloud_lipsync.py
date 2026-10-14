@@ -38,8 +38,8 @@ def _credentials():
         json.loads(raw), scopes=["https://www.googleapis.com/auth/cloud-platform"])
 
 
-def gpu_price(pricing: dict) -> dict:
-    p = pricing.get("cloud_run_gpu") or {}
+def gpu_price(pricing: dict, runner: str = "cloudrun") -> dict:
+    p = (pricing.get("vertex_endpoint_gpu") if runner == "vertex_endpoint" else None) or pricing.get("cloud_run_gpu") or {}
     return {"per_hour": p.get("per_hour", 1.10), "startup_minutes": p.get("startup_minutes", 6.0),
             "minutes_per_clip": p.get("minutes_per_clip", 2.0)}
 
@@ -65,7 +65,7 @@ class CloudRunLipSync:
         self.machine = ls.get("machine_type", "g2-standard-8")
         self.service_account = ls.get("service_account") or os.environ.get("LIPSYNC_SERVICE_ACCOUNT")
         self.poll_s = float(ls.get("poll_seconds", 20))
-        self.price = gpu_price(pricing)
+        self.price = gpu_price(pricing, ls.get("runner", "cloudrun"))
         self.cache = project_root / "cache" / "lipsync"
         self.ledger = ledger
         self._storage, self._jobs = storage_client, jobs_client

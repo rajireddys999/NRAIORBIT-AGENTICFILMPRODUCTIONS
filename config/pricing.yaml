@@ -79,3 +79,8 @@ cloud_run_gpu:            # lip-sync worker (deploy/lipsync): Cloud Run job, 1x 
   per_hour: 1.10          # UNVERIFIED estimate (L4 ~$0.67/h + CPU/memory ~$0.37/h); check cloud.google.com/run/pricing
   startup_minutes: 6      # image pull + model load, once per job execution
   minutes_per_clip: 2.0   # LatentSync on an 8 s 1080p shot (estimate)
+
+vertex_endpoint_gpu:      # lip-sync on a temporary Vertex AI endpoint (g2-standard-8 + 1x L4), billed while deployed
+  per_hour: 1.80          # UNVERIFIED conservative estimate; check the Vertex AI prediction pricing page
+  startup_minutes: 25     # register + create + deploy (measured ~30 min end to end for 2 shots)
+  minutes_per_clip: 2.0

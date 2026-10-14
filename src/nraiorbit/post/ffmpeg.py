@@ -59,19 +59,28 @@ def concat(paths: list[Path], out: Path) -> Path:
 
 
 def place_audio(events: list[tuple[Path, float, float]], total_s: float, out: Path) -> Path:
-    """Mix audio files at offsets onto a silent bed. events: (path, start_s, gain_db)."""
+    """Mix audio files at offsets onto a silent bed of exactly total_s. events: (path, start_s, gain_db).
+
+    An event starting before 0 loses its head and one running past total_s is cut there, in whole samples, so a
+    line that crosses a scene cut continues seamlessly in the next scene's audio.
+    """
     out.parent.mkdir(parents=True, exist_ok=True)
-    inputs = ["-f", "lavfi", "-t", f"{total_s:.3f}", "-i", f"anullsrc=r={SAMPLE_RATE}:cl=stereo"]
+    n = int(round(total_s * SAMPLE_RATE))
+    inputs = ["-f", "lavfi", "-t", f"{n / SAMPLE_RATE:.6f}", "-i", f"anullsrc=r={SAMPLE_RATE}:cl=stereo"]
     filters, labels = [], ["[0:a]"]
-    for i, (path, start, gain_db) in enumerate(events, 1):
+    for path, start, gain_db in events:
+        offset = int(round(start * SAMPLE_RATE))
+        if offset >= n:
+            continue
+        i = len(labels)
         inputs += ["-i", str(path)]
-        ms = max(0, int(round(start * 1000)))
+        place = (f"atrim=start_sample={-offset},asetpts=PTS-STARTPTS" if offset < 0
+                 else f"adelay=delays={offset}S:all=1")
         filters.append(
-            f"[{i}:a]aresample={SAMPLE_RATE},aformat=channel_layouts=stereo,"
-            f"volume={gain_db}dB,adelay=delays={ms}:all=1[a{i}]"
-        )
+            f"[{i}:a]aresample={SAMPLE_RATE},aformat=channel_layouts=stereo,volume={gain_db}dB,{place}[a{i}]")
         labels.append(f"[a{i}]")
-    filters.append(f"{''.join(labels)}amix=inputs={len(labels)}:duration=first:normalize=0[out]")
+    filters.append(f"{''.join(labels)}amix=inputs={len(labels)}:duration=first:normalize=0,"
+                   f"apad=whole_len={n},atrim=end_sample={n}[out]")
     script = out.with_suffix(".filter.txt")
     script.write_text(";\n".join(filters), encoding="utf-8")
     run([*inputs, "-filter_complex_script", str(script), "-map", "[out]", "-ar", str(SAMPLE_RATE), str(out)])

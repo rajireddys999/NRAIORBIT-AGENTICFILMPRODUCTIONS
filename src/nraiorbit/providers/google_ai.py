@@ -29,6 +29,7 @@ from typing import Any, Callable
 
 from ..costing import SpendLedger
 from ..post import ffmpeg
+from ..post.speech import tighten_pauses
 from ..schemas import CastLock, Outline, ScriptBlock, Shot, StoryBible
 from .base import RenderContext, register
 
@@ -89,8 +90,9 @@ def _transient(e: Exception) -> bool:
 
 
 def google_client(google_cfg: dict, role: str = ""):
-    """role ("veo", "image", "tts"): on Vertex AI, google.<role>_location picks that model's region, because one
-    region may not serve all of them (Veo is regional, e.g. us-central1; the pro image model is served from global)."""
+    """role ("veo", "image", "tts", "music"): on Vertex AI, google.<role>_location picks that model's region, because
+    one region may not serve all of them (Veo is regional, e.g. us-central1; the pro image model and Lyria are served
+    from global)."""
     if CLIENT_FACTORY is not None:
         return CLIENT_FACTORY(google_cfg)
     try:
@@ -98,10 +100,10 @@ def google_client(google_cfg: dict, role: str = ""):
     except ImportError:
         raise GoogleSetupError("google-genai is not installed: pip install google-genai") from None
     try:
-        # Images and voices retry a brief 429/5xx (a refused call is not billed). Veo submissions never retry
+        # Images, voices and music retry a brief 429/5xx (a refused call is not billed). Veo submissions never retry
         # automatically: a retry after an ambiguous error could start, and pay for, a second job.
         extra = {"http_options": _types().HttpOptions(retry_options=_types().HttpRetryOptions(
-            attempts=5, initial_delay=2, max_delay=60))} if role in ("image", "tts") else {}
+            attempts=5, initial_delay=2, max_delay=60))} if role in ("image", "tts", "music") else {}
         if google_cfg.get("vertex"):
             return genai.Client(vertexai=True, **extra,
                                 **vertex_auth(google_cfg.get(f"{role}_location") if role else None))
@@ -386,21 +388,38 @@ class VeoVideo:
 # ------------------------------------------------------------------------------ Telugu TTS
 
 GEMINI_TONE = {
-    "shringara": "warmly and affectionately", "hasya": "playfully, amused", "karuna": "sadly, close to tears",
-    "raudra": "with controlled anger", "veera": "confidently, with quiet authority", "bhayanaka": "fearfully",
-    "bibhatsa": "with disgust", "adbhuta": "in wonder", "shanta": "calmly", "vatsalya": "tenderly",
-    "bhakti": "reverently",
+    "shringara": "warm and affectionate", "hasya": "playful, amused", "karuna": "sad, close to tears",
+    "raudra": "controlled anger", "veera": "confident, quiet authority", "bhayanaka": "fearful",
+    "bibhatsa": "disgusted", "adbhuta": "full of wonder", "shanta": "calm", "vatsalya": "tender",
+    "bhakti": "reverent",
 }
-GEMINI_PACE = {"very_slow": "very slowly", "slow": "slowly", "medium": "", "fast": "quickly", "very_fast": "very quickly"}
-GEMINI_VOLUME = {"whisper": "in a whisper", "low": "softly", "normal": "", "loud": "loudly", "shout": "shouting"}
+# Never ask for extreme slowness: the model answers with second-long gaps between words, which sounds broken.
+GEMINI_PACE = {"very_slow": "slow and deliberate, but no long gaps", "slow": "unhurried, natural Telugu rhythm",
+               "medium": "natural conversational pace", "fast": "brisk", "very_fast": "fast"}
+GEMINI_VOLUME = {"whisper": "a whisper", "low": "soft, close to the mic", "normal": "normal speaking level",
+                 "loud": "loud, projected", "shout": "shouting"}
+TTS_RULE = ("Speak only the transcript below, in natural spoken Telugu (Andhra/Telangana film style). "
+            "Do not read these notes aloud. Keep pauses short and natural.")
 
 
-def tts_instruction(line: ScriptBlock) -> str:
-    d = line.delivery
-    style = ", ".join(x for x in (GEMINI_TONE.get(d.rasa, "") if d else "", GEMINI_PACE.get(d.pace, "") if d else "",
-                                  GEMINI_VOLUME.get(d.volume, "") if d else "") if x)
-    note = f" ({d.notes})" if d and d.notes else ""
-    return f"Say in natural spoken Telugu, {style or 'naturally'}{note}: {line.text_te}"
+def tts_instruction(line: ScriptBlock, voice: dict | None = None) -> str:
+    """Gemini speech prompt in Google's layout: audio profile, director's notes in English, then the Telugu
+    transcript last and alone, so the notes are never read out. voice: the voice manifest (name, gender, age...)."""
+    v, d = voice or {}, line.delivery
+    name = (v.get("name") or "").split("(")[0].strip() or (line.character_id or "narrator").replace("_", " ").title()
+    age = v.get("age_range")
+    feel = ", ".join(x for x in (
+        v.get("gender") or "", f"age {age[0]}-{age[1]}" if age else "", f"{v['pitch']} pitch" if v.get("pitch") else "",
+        ", ".join(v.get("timbre_tags") or []),
+        f"{v['dialect'].replace('_', ' ').title()} Telugu accent" if v.get("dialect") else "") if x)
+    notes = [f"Style: {GEMINI_TONE.get(d.rasa, 'natural')} ({d.rasa}, intensity {d.intensity}/10)" if d else
+             "Style: natural",
+             f"Pace: {GEMINI_PACE.get(d.pace, GEMINI_PACE['medium']) if d else GEMINI_PACE['medium']}",
+             f"Volume: {GEMINI_VOLUME.get(d.volume, GEMINI_VOLUME['normal']) if d else GEMINI_VOLUME['normal']}"]
+    if d and d.notes.strip():
+        notes.append(f"Notes: {d.notes.strip()}")
+    return "\n".join([f"# AUDIO PROFILE: {name}", *([feel] if feel else []), "", "### DIRECTOR'S NOTES", *notes,
+                      TTS_RULE, "", "#### TRANSCRIPT", line.text_te.strip()])
 
 
 @register("tts", "gemini")
@@ -409,23 +428,30 @@ class GeminiTTS:
                  cache_dir: Path | None = None):
         self.cache_dir = cache_dir or ledger.path.parent.parent / "cache" / "tts"
         self.g = cfg.get("google", {})
+        self.max_pause_s = cfg.get("voice", {}).get("max_pause_s", 0.6)    # null: keep the model's pauses
         self.voices = voices
         self.client = client or google_client(self.g, "tts")
         self.ledger = ledger
         self.per_minute = pricing.get("gemini", {}).get("tts_per_minute", 0.02)
+
+    def _tighten(self, wav: Path) -> float:
+        """The cache keeps the model's raw take; every copy handed to the edit gets short, natural pauses."""
+        if not self.max_pause_s:
+            return ffmpeg.duration(wav)
+        return tighten_pauses(wav, self.max_pause_s, keep_s=min(0.3, self.max_pause_s))
 
     def synthesize(self, line: ScriptBlock, voice_ref: str | None, out: Path) -> float:
         types = _types()
         voice = self.voices.get(voice_ref or "", {})
         voice_name = voice.get("gemini_voice") or ("Charon" if voice.get("gender") == "male" else "Kore")
         model = self.g.get("tts_model", "gemini-2.5-flash-preview-tts")
-        instruction = tts_instruction(line)
+        instruction = tts_instruction(line, voice)
         key = hashlib.sha1(json.dumps([model, voice_name, instruction]).encode("utf-8")).hexdigest()[:16]
         cached = self.cache_dir / f"{key}.wav"
         if cached.exists():                               # same line, voice and delivery: already paid
             out.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(cached, out)
-            return ffmpeg.duration(out)
+            return self._tighten(out)
         self.ledger.check(self.per_minute * 0.25, f"TTS {line.block_id}")
         speech = types.SpeechConfig(
             voice_config=types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)),
@@ -452,4 +478,4 @@ class GeminiTTS:
                            voice=voice_name)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(out, cached)
-        return seconds
+        return self._tighten(out)

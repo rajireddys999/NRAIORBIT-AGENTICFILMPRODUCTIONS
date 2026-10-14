@@ -31,7 +31,7 @@ from .planning.runtime import (
 )
 from .post import assemble, ffmpeg
 from .post.subtitles import write_srt
-from .post.trailer import plan_trailer
+from .post.trailer import PUNCH_DROP_S, TrailerLine, elevation_arc, plan_trailer
 from .providers import RenderContext, get_provider
 from .providers.google_ai import GoogleAPIError, ShotFiltered
 from .providers.mock import MockTTS, MockVideo
@@ -41,6 +41,7 @@ from .schemas import CastLock, Critique, Cue, CueSheet, Outline, SceneScript, Sh
 STAGES = ["story_bible", "outline", "scenes", "cast", "shots", "music_plan", "render", "assemble", "trailer"]
 STAGE_GATES = {"story_bible": "story", "cast": "cast", "assemble": "pacing", "trailer": "trailer"}
 DIALOGUE_LEAD_IN_S = 0.2
+DIALOGUE_GAP_S = 0.25        # breath between consecutive lines
 
 
 class GatePending(Exception):
@@ -365,12 +366,14 @@ class Pipeline:
         uses_inbox = prov["video"] in ("veo", "shotpack")     # paid / hand-made clips live in inbox/video
         shots_out, dialogue_out = [], []
         starts = scene_start_times(outline)
+        film_end = sum(s.target_seconds for s in outline.scenes)
+        prev_end = -DIALOGUE_GAP_S                            # end of the last placed line, across shots and scenes
         for sc in outline.scenes:
             script = self._load(self.p.scenes / f"{sc.scene_id}.json", SceneScript)
             blocks = {b.block_id: b for b in script.blocks}
             shot_list = self._load(self.p.shots / f"{sc.scene_id}.json", ShotList)
             ctx = RenderContext(cast=lock, scene_id=sc.scene_id, resolution=resolution, fps=fps)
-            t, scene_end, placed = starts[sc.scene_id], starts[sc.scene_id] + sc.target_seconds, set()
+            t, placed = starts[sc.scene_id], set()
             for shot in shot_list.shots:
                 take = self.takes.get(shot.shot_id, 1)
                 paid = clips_for(self.p.root, shot.shot_id) if uses_inbox else []
@@ -385,17 +388,21 @@ class Pipeline:
                 real = not uses_inbox or bool(clips_for(self.p.root, shot.shot_id))
                 shots_out.append(assemble.TimelineShot(shot.shot_id, sc.scene_id, round(t, 3), shot.duration_s,
                                                        clip, real))
-                cursor = t + DIALOGUE_LEAD_IN_S
                 for bid in shot.block_ids:
                     block = blocks.get(bid)
                     if block is None or block.kind != "dialogue" or bid in placed:
                         continue
                     voice = lock.characters[block.character_id].voice_asset if block.character_id in lock.characters else None
                     wav, dur = self._render_line(tts, block, voice, voice_guard, speaker_embedder)
-                    start = min(cursor, max(t, scene_end - dur))
-                    dialogue_out.append(assemble.AudioEvent(wav, round(start, 3), dur, "dialogue", ref_id=bid))
+                    # Lines never overlap and are never cut: a long line runs on into the next shot or scene, and the
+                    # next line waits for it. Only the film's last lines are pulled earlier to end with the film.
+                    start = max(t + DIALOGUE_LEAD_IN_S, prev_end + DIALOGUE_GAP_S)
+                    if start + dur > film_end:
+                        start = max(prev_end + DIALOGUE_GAP_S, min(start, max(t, film_end - dur)))
+                    start = round(start, 3)
+                    dialogue_out.append(assemble.AudioEvent(wav, start, dur, "dialogue", ref_id=bid))
                     placed.add(bid)
-                    cursor = start + dur + 0.25
+                    prev_end = start + dur
                 t += shot.duration_s
 
         sheet = self._load(self.p.music / "cue_sheet.json", CueSheet)
@@ -481,6 +488,9 @@ class Pipeline:
         if capability == "video" and name == "veo":
             return {"project_root": self.p.root, "library": self.library, "cfg": self.cfg, "pricing": self.pricing,
                     "ledger": self.ledger, "navarasa": self.navarasa}
+        if capability == "music" and name == "lyria":
+            return {"project_root": self.p.root, "cfg": self.cfg, "pricing": self.pricing, "ledger": self.ledger,
+                    "navarasa": self.navarasa}
         if capability != "tts":
             return {}
         if name == "mock":
@@ -550,10 +560,11 @@ class Pipeline:
             for sc in outline.scenes:
                 scene_shots = [s for s in shots if s.scene_id == sc.scene_id]
                 start, end = starts[sc.scene_id], starts[sc.scene_id] + sc.target_seconds
-                scene_dlg = [e for e in dialogue if start <= e.start_s < end]
+                # every line overlapping the scene: one that runs past a cut is split there and joined seamlessly
+                scene_dlg = [e for e in dialogue if e.start_s < end and e.start_s + e.duration_s > start]
                 out = self.p.edit / "scenes" / f"{sc.scene_id}.mp4"
                 scene_files.append(assemble.render_scene(scene_shots, scene_dlg, starts[sc.scene_id], out))
-            film = ffmpeg.concat(scene_files, self.p.edit / "film_dialogue.mp4")
+            film = assemble.join_scenes(scene_files, self.p.edit / "film_dialogue.mp4")
             audio = self.cfg["audio"]
             assemble.master(film, music, movie, audio["master_lufs"], audio["true_peak_db"])
             self._write_stems(film, movie)
@@ -565,16 +576,18 @@ class Pipeline:
         """Separate dialogue and music tracks for mixing in DaVinci Resolve (Fairlight)."""
         stems = self.p.master / "stems"
         stems.mkdir(parents=True, exist_ok=True)
-        ffmpeg.run(["-i", str(film_with_dialogue), "-vn", "-c:a", "pcm_s24le", str(stems / "dialogue.wav")])
+        joined = film_with_dialogue.parent / f".{film_with_dialogue.stem}" / "dialogue.wav"   # lossless scene join
+        source = joined if joined.exists() else film_with_dialogue
+        ffmpeg.run(["-i", str(source), "-vn", "-c:a", "pcm_s24le", str(stems / "dialogue.wav")])
         music_bed = movie.parent / f".{movie.stem}" / "music.wav"
         if music_bed.exists():
             shutil.copy2(music_bed, stems / "music.wav")
 
+    def _script_blocks(self) -> dict:
+        return {b.block_id: b for path in sorted(self.p.scenes.glob("*.json")) for b in self._load(path, SceneScript).blocks}
+
     def _write_subtitles(self, dialogue: list[assemble.AudioEvent]) -> None:
-        blocks = {}
-        for path in sorted(self.p.scenes.glob("*.json")):
-            for b in self._load(path, SceneScript).blocks:
-                blocks[b.block_id] = b
+        blocks = self._script_blocks()
         for lang in self._film.get("subtitle_languages", ["te", "en"]):
             entries = [(e.start_s, e.start_s + e.duration_s,
                         getattr(blocks[e.ref_id], f"text_{lang}")) for e in dialogue if e.ref_id in blocks]
@@ -595,24 +608,45 @@ class Pipeline:
                 for shot in self._load(self.p.shots / f"{sc.scene_id}.json", ShotList).shots:
                     if shot.shot_id in real:                     # never cut placeholders into the trailer
                         all_shots.append((shot, starts[shot.shot_id]))
-            plan = plan_trailer(all_shots, bible, tl["film_seconds"], self._film["trailer_seconds"])
+            blocks = self._script_blocks()
+            lines = [TrailerLine(e["ref_id"], e["start_s"], e["duration_s"], b.character_id,
+                                 b.delivery.rasa if b.delivery else "shanta", b.delivery.intensity if b.delivery else 5)
+                     for e in tl["dialogue"] if (b := blocks.get(e["ref_id"]))]
+            fps = self._film["fps"]
+            plan = plan_trailer(all_shots, bible, tl["film_seconds"], self._film["trailer_seconds"], lines,
+                                max_line_s=self._film.get("trailer_line_max_s", 7.5),
+                                max_lines=self._film.get("trailer_max_lines", 5), fps=fps)
             (self.p.edit / "trailer_plan.json").write_text(
                 json.dumps([asdict(c) for c in plan], indent=1), encoding="utf-8")
             resolution = tuple(self.cfg.get("animatic", {}).get("resolution", [640, 360])) if self._animatic() \
                 else tuple(self._film["resolution"])
+            # Picture only: the film's sound would chop lines at every cut. Whole lines are laid over it instead.
             raw = assemble.cut_segments(
                 self.p.edit / "film_dialogue.mp4",
                 [(None if c.shot_id is None else c.film_start_s, c.duration_s) for c in plan],
-                self.p.edit / "trailer_raw.mp4", title=bible.title_en, resolution=resolution, fps=self._film["fps"])
-            total = ffmpeg.duration(raw)
+                self.p.edit / "trailer_raw.mp4", title=bible.title_en, resolution=resolution, fps=fps, audio=False)
+            total = round(sum(c.duration_s for c in plan), 4)
+            wavs = {e["ref_id"]: Path(e["path"]) for e in tl["dialogue"]}
+            dialogue = ffmpeg.place_audio([(wavs[c.line_id], c.line_at_s, 0.0) for c in plan if c.line_id], total,
+                                          self.p.edit / ".trailer_dialogue" / "dialogue.wav")
+            film = ffmpeg.mux(raw, dialogue, self.p.edit / "trailer_dialogue.mp4")
+            notes, drop_at = elevation_arc(plan)
             cue = Cue(cue_id="trailer", scene_ids=[], start_s=0, duration_s=total, rasa="veera", intensity=9,
                       cue_type="trailer", raga="nattai", tala="adi", bpm=140,
-                      instruments=["dappu", "thavil", "epic_brass"], leitmotif_character=None, peak=True)
+                      instruments=["venu_flute", "veena", "thavil", "dappu", "epic_brass", "choir_sanskrit_chant"],
+                      leitmotif_character=None, peak=True, notes=notes)
+            self._write_trailer_cue(cue)
             name = self.cfg["providers"]["music"]
             music = get_provider("music", name, **self._provider_kwargs("music", name, self._lock()))
             wav = music.render_cue(cue, self.p.music / "trailer_cue.wav")
             audio = self.cfg["audio"]
-            assemble.master(raw, [assemble.AudioEvent(wav, 0.0, total, "music", -2.0, "trailer")], out,
-                            audio["master_lufs"], audio["true_peak_db"])
-            self.log(f"  trailer: {out} ({total:.0f} s, {sum(c.shot_id is not None for c in plan)} clips)")
+            # the score drops to near-silence right before the punch line, then hits on the title card
+            assemble.master(film, [assemble.AudioEvent(wav, 0.0, total, "music", -2.0, "trailer")], out,
+                            audio["master_lufs"], audio["true_peak_db"], music_dips=[(drop_at, PUNCH_DROP_S, -20.0)])
+            self.log(f"  trailer: {out} ({total:.0f} s, {sum(c.shot_id is not None for c in plan)} clips, "
+                     f"{sum(bool(c.line_id) for c in plan)} whole lines)")
         self.gate("trailer")
+
+    def _write_trailer_cue(self, cue: Cue) -> None:
+        """The trailer cue with its timed elevation arc, for review and for re-scoring by hand."""
+        self._save(self.p.music / "trailer_cue.json", cue)

@@ -26,6 +26,7 @@ from pathlib import Path
 import yaml
 
 from .config import REPO_ROOT, load_pipeline_config
+from .costing import BudgetExceeded
 from .library.registry import AssetRegistry
 from .pipeline import STAGES, GatePending, Pipeline, PipelineBlocked, ProjectPaths
 from .providers.google_ai import GoogleAPIError, GoogleSetupError
@@ -60,7 +61,7 @@ def _run(pipeline: Pipeline, slug: str, until=None, force=()) -> None:
         print(f"\nPaused at review gate '{g.gate}'. Review the artifacts in {pipeline.p.root}, then:\n"
               f"  nraiorbit approve {slug} {g.gate}\n  nraiorbit run {slug}")
         return
-    except PipelineBlocked as b:
+    except (PipelineBlocked, BudgetExceeded) as b:      # paid music cues (render, trailer) raise the budget stop as is
         sys.exit(f"\nBlocked: {b}")
     except GoogleSetupError as e:
         sys.exit(f"\nGoogle setup needed: {e}")
@@ -92,7 +93,8 @@ def _preflight(root: Path, cfg: dict, assume_yes: bool) -> bool:
     from .costing import SpendLedger, load_pricing, preview_run
 
     prov = cfg.get("providers", {})
-    paid = prov.get("video") == "veo" or prov.get("tts") == "gemini" or (
+    lyria = prov.get("music") == "lyria"
+    paid = prov.get("video") == "veo" or prov.get("tts") == "gemini" or lyria or (
         prov.get("tts") == "inbox" and cfg.get("voice", {}).get("inbox_fallback") == "gemini")
     if not paid or not (root / "04_shots").exists():
         return True
@@ -105,7 +107,9 @@ def _preflight(root: Path, cfg: dict, assume_yes: bool) -> bool:
           f"  ({pre['cached_shots']} shots already generated, reused for free)\n"
           f"  Keyframes: {pre['keyframes']} images -> ${pre['keyframe_usd']:.2f}\n"
           f"  Telugu voices (Gemini TTS): {pre['lines']} lines -> ${pre['tts_usd']:.2f}\n"
-          f"  Total about ${pre['total_usd']:.2f} for one attempt per shot. Spent so far ${spent:.2f}"
+          + (f"  Music (Lyria): {pre['cues']} new cues -> ${pre['music_usd']:.2f}"
+             f"  ({pre['cached_cues']} already generated or in inbox/music, free)\n" if lyria else "")
+          + f"  Total about ${pre['total_usd']:.2f} for one attempt per shot. Spent so far ${spent:.2f}"
           + (f", budget ${budget:.2f}." if budget is not None else ", no budget cap."))
     if pre["total_usd"] == 0:
         return True

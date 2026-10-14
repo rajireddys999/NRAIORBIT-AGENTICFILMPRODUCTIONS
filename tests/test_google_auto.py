@@ -184,14 +184,58 @@ def test_safety_filtered_shot_gets_placeholder_and_review(setup):
     assert (setup.root / "07_video" / "sc007_s003" / "take_1.mp4").exists()
 
 
-def test_tts_instruction_is_telugu_with_delivery():
+def _line(pace="very_slow", notes="gently, then firm (looks away)"):
     from nraiorbit.schemas import ScriptBlock
 
-    line = ScriptBlock.model_validate({
-        "block_id": "x", "kind": "dialogue", "character_id": "arjun", "text_te": "భయపడకు.", "text_en": "",
-        "delivery": {"rasa": "karuna", "intensity": 6, "pace": "slow", "volume": "low", "notes": "gently"}})
-    text = tts_instruction(line)
-    assert text.startswith("Say in natural spoken Telugu") and "slowly" in text and text.endswith("భయపడకు.")
+    return ScriptBlock.model_validate({
+        "block_id": "x", "kind": "dialogue", "character_id": "arjun", "text_te": "భయపడకు. నేనున్నాను కదా.",
+        "text_en": "", "delivery": {"rasa": "karuna", "intensity": 6, "pace": pace, "volume": "low", "notes": notes}})
+
+
+def test_tts_instruction_speaks_only_the_telugu_transcript():
+    line = _line()
+    voice = {"name": "Arjun (voice artist A)", "gender": "male", "age_range": [28, 38], "pitch": "low"}
+    text = tts_instruction(line, voice)
+    notes, transcript = text.split("\n#### TRANSCRIPT\n")
+    assert transcript == line.text_te                                     # the Telugu line alone, last
+    assert text.startswith("# AUDIO PROFILE: Arjun\nmale, age 28-38, low pitch")
+    assert "\n### DIRECTOR'S NOTES\n" in notes and "Style: sad, close to tears (karuna" in notes
+    assert "Pace: slow and deliberate, but no long gaps" in notes and "Volume: soft" in notes
+    assert "Notes: gently, then firm (looks away)" in notes and "looks away" not in transcript
+    assert "Speak only the transcript below" in notes and "Do not read these notes aloud" in notes
+    assert "slowly" not in text and "Say in" not in text
+    for pace, wanted in google_ai.GEMINI_PACE.items():
+        assert f"Pace: {wanted}\n" in tts_instruction(_line(pace))
+    assert "very slow" not in " ".join(google_ai.GEMINI_PACE.values())
+    bare = tts_instruction(_line().model_copy(update={"delivery": None, "character_id": "old_fisherman"}))
+    assert bare.startswith("# AUDIO PROFILE: Old Fisherman\n\n") and "Pace: natural conversational pace" in bare
+
+
+def test_gemini_tts_shortens_pauses_and_keeps_the_paid_take(tmp_path):
+    fake = FakeGoogle(tmp_path)
+    tone = (np.sin(2 * np.pi * 220 * np.arange(24000) / 24000) * 8000).astype("<i2")
+
+    def gap(s):
+        return np.zeros(int(s * 24000), "<i2")
+
+    fake.pcm = np.concatenate([gap(0.4), tone, gap(1.0), tone, gap(0.5)]).tobytes()   # a slow 3.9 s take
+    ledger = SpendLedger(tmp_path / "reports" / "cost.jsonl", None)
+    voices = {"voices/arjun_voice@v2": {"name": "Arjun (voice artist A)", "gender": "male", "gemini_voice": "Orus"}}
+    tts = google_ai.GeminiTTS(voices, {"google": {}, "voice": {"max_pause_s": 0.6}}, {}, ledger, client=fake)
+    line = _line()
+    seconds = tts.synthesize(line, "voices/arjun_voice@v2", tmp_path / "out" / "take_1.wav")
+    assert seconds == pytest.approx(0.06 + 1.0 + 0.3 + 1.0 + 0.06, abs=0.04)
+    assert ffmpeg.duration(tmp_path / "out" / "take_1.wav") == pytest.approx(seconds, abs=0.01)
+    cached = list((tmp_path / "cache" / "tts").glob("*.wav"))
+    assert len(cached) == 1 and ffmpeg.duration(cached[0]) == pytest.approx(3.9, abs=0.02)   # raw take kept
+    sent = fake.tts_calls[0]["contents"]
+    assert sent.startswith("# AUDIO PROFILE: Arjun") and sent.endswith("#### TRANSCRIPT\n" + line.text_te)
+    again = tts.synthesize(line, "voices/arjun_voice@v2", tmp_path / "out" / "take_2.wav")
+    assert len(fake.tts_calls) == 1 and again == pytest.approx(seconds, abs=1e-3)          # cache hit, same cut
+    assert len([r for r in ledger.records() if r["provider"] == "gemini_tts"]) == 1
+    untouched = google_ai.GeminiTTS(voices, {"google": {}, "voice": {"max_pause_s": None}}, {}, ledger, client=fake)
+    assert untouched.synthesize(line, "voices/arjun_voice@v2", tmp_path / "out" / "raw.wav") == \
+        pytest.approx(3.9, abs=0.02)
 
 
 def test_trailer_test_run_end_to_end(setup):
@@ -206,6 +250,17 @@ def test_trailer_test_run_end_to_end(setup):
     used = {c["shot_id"] for c in plan if c["shot_id"]}
     assert used and used <= generated
     assert (master / "subs_te.srt").read_text(encoding="utf-8").count("-->") == 13
+    timeline = json.loads((setup.root / "10_edit" / "timeline.json").read_text())
+    spans = sorted((e["start_s"], e["start_s"] + e["duration_s"]) for e in timeline["dialogue"])
+    assert all(b[0] - a[1] >= 0.25 - 1e-3 for a, b in zip(spans, spans[1:]))     # lines never overlap
+    carried = [c for c in plan if c["line_id"]]
+    assert carried
+    total = sum(c["duration_s"] for c in plan)
+    for c in carried:                                                            # every line whole, inside its clip
+        assert c["trailer_start_s"] < c["line_at_s"] and c["line_at_s"] + c["line_duration_s"] <= \
+            c["trailer_start_s"] + c["duration_s"] + 1e-6 <= total + 1e-6
+    notes = json.loads((setup.root / "08_music" / "trailer_cue.json").read_text())["notes"]
+    assert "near-silence drop" in notes and "huge hit on the title card" in notes
 
 
 def test_provider_calls_match_the_real_sdk():

@@ -43,6 +43,13 @@ gemini:                      # Gemini API, third-party estimates; verify on ai.g
   image_per_image: 0.04      # keyframes and identity-pack images (flash-image class, 1K)
   tts_per_minute: 0.02       # Telugu speech (~$10 per 1M audio tokens)
 
+lyria:                       # Google Lyria 3 background score (providers.music: lyria), per generated track
+  # UNVERIFIED conservative placeholders: check the Vertex AI pricing page (Generative AI, Lyria) before budgeting.
+  # Re-renders reuse cached tracks (cache/music/) and are not billed again.
+  per_generation:
+    lyria-3-pro-preview: 0.50
+    lyria-3-clip-preview: 0.10
+
 cloud: gcp                   # where lip-sync runs and media is backed up: gcp | aws
 
 gcp:                         # Google Cloud: the same project as the Gemini API key

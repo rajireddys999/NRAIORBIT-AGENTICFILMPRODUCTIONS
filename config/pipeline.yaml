@@ -10,6 +10,8 @@ film:
   resolution: [1920, 1080]         # generation is upscaled to this; use [3840, 2160] for 4K masters
   fps: 24
   trailer_seconds: 135
+  trailer_line_max_s: 7.5          # a trailer carries only whole lines up to this long (picture cut around them)
+  trailer_max_lines: 5             # most lines in one trailer: hero intro, villain threat, emotion, punch, stinger
   teaser_seconds: 60               # teaser stage is planned; not produced yet
 
 animatic:
@@ -35,16 +37,17 @@ providers:
   video: mock                      # e.g. comfyui_wan_i2v, api_kling, api_veo
   tts: mock                        # e.g. indic_parler, indicf5, sarvam, rvc_convert
   lipsync: none                    # e.g. latentsync
-  music: mock                      # e.g. stems_plus_symbolic, ace_step
+  music: mock                      # mock | inbox (inbox/music/<cue_id>.wav) | lyria (Google Lyria 3, paid: google.music_*)
   sfx: none                        # e.g. library_then_generate
   face_embedder: none              # e.g. insightface (check licence), rekognition
   speaker_embedder: none           # e.g. speechbrain_ecapa
 
-google:                            # used by the veo / gemini providers (see providers/google_ai.py)
+google:                            # used by the veo / gemini / lyria providers (providers/google_ai.py, lyria.py)
   vertex: false                    # true = Vertex AI (GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION)
   veo_location: null               # Vertex AI only: region per model, overrides GOOGLE_CLOUD_LOCATION
   image_location: null             #   (Veo: us-central1; gemini-3-pro-image: global)
   tts_location: null
+  music_location: global           #   (Lyria 3 is served from global only)
   veo_model: veo-3.1-fast-generate-preview   # `nraiorbit google models` lists what your key can use
   veo_tier: fast                   # pricing tier of that model: standard | fast | lite
   veo_resolution: 720p             # generate 720p; the edit upscales to film.resolution
@@ -56,6 +59,8 @@ google:                            # used by the veo / gemini providers (see pro
   image_model: gemini-2.5-flash-image
   tts_model: gemini-2.5-flash-preview-tts
   tts_language_code: null          # auto-detected from Telugu script; set if your model needs it
+  music_model: lyria-3-pro-preview # providers.music: lyria; lyria-3-clip-preview = cheaper 30 s clips, looped to the cue
+  music_response_modalities: [AUDIO]   # if Lyria answers text only or refuses, try [AUDIO, TEXT] or null (no config)
 
 budget:
   max_usd: 50                      # hard stop for paid generation in one project (cost.jsonl ledger)
@@ -66,6 +71,7 @@ render:
 voice:
   mode: tts                        # performance_vc | tts | api_tts_vc  (see docs/VOICE_TELUGU.md)
   takes_per_line: 3
+  max_pause_s: 0.6                 # generated speech: pauses longer than this are shortened to ~0.3 s (null = off)
 
 guards:
   identity:

@@ -95,6 +95,12 @@ def veo_clip_seconds(duration: float, pricing: dict, resolution: str, mode: str,
     return min(billed_seconds(duration, durations, veo["extension_s"])[0], max(durations))
 
 
+def lyria_price(pricing: dict, model: str) -> float:
+    """USD per Lyria generation (pricing.yaml lyria.per_generation); an unlisted model costs as much as the dearest."""
+    table = pricing.get("lyria", {}).get("per_generation") or {}
+    return float(table.get(model, max(table.values(), default=0.50)))
+
+
 def load_takes(root: Path) -> dict[str, int]:
     """Chosen attempt per shot (projects/<slug>/takes.yaml); missing shots use attempt 1."""
     import yaml
@@ -342,7 +348,7 @@ def preview_run(root: Path, cfg: dict, pricing: dict) -> dict:
     takes = load_takes(root)
     image = pricing.get("gemini", {}).get("image_per_image", 0.04)
     out = {"shots": 0, "cached_shots": 0, "seconds": 0, "keyframes": 0, "lines": 0, "video_usd": 0.0,
-           "keyframe_usd": 0.0, "tts_usd": 0.0}
+           "keyframe_usd": 0.0, "tts_usd": 0.0, "cues": 0, "cached_cues": 0, "music_usd": 0.0}
     for path in sorted((root / "04_shots").glob("*.json")):
         shot_list = ShotList.model_validate_json(path.read_text(encoding="utf-8"))
         for shot in shot_list.shots:
@@ -370,8 +376,49 @@ def preview_run(root: Path, cfg: dict, pricing: dict) -> dict:
     out["video_usd"] = out["seconds"] * per_s
     out["keyframe_usd"] = out["keyframes"] * image
     out["tts_usd"] = out["lines"] * 5 / 60 * pricing.get("gemini", {}).get("tts_per_minute", 0.02)
-    out["total_usd"] = out["video_usd"] + out["keyframe_usd"] + out["tts_usd"]
+    if prov.get("music") == "lyria":
+        from .providers.lyria import music_model
+
+        out["cues"], out["cached_cues"] = _lyria_preview(root, cfg)
+        out["music_usd"] = out["cues"] * lyria_price(pricing, music_model(g))
+    out["total_usd"] = out["video_usd"] + out["keyframe_usd"] + out["tts_usd"] + out["music_usd"]
     return out
+
+
+def _lyria_preview(root: Path, cfg: dict) -> tuple[int, int]:
+    """(cues Lyria will generate, cues already cached or in inbox/music). Every cue is rendered whatever
+    render.only says; the trailer's cue counts while trailer.mp4 is not built (its length is only known then)."""
+    from .config import load_navarasa
+    from .planning.music import plan_cues
+    from .providers.inbox import _find_audio
+    from .providers.lyria import cached_raw, characters, cue_prompt, music_model
+    from .schemas import CueSheet, Outline, StoryBible
+
+    navarasa, model, chars = load_navarasa(), music_model(cfg.get("google", {})), characters(root)
+    inbox = root / "inbox" / "music"
+    sheet = root / "08_music" / "cue_sheet.json"
+    if sheet.exists():
+        cues = CueSheet.model_validate_json(sheet.read_text(encoding="utf-8")).cues
+    elif (root / "02_outline.json").exists() and (root / "01_story_bible.json").exists():   # before the music plan:
+        cues = plan_cues(Outline.model_validate_json((root / "02_outline.json").read_text(encoding="utf-8")),  # same count
+                         StoryBible.model_validate_json((root / "01_story_bible.json").read_text(encoding="utf-8")),
+                         navarasa).cues
+    else:
+        cues = []
+    new = cached = 0
+    for cue in cues:
+        if not cue.instruments:
+            continue                                   # deliberate silence
+        if _find_audio(inbox, cue.cue_id) or cached_raw(root, model, cue_prompt(cue, model, chars, navarasa)):
+            cached += 1
+        else:
+            new += 1
+    if not (root / "11_master" / "trailer.mp4").exists():
+        if _find_audio(inbox, "trailer"):
+            cached += 1
+        else:
+            new += 1
+    return new, cached
 
 
 def actual_veo_usage(project_dir: Path | None, pricing: dict) -> dict | None:

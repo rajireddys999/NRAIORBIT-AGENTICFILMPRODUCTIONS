@@ -10,6 +10,7 @@
   nraiorbit run <slug> --only trailer [--max-spend 20]      paid run limited to trailer shots, with a budget cap
   nraiorbit retake <slug> <shot_id>... [--use N]            redo chosen shots (paid) or pick an earlier attempt (free)
   nraiorbit retake <slug> <shot_id>... --keep-keyframe      new motion from the same first frame (no new image)
+  nraiorbit keyframes <slug> [--only sc003 sc004_s004]      first frames only, to check faces before paying for video
   nraiorbit google models                                   models your Google key can use
   nraiorbit approve <slug> <gate>                           approve a review gate
   nraiorbit status <slug>
@@ -250,6 +251,55 @@ def cmd_identity(args) -> None:
           "this again to regenerate just those.")
 
 
+def cmd_keyframes(args) -> None:
+    """First frames only (keyframe mode): check every face before any video is paid for. Delete a still you reject
+    and run this again to make just that one; `run` then animates the stills that are there."""
+    from .config import load_navarasa
+    from .costing import SpendLedger, load_pricing, load_takes
+    from .providers.google_ai import ShotFiltered, VeoVideo
+    from .schemas import CastLock, ShotList
+    from .shotpack import clips_for, selected
+
+    root = _project(args.slug)
+    cfg = load_pipeline_config(root)
+    if args.max_spend is not None:
+        cfg.setdefault("budget", {})["max_usd"] = args.max_spend
+    g = cfg.get("google", {})
+    if g.get("veo_mode", "keyframe") == "reference":
+        sys.exit("keyframes: google.veo_mode is 'reference', which uses no first frames")
+    paths = ProjectPaths(root)
+    lock = CastLock.model_validate(yaml.safe_load(paths.lock.read_text(encoding="utf-8")))
+    takes = load_takes(root)
+    todo = []                                     # (scene_id, shot, attempt) with no still and no clip yet
+    for path in sorted((root / "04_shots").glob("*.json")):
+        shot_list = ShotList.model_validate_json(path.read_text(encoding="utf-8"))
+        for shot in shot_list.shots:
+            attempt = takes.get(shot.shot_id, 1)
+            if (not shot.characters_in_frame or not selected(shot, shot_list.scene_id, args.only)
+                    or len(clips_for(root, shot.shot_id)) >= attempt
+                    or (root / "06_keyframes" / shot.shot_id / f"take_{attempt}.png").exists()):
+                continue
+            todo.append((shot_list.scene_id, shot, attempt))
+    pricing = load_pricing(root)
+    price = pricing.get("gemini", {}).get("image_per_image", 0.04)
+    if not todo:
+        print("Keyframes: nothing to generate (every selected shot with characters has a still or a clip)")
+        return
+    print(f"Keyframes: {len(todo)} image(s) -> ${len(todo) * price:.2f}. No video is generated.")
+    if not _confirm("Generate them?", args.yes):
+        return
+    ledger = SpendLedger(paths.reports / "cost.jsonl", cfg.get("budget", {}).get("max_usd"))
+    video = VeoVideo(root, AssetRegistry.load(REPO_ROOT / "library"), cfg, pricing, ledger, load_navarasa())
+    made = 0
+    for scene_id, shot, attempt in todo:
+        try:
+            video.make_keyframe(shot, scene_id, lock, attempt)
+            made += 1
+        except ShotFiltered as blocked:
+            print(f"  {shot.shot_id}: blocked ({blocked}); adjust its image_prompt and run again")
+    print(f"{made} keyframe(s) in {root / '06_keyframes'}. Check them; delete any you reject and run this again.")
+
+
 def cmd_google(args) -> None:
     from .providers.google_ai import _call, google_client
 
@@ -431,6 +481,13 @@ def _main(argv: list[str] | None = None) -> None:
     p.add_argument("--max-spend", type=float)
     p.add_argument("--yes", action="store_true")
     p.set_defaults(fn=cmd_identity)
+
+    p = sub.add_parser("keyframes", help="first frames only (paid images, no video), to check faces before Veo")
+    p.add_argument("slug")
+    p.add_argument("--only", nargs="*", help="scene ids and/or shot ids (default: every shot)")
+    p.add_argument("--max-spend", type=float)
+    p.add_argument("--yes", action="store_true")
+    p.set_defaults(fn=cmd_keyframes)
 
     p = sub.add_parser("google", help="list the Veo / image / TTS models your Google key can use")
     p.add_argument("action", choices=["models"])

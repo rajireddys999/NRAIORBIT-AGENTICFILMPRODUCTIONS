@@ -272,6 +272,24 @@ class VeoVideo:
         except UnknownVideoTier as e:
             raise GoogleAPIError(str(e)) from None
 
+    def _keyframe(self, shot: Shot, prompt: str, refs: list[tuple[str, list[Path]]], keyframe: Path) -> Path:
+        if not keyframe.exists():
+            self.images.generate(keyframe_prompt(shot, prompt, [(n, len(p)) for n, p in refs]), keyframe,
+                                 refs=[p for _, paths in refs for p in paths], item=f"keyframe {shot.shot_id}")
+        return keyframe
+
+    def make_keyframe(self, shot: Shot, scene_id: str, cast: CastLock, attempt: int = 1) -> Path | None:
+        """The first frame Veo would animate for this attempt, without the clip (`nraiorbit keyframes`), so it can
+        be checked before any video is paid for. None for shots without characters or in reference mode."""
+        from ..shotpack import veo_prompt
+
+        if self.g.get("veo_mode", "keyframe") == "reference" or not shot.characters_in_frame:
+            return None
+        scene = next(s for s in self.outline.scenes if s.scene_id == scene_id)
+        prompt = veo_prompt(shot, scene, self.bible, cast, self.navarasa, self._speaker(shot, scene_id))
+        keyframe = self.root / "06_keyframes" / shot.shot_id / f"take_{attempt}.png"
+        return self._keyframe(shot, prompt, self._refs(shot, cast, 3), keyframe)
+
     def _poll(self, operation):
         types = _types()
         try:                                              # a silently dropped connection times out instead of hanging
@@ -328,9 +346,7 @@ class VeoVideo:
                                                         reference_type=types.VideoGenerationReferenceType.ASSET)
                     for _, paths in refs for p in paths]
             elif refs:                                   # keyframe mode; shots without leads go text-to-video
-                if not keyframe.exists():
-                    self.images.generate(keyframe_prompt(shot, prompt, [(n, len(p)) for n, p in refs]), keyframe,
-                                         refs=[p for _, paths in refs for p in paths], item=f"keyframe {shot.shot_id}")
+                self._keyframe(shot, prompt, refs, keyframe)
                 kwargs["image"] = types.Image.from_file(location=str(keyframe))
 
             operation = _call(self.client.models.generate_videos, f"Veo {shot.shot_id}", **kwargs,

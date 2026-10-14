@@ -688,3 +688,31 @@ def test_retake_keep_keyframe_uses_the_take_in_use_and_queues_nothing_unconfirme
     cli.main(["retake", setup.root.name, SHOT, "--keep-keyframe", "--yes"])
     assert new.read_bytes() == (frames / "take_1.png").read_bytes()    # the still of the attempt in use
     assert yaml.safe_load(takes.read_text())[SHOT] == 3 and len(setup.fake.video_calls) == videos + 1
+
+
+def test_keyframes_command_makes_first_frames_only(setup, monkeypatch, capsys):
+    cli = _cli_for(setup, monkeypatch)
+    monkeypatch.setattr(cli, "REPO_ROOT", setup.lib_root.parent)
+    with_leads = [s for s in _selected_shots(setup.root, trailer_only=False) if s.characters_in_frame]
+    images, videos = len(setup.fake.image_calls), len(setup.fake.video_calls)
+
+    monkeypatch.setattr(cli, "_confirm", lambda question, assume_yes: assume_yes)
+    cli.main(["keyframes", setup.root.name, "--only", SHOT])                  # declined: nothing paid
+    assert len(setup.fake.image_calls) == images and "Keyframes: 1 image(s)" in capsys.readouterr().out
+
+    cli.main(["keyframes", setup.root.name, "--only", SHOT, "--yes"])
+    still = setup.root / "06_keyframes" / SHOT / "take_1.png"
+    assert still.exists() and len(setup.fake.image_calls) == images + 1
+    assert len(setup.fake.video_calls) == videos                             # no video
+    assert [r["item"] for r in SpendLedger(setup.root / "reports" / "cost.jsonl", None).records()][-1] \
+        == f"keyframe {SHOT}"
+    cli.main(["keyframes", setup.root.name, "--only", SHOT, "--yes"])         # already there: not paid again
+    assert len(setup.fake.image_calls) == images + 1 and "nothing to generate" in capsys.readouterr().out
+
+    pipeline, _ = setup.make(only=[SHOT])                                    # the render animates that still
+    pipeline.run(until="render")
+    assert len(setup.fake.image_calls) == images + 1 and len(setup.fake.video_calls) == videos + 1
+
+    cli.main(["keyframes", setup.root.name, "--yes"])                        # the rest; shots with clips skipped
+    made = len(setup.fake.image_calls) - images
+    assert made == len(with_leads) and len(setup.fake.video_calls) == videos + 1

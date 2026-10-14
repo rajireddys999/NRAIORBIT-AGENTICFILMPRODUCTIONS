@@ -20,6 +20,7 @@ TAG="${LIPSYNC_TAG:-v1}"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/latentsync:${TAG}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
+unset CLOUDSDK_AUTH_ACCESS_TOKEN          # a preset token would override the account gcloud is signed in with
 gcloud config set project "$PROJECT" >/dev/null
 SA="$(gcloud config get-value account 2>/dev/null)"
 case "$SA" in *gserviceaccount.com) ;; *) SA="${LIPSYNC_SERVICE_ACCOUNT:?set LIPSYNC_SERVICE_ACCOUNT (the job runs as it)}";; esac

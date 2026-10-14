@@ -57,6 +57,14 @@ class CloudRunLipSync:
         self.bucket = ls.get("bucket") or f"{self.project}-media"
         self.steps, self.guidance = int(ls.get("steps", 20)), float(ls.get("guidance", 1.5))
         self.timeout_s = int(ls.get("timeout_seconds", 3600))
+        # runner: cloudrun (a Cloud Run job; needs Cloud Run's non-zonal GPU quota), vertex (a Vertex AI custom job;
+        # needs custom-training GPU quota) or vertex_endpoint (a temporary Vertex AI endpoint on one L4; uses the
+        # custom-model-serving GPU quota new projects have). All run the same worker image.
+        self.runner = ls.get("runner", "cloudrun")
+        self.image = ls.get("image") or (f"{self.region}-docker.pkg.dev/{self.project}/nraiorbit/latentsync:v1")
+        self.machine = ls.get("machine_type", "g2-standard-8")
+        self.service_account = ls.get("service_account") or os.environ.get("LIPSYNC_SERVICE_ACCOUNT")
+        self.poll_s = float(ls.get("poll_seconds", 20))
         self.price = gpu_price(pricing)
         self.cache = project_root / "cache" / "lipsync"
         self.ledger = ledger
@@ -124,11 +132,14 @@ class CloudRunLipSync:
                                       "audio": f"gs://{self.bucket}/{prefix}/{k}/audio.wav",
                                       "out": f"gs://{self.bucket}/{prefix}/{k}/out.mp4"})
         bucket.blob(f"{prefix}/manifest.json").upload_from_string(json.dumps(manifest), content_type="application/json")
-        started = time.time()
-        execution = self._execute(f"gs://{self.bucket}/{prefix}/manifest.json")
-        seconds = _elapsed(execution) or (time.time() - started)
-        self.ledger.record("lipsync", f"{len(todo)} shots", p["per_hour"] * seconds / 3600, seconds=round(seconds),
-                           shots=len(todo), job=self.job, run=run)
+        started, execution = time.time(), None
+        try:
+            execution = self._execute(f"gs://{self.bucket}/{prefix}/manifest.json")
+        finally:                                         # GPU time counts toward the budget even when a run fails
+            seconds = (_elapsed(execution) if execution is not None else None) or (time.time() - started)
+            self.ledger.record("lipsync", f"{len(todo)} shots", p["per_hour"] * seconds / 3600,
+                               seconds=round(seconds), shots=len(todo), job=self.job, run=run, runner=self.runner,
+                               **({} if execution is not None else {"note": "run failed"}))
         done = bucket.blob(f"{prefix}/manifest.done.json")
         if not done.exists():
             raise GoogleAPIError(f"lip-sync job {self.job} wrote no status for run {run}; read its logs in Cloud Run "
@@ -148,6 +159,10 @@ class CloudRunLipSync:
                                  f"{status.get('version', '?')}). First error:\n{failed[0].get('error', '')[-1200:]}")
 
     def _execute(self, manifest_uri: str):
+        if self.runner == "vertex":
+            return self._execute_vertex(manifest_uri)
+        if self.runner == "vertex_endpoint":
+            return self._execute_vertex_endpoint(manifest_uri)
         name = f"projects/{self.project}/locations/{self.region}/jobs/{self.job}"
         try:
             from google.cloud import run_v2
@@ -164,6 +179,166 @@ class CloudRunLipSync:
                 raise
             raise GoogleAPIError(f"lip-sync job {name}: {type(e).__name__}: {e}\nIs the job set up "
                                  "(bash deploy/lipsync/setup.sh)? Re-run to resume.") from None
+
+
+    def _session(self):
+        if self._jobs is not None:                       # tests pass a fake session
+            return self._jobs
+        if JOBS_FACTORY is not None:
+            return JOBS_FACTORY()
+        import google.auth
+        from google.auth.transport.requests import AuthorizedSession
+
+        creds = _credentials() or google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])[0]
+        return AuthorizedSession(creds)
+
+    def _execute_vertex(self, manifest_uri: str):
+        """A Vertex AI custom job running the worker image on one L4; returns its final state as an execution."""
+        base = f"https://{self.region}-aiplatform.googleapis.com/v1/projects/{self.project}/locations/{self.region}"
+        spec = {"workerPoolSpecs": [{
+            "machineSpec": {"machineType": self.machine, "acceleratorType": "NVIDIA_L4", "acceleratorCount": 1},
+            "replicaCount": "1", "diskSpec": {"bootDiskType": "pd-ssd", "bootDiskSizeGb": 100},
+            "containerSpec": {"imageUri": self.image, "env": [{"name": "MANIFEST", "value": manifest_uri}]}}],
+            "scheduling": {"timeout": f"{self.timeout_s}s"}}
+        if self.service_account:
+            spec["serviceAccount"] = self.service_account
+        session = self._session()
+        resp = session.post(f"{base}/customJobs", json={"displayName": f"{self.job}-{int(time.time())}",
+                                                        "jobSpec": spec})
+        if resp.status_code >= 300:
+            raise GoogleAPIError(f"lip-sync Vertex job: {resp.status_code} {resp.text[:800]}\nIf this is a quota error, "
+                                 "request 'Custom model training Nvidia L4 GPUs per region' in IAM & Admin > Quotas.")
+        name = resp.json()["name"]
+        deadline = time.time() + self.timeout_s + 1800      # provisioning comes on top of the run timeout
+        while True:
+            job = session.get(f"https://{self.region}-aiplatform.googleapis.com/v1/{name}").json()
+            state = job.get("state", "")
+            if state in ("JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"):
+                break
+            if time.time() > deadline:
+                raise GoogleAPIError(f"lip-sync Vertex job {name} still {state} after the timeout; check it in the "
+                                     "Vertex AI console, then re-run.")
+            time.sleep(self.poll_s)
+        if state != "JOB_STATE_SUCCEEDED":
+            raise GoogleAPIError(f"lip-sync Vertex job {name} ended {state}: {job.get('error', {}).get('message', '')}")
+        return SimpleExecution(_ts(job.get("startTime")), _ts(job.get("endTime")))
+
+
+    # -- Vertex AI endpoint: uses the "custom model serving" GPU quota, which new projects have (training has none)
+
+    def _wait_op(self, session, op: dict, what: str, limit_s: float) -> dict:
+        deadline = time.time() + limit_s
+        while not op.get("done"):
+            if time.time() > deadline:
+                raise GoogleAPIError(f"lip-sync: {what} did not finish in {limit_s / 60:.0f} min ({op.get('name')})")
+            time.sleep(self.poll_s)
+            op = session.get(f"https://{self.region}-aiplatform.googleapis.com/v1/{op['name']}").json()
+        if op.get("error"):
+            raise GoogleAPIError(f"lip-sync: {what} failed: {op['error'].get('message', op['error'])}")
+        return op.get("response", {})
+
+    def _call(self, session, method: str, url: str, what: str, body: dict | None = None) -> dict:
+        resp = session.post(url, json=body or {}) if method == "post" else session.delete(url)
+        if resp.status_code >= 300:
+            raise GoogleAPIError(f"lip-sync: {what}: {resp.status_code} {resp.text[:800]}")
+        return resp.json() if resp.text else {}
+
+    def _model(self, session, base: str) -> str:
+        """The worker image registered once as a Vertex model (serving mode); reused on every run."""
+        display = f"{self.job}-{self.image.rsplit(':', 1)[-1]}"
+        found = session.get(f'{base}/models?filter=display_name="{display}"').json().get("models", [])
+        if found:
+            return found[0]["name"]
+        op = self._call(session, "post", f"{base}/models:upload", "registering the worker model", {"model": {
+            "displayName": display, "containerSpec": {
+                "imageUri": self.image, "command": ["python", "/opt/worker.py", "serve"],
+                "ports": [{"containerPort": 8080}], "predictRoute": "/predict", "healthRoute": "/health"}}})
+        return self._wait_op(session, op, "registering the worker model", 900)["model"]
+
+    def _execute_vertex_endpoint(self, manifest_uri: str):
+        """Deploy the worker to a fresh endpoint on one L4, queue the batch, wait for its status file, and always
+        undeploy and delete the endpoint (an endpoint bills for every minute it is up)."""
+        base = f"https://{self.region}-aiplatform.googleapis.com/v1/projects/{self.project}/locations/{self.region}"
+        session = self._session()
+        model = self._model(session, base)
+        start = _now()
+        endpoint = deployed = None
+        try:
+            op = self._call(session, "post", f"{base}/endpoints", "creating an endpoint",
+                            {"displayName": f"{self.job}-{int(time.time())}"})
+            endpoint = self._wait_op(session, op, "creating an endpoint", 900)["name"]
+            ep_url = f"https://{self.region}-aiplatform.googleapis.com/v1/{endpoint}"
+            deployed_model = {"model": model, "displayName": self.job, "dedicatedResources": {
+                "machineSpec": {"machineType": self.machine, "acceleratorType": "NVIDIA_L4", "acceleratorCount": 1},
+                "minReplicaCount": 1, "maxReplicaCount": 1}}
+            if self.service_account:
+                deployed_model["serviceAccount"] = self.service_account
+            op = self._call(session, "post", f"{ep_url}:deployModel", "deploying the worker on an L4",
+                            {"deployedModel": deployed_model})
+            deployed = self._wait_op(session, op, "deploying the worker on an L4", 3600)["deployedModel"]["id"]
+            for attempt in range(6):                     # the first request right after deploying can be refused
+                resp = session.post(f"{ep_url}:predict", json={"instances": [{"manifest": manifest_uri}]})
+                if resp.status_code < 300:
+                    break
+                time.sleep(min(60, self.poll_s * (attempt + 1)))
+            else:
+                raise GoogleAPIError(f"lip-sync: the endpoint refused the batch: {resp.status_code} {resp.text[:500]}")
+            b, p = manifest_uri.removeprefix("gs://").split("/", 1)
+            done = self.storage().bucket(b).blob(p.removesuffix(".json") + ".done.json")
+            deadline = time.time() + self.timeout_s
+            while not done.exists():
+                if time.time() > deadline:
+                    raise GoogleAPIError(f"lip-sync: no result after {self.timeout_s / 60:.0f} min; see the endpoint's "
+                                         "logs in Vertex AI. Re-run to try again.")
+                time.sleep(self.poll_s)
+        finally:                                         # stop the billing whatever happened
+            if endpoint:
+                self._tear_down(session, endpoint, deployed)
+        return SimpleExecution(start, _now())
+
+
+    def _tear_down(self, session, endpoint: str, deployed: str | None) -> None:
+        """Undeploy every model on the endpoint (also one whose deployment failed half-way), then delete it. If that
+        cannot be confirmed, say so loudly: a forgotten endpoint keeps billing."""
+        ep_url = f"https://{self.region}-aiplatform.googleapis.com/v1/{endpoint}"
+        try:
+            ids = [d["id"] for d in session.get(ep_url).json().get("deployedModels", [])]
+        except Exception:
+            ids = []
+        ids = ids or ([deployed] if deployed else [])
+        problems = []
+        for dm in ids:
+            try:
+                op = self._call(session, "post", f"{ep_url}:undeployModel", "undeploying", {"deployedModelId": dm})
+                self._wait_op(session, op, "undeploying", 1800)
+            except GoogleAPIError as e:
+                problems.append(str(e))
+        try:
+            self._call(session, "delete", ep_url, "deleting the endpoint")
+        except GoogleAPIError as e:
+            problems.append(str(e))
+        if problems:
+            raise GoogleAPIError(f"lip-sync: could not shut down endpoint {endpoint}; delete it in the Vertex AI "
+                                 f"console (Online prediction > Endpoints) so it stops billing. " + " | ".join(problems))
+
+
+def _now():
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc)
+
+
+class SimpleExecution:
+    def __init__(self, start_time, completion_time):
+        self.start_time, self.completion_time = start_time, completion_time
+
+
+def _ts(value: str | None):
+    if not value:
+        return None
+    from datetime import datetime
+
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def _elapsed(execution) -> float | None:

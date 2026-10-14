@@ -141,3 +141,129 @@ def test_missing_status_or_job_error_stops_cleanly(tmp_path):
     with pytest.raises(GoogleAPIError, match="setup.sh"):
         sync.apply(v, a, tmp_path / "o.mp4")
     shutil.rmtree(tmp_path / "reports", ignore_errors=True)
+
+
+class FakeVertex:
+    """A Vertex AI REST session: creating the custom job runs the fake worker; polling reports its state."""
+
+    def __init__(self, storage, quota_error=False):
+        self.worker, self.quota_error, self.created, self.polls = FakeJobs(storage), quota_error, [], 0
+
+    def post(self, url, json=None):
+        if self.quota_error:
+            return SimpleNamespace(status_code=429, text="Quota exceeded for custom_model_training_nvidia_l4_gpus")
+        self.created.append((url, json))
+        env = json["jobSpec"]["workerPoolSpecs"][0]["containerSpec"]["env"]
+        self.worker.run_job({"name": url, "manifest": env[0]["value"]})
+        return SimpleNamespace(status_code=200, json=lambda: {"name": "projects/1/locations/us-central1/customJobs/7"})
+
+    def get(self, url):
+        self.polls += 1
+        state = "JOB_STATE_RUNNING" if self.polls == 1 else "JOB_STATE_SUCCEEDED"
+        return SimpleNamespace(json=lambda: {"state": state, "startTime": "2026-10-14T04:10:00Z",
+                                             "endTime": "2026-10-14T04:19:00Z"})
+
+
+def test_vertex_runner_uses_the_same_worker_image_on_an_l4(tmp_path):
+    storage = FakeStorage()
+    vertex = FakeVertex(storage)
+    cfg = {"lipsync": {"project": "film-proj", "bucket": "film-media", "runner": "vertex", "poll_seconds": 0,
+                       "service_account": "sa@film-proj.iam.gserviceaccount.com"}}
+    ledger = SpendLedger(tmp_path / "reports" / "cost.jsonl", None)
+    sync = CloudRunLipSync(tmp_path, cfg, {"cloud_run_gpu": {"per_hour": 1.0}}, ledger, storage, vertex)
+    v, a = _clip(tmp_path, "a", "red")
+    out = sync.apply(v, a, tmp_path / "o.mp4")
+    assert out.read_bytes() == v.read_bytes()
+    url, body = vertex.created[0]
+    assert url == "https://us-central1-aiplatform.googleapis.com/v1/projects/film-proj/locations/us-central1/customJobs"
+    pool = body["jobSpec"]["workerPoolSpecs"][0]
+    assert pool["machineSpec"]["acceleratorType"] == "NVIDIA_L4" and pool["machineSpec"]["acceleratorCount"] == 1
+    assert pool["containerSpec"]["imageUri"] == "us-central1-docker.pkg.dev/film-proj/nraiorbit/latentsync:v1"
+    assert body["jobSpec"]["serviceAccount"] == "sa@film-proj.iam.gserviceaccount.com"
+    rec = [r for r in ledger.records() if r["provider"] == "lipsync"]
+    assert rec[0]["seconds"] == 540                                              # from the job's start/end times
+
+
+def test_vertex_quota_error_says_what_to_request(tmp_path):
+    storage = FakeStorage()
+    cfg = {"lipsync": {"project": "film-proj", "bucket": "film-media", "runner": "vertex", "poll_seconds": 0}}
+    sync = CloudRunLipSync(tmp_path, cfg, {}, SpendLedger(tmp_path / "c.jsonl", None), storage,
+                           FakeVertex(storage, quota_error=True))
+    v, a = _clip(tmp_path, "a", "red")
+    with pytest.raises(GoogleAPIError, match="Custom model training Nvidia L4"):
+        sync.apply(v, a, tmp_path / "o.mp4")
+
+
+class FakeEndpointSession:
+    """Vertex AI REST for models, endpoints and long-running operations; predict runs the fake worker."""
+
+    def __init__(self, storage, predict_fails=False):
+        self.worker, self.predict_fails, self.calls = FakeJobs(storage), predict_fails, []
+        self.deployed, self.pending = [], {}
+
+    def _resp(self, code=200, body=None):
+        return SimpleNamespace(status_code=code, text=json.dumps(body or {}), json=lambda: body or {})
+
+    def get(self, url):
+        self.calls.append(("GET", url))
+        if "/models?filter=" in url:
+            return self._resp(body={"models": []})
+        if "/operations/" in url:                       # a pending deploy finishes on the first poll
+            return self._resp(body={"name": url, "done": True, "response": self.pending.pop(url, {})})
+        return self._resp(body={"deployedModels": [{"id": d} for d in self.deployed]})
+
+    def post(self, url, json=None):
+        self.calls.append(("POST", url))
+        if url.endswith("/models:upload"):
+            return self._resp(body={"done": True, "response": {"model": "projects/1/locations/us-central1/models/9"}})
+        if url.endswith("/endpoints"):
+            return self._resp(body={"done": True, "response": {"name": "projects/1/locations/us-central1/endpoints/5"}})
+        if url.endswith(":deployModel"):
+            self.deployed.append("dm1")
+            op = "projects/1/locations/us-central1/operations/77"
+            self.pending[f"https://us-central1-aiplatform.googleapis.com/v1/{op}"] = {"deployedModel": {"id": "dm1"}}
+            return self._resp(body={"name": op, "done": False})
+        if url.endswith(":predict"):
+            if self.predict_fails:
+                return self._resp(500, {"error": "boom"})
+            self.worker.run_job({"name": url, "manifest": json["instances"][0]["manifest"]})
+            return self._resp(body={"predictions": [{"queued": 1}]})
+        if url.endswith(":undeployModel"):
+            self.deployed.remove(json["deployedModelId"])
+            return self._resp(body={"done": True, "response": {}})
+        raise AssertionError(url)
+
+    def delete(self, url):
+        self.calls.append(("DELETE", url))
+        return self._resp(body={"done": True})
+
+
+def _endpoint_provider(tmp_path, storage, session):
+    cfg = {"lipsync": {"project": "film-proj", "bucket": "film-media", "runner": "vertex_endpoint",
+                       "poll_seconds": 0}}
+    return CloudRunLipSync(tmp_path, cfg, {"cloud_run_gpu": {"per_hour": 1.5}},
+                           SpendLedger(tmp_path / "reports" / "cost.jsonl", None), storage, session)
+
+
+def test_vertex_endpoint_deploys_runs_and_always_shuts_down(tmp_path, monkeypatch):
+    import time as _time
+
+    monkeypatch.setattr(_time, "sleep", lambda s: None)
+    storage = FakeStorage()
+    session = FakeEndpointSession(storage)
+    sync = _endpoint_provider(tmp_path, storage, session)
+    v, a = _clip(tmp_path, "a", "red")
+    assert sync.apply(v, a, tmp_path / "o.mp4").read_bytes() == v.read_bytes()
+    kinds = [(m, u.rsplit("/", 1)[-1]) for m, u in session.calls if m != "GET"]
+    assert kinds == [("POST", "models:upload"), ("POST", "endpoints"), ("POST", "5:deployModel"),
+                     ("POST", "5:predict"), ("POST", "5:undeployModel"), ("DELETE", "5")]
+    assert session.deployed == []                                    # nothing left running
+    assert [r["provider"] for r in sync.ledger.records()] == ["lipsync"]
+
+    failing = FakeEndpointSession(storage, predict_fails=True)
+    sync2 = _endpoint_provider(tmp_path, storage, failing)
+    v2, a2 = _clip(tmp_path, "b", "blue")
+    with pytest.raises(GoogleAPIError, match="refused the batch"):
+        sync2.apply(v2, a2, tmp_path / "o2.mp4")
+    assert failing.deployed == [] and ("DELETE", "https://us-central1-aiplatform.googleapis.com/v1/"
+                                       "projects/1/locations/us-central1/endpoints/5") in failing.calls

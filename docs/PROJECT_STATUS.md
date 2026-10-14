@@ -1,6 +1,6 @@
 # Project status
 
-_Last updated: 2026-10-13. Branch: `claude/telugu-ai-movie-generator-yhb6po` (not merged into `main` yet)._
+_Last updated: 2026-10-14. Branch: `claude/telugu-ai-movie-generator-yhb6po` (not merged into `main` yet)._
 
 ## 1. Completed
 
@@ -29,11 +29,13 @@ _Last updated: 2026-10-13. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
 | Video | **Veo API** (keyframe mode: Gemini first frame → Veo; or reference mode), per-shot retakes (`nraiorbit retake`, earlier attempts kept), manual shot pack + inbox import, placeholder animatic |
 | Images | **Gemini** keyframes and character identity packs (`nraiorbit identity build`) |
 | Voice | **Gemini Telugu TTS** (voice per character, cached), recorded-line import, Indic Parler-TTS adapter (not yet run) |
+| Music | **Lyria 3 Pro** scored to the picture, style presets (`config/music_styles.yaml`), hit aligned to the hero shot |
+| Lip-sync | **LatentSync 1.6** on a Google Cloud L4 GPU (`latentsync_cloudrun` provider; Vertex endpoint, Vertex job or Cloud Run runner), cached, endpoint always deleted after the batch |
 | Guards | Identity guard (face assignment, drift, swap; retake loop) and voice guard, with InsightFace/SpeechBrain adapters |
 | Post | Per-scene assembly, ducked music, −14 LUFS master, dialogue/music stems for DaVinci Resolve, te/en subtitles, trailer cutter |
 | Cost control | `nraiorbit estimate`, cost preview + confirmation before paid runs, budget cap, `reports/cost.jsonl` ledger, `--only trailer`, no double payment on re-runs |
 | Publish | YouTube metadata (chapters, AI disclosure, private by default) and upload code |
-| Quality | 66 tests, including the full automatic POC and retakes against a fake Google client; CI workflow; lint clean |
+| Quality | 120 tests, including the full automatic POC and retakes against a fake Google client; CI workflow; lint clean |
 
 ### POC content
 
@@ -81,13 +83,34 @@ _Last updated: 2026-10-13. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
   - Lyria needs response_modalities [AUDIO, TEXT]. It once returned no audio for the trailer cue ($0) and worked on a retry.
 
   Cost of v2: $7.54 on the ledger (cap $10). Total: $65.19.
+- **Final trailer (v3, 2026-10-14)**, after you reported talking faces with no voice, text appearing mid-trailer, and asked
+  "how did we miss the lip sync". Lip-sync was a known missing step that should have been flagged before the trailer.
+  Fixed:
+  - **Lip-sync stage:** every filmed shot where a character speaks is lip-synced to that character's own lines with
+    LatentSync 1.6 (silence elsewhere, so the mouth closes). 7 shots done. Worker image built by Cloud Build:
+    `us-central1-docker.pkg.dev/nraiorbit-agentic-film-product/nraiorbit/latentsync:v2`.
+  - **No silent talking faces:** the trailer uses a shot whose speaker is in frame only when it carries that line.
+    New Veo prompts say "everyone else keeps their mouth closed" / "nobody is talking" for future shots.
+  - **No stray text:** the title is a designed card (gold serif over a blurred, darkened frame), not plain text.
+  - QA: 12 clips + title, 0 talking-face problems, both carried lines on lip-synced clips, −14.8 LUFS.
+  - GPU quota found: Cloud Run GPU (non-zonal) = 0, Vertex training L4 = 0, **Vertex serving L4 = 2 in us-central1**,
+    so the runner is `vertex_endpoint`. It takes about 25 min to deploy and 8–10 min per 1080p shot.
+  - Licence: LatentSync uses InsightFace face models (non-commercial). Check before a commercial or YouTube release.
+
+  Cost of v3: $3.42 (lip-sync $0.72 test + $2.21 final, Lyria trailer piece $0.50). **Total: $68.61** on the ledger.
+  GPU and Lyria prices are conservative placeholders and Veo is counted with audio, so the real bill should be lower.
+- **Storage:** everything is in the private bucket `gs://nraiorbit-agentic-film-product-media` (us-central1, public
+  access blocked, about $0.02/month): `godavari5/backup/` (base + update v2 + update v3 backups with sha256) and
+  `godavari5/11_master/` (original trailer, movie, subtitles, stems). Files under `lipsync/` are staging and are
+  deleted after 7 days.
 
 ### Verified vs. not verified
 
 | Verified (here, with ffmpeg and a fake Google client) | Not verified yet |
 |---|---|
-| Every stage end to end, output files decode, loudness, subtitles, budget stop, safety-filter handling, caching, SDK signatures | Lip-sync, music generation, InsightFace/SpeechBrain adapters, YouTube upload |
+| Every stage end to end, output files decode, loudness, subtitles, budget stop, safety-filter handling, caching, SDK signatures | InsightFace/SpeechBrain adapters, YouTube upload |
 | Real Veo 3.1, Gemini pro image and Gemini TTS calls on Vertex AI (trailer test, 2026-10-13) | |
+| Real Lyria 3 Pro music and LatentSync lip-sync on a Vertex L4 endpoint (2026-10-14) | |
 | | Claude API path for new stories (no Anthropic API key used) |
 | | Indic Parler-TTS, InsightFace and SpeechBrain adapters, YouTube upload |
 
@@ -105,20 +128,21 @@ film costs about $4,500 per pass, or roughly $6,000–$9,000 with retakes.
 The pipeline also has a manual hand-generation flow (`--manual`) and lower-cost tiers
 (Fast/Lite) in configuration, but this project does not use them.
 
-## 2. Next steps after the trailer test (2026-10-13)
+## 2. Next steps after the final trailer (2026-10-14)
 
-The project media is not in git. It is saved as a backup (14 parts in chat, plus the Google Cloud Storage bucket
-`gs://nraiorbit-agentic-film-product-media` once `storage.googleapis.com` is allowed). Restore it before any run;
-otherwise paid clips would be generated again. Setup and the copy-paste prompt: [NEXT_SESSION_PROMPT.md](NEXT_SESSION_PROMPT.md).
+The project media is not in git. Restore it from `gs://nraiorbit-agentic-film-product-media/godavari5/backup/`
+(or the chat copies) before any run; otherwise paid clips would be generated again. Setup and the copy-paste
+prompt: [NEXT_SESSION_PROMPT.md](NEXT_SESSION_PROMPT.md).
 
 | # | Step | Cost |
 |---|---|---|
-| 1 | You: new service account key (delete `71e11ffe…`), roles Vertex AI User + Storage Admin instead of Owner, env settings, network allow-list | — |
-| 2 | Restore the backup; free trailer rebuild with `--max-spend 57.80`; Cloud Storage backup | ≈ $0.02/month |
-| 3 | Full 5 minutes: `nraiorbit run godavari5 --yes --max-spend 200` | ≈ $121 on the ledger |
-| 4 | Retakes of shots you pick | ≈ $3.33 each |
-| 5 | Music: done (Lyria 3 Pro, styles picked); re-score a cue in another style if wanted | ≈ $0.50 per piece |
-| 6 | Lip-sync on a Google Cloud L4 GPU | ≈ $1.50 |
+| 1 | You: new service account key (delete `71e11ffe…`), roles Vertex AI User + Storage Admin instead of Owner, env settings | — |
+| 2 | Restore the backups; free trailer rebuild with `--max-spend 68.70` | free |
+| 3 | **YouTube reference learning** (next feature): Gemini on Vertex watches public YouTube links you pass (Telugu action scenes, BGM) and writes reference profiles (character archetypes, emotional beats, BGM cue anatomy) that the story, casting and music agents use as examples. No downloading, no training on copyrighted films | ≈ $0.05–0.30 per video analysed |
+| 4 | Full 5 minutes: `nraiorbit run godavari5 --yes --max-spend 200` (37 Veo shots + lip-sync of the new talking shots) | ≈ $121 + ≈ $4 GPU |
+| 5 | Retakes of shots you pick | ≈ $3.33 each |
+| 6 | Designed Telugu title image | ≈ $0.13 |
+| 7 | Ask Google for Cloud Run GPU or Vertex training L4 quota (faster start, no 25-min endpoint deploy) | — |
 
 ## 2a. Earlier plan: the trailer test
 
@@ -140,8 +164,8 @@ otherwise paid clips would be generated again. Setup and the copy-paste prompt: 
 | Gap | Why it matters | Plan | What we need from you |
 |---|---|---|---|
 | First real Google video run | Done: trailer test on Vertex AI (2026-10-13) | Steps 1–8 above | Network + key + approvals |
-| **Lip-sync** | Mouths don't match the Telugu audio | LatentSync adapter on a Google Cloud g2-standard-4, one L4 GPU (≈ $1.50 for the POC) | Paid Google Cloud account + L4 GPU quota in asia-south1 ([GOOGLE_CLOUD_SETUP.md](GOOGLE_CLOUD_SETUP.md) step 8) |
-| **Music** | Cues are placeholder tones unless you supply tracks | Option A: Lyria music model through the same Google key. Option B: commissioned Telugu stems. Option C: your own tracks in `inbox/music/` | Choose A, B or C |
+| Lip-sync | Done (2026-10-14): LatentSync 1.6 on a Vertex L4 endpoint | Licence check of LatentSync weights and InsightFace before commercial use | Licence decision |
+| Music | Done (2026-10-14): Lyria 3 Pro with your picked styles | YouTube reference learning to improve cues | Links to reference scenes |
 | Automatic quality retakes | Today: one attempt per shot; you judge faces | Identity guard with a face model on each clip | Licence choice: InsightFace models are non-commercial (buy a licence and run it on the Google Cloud GPU), or AWS Rekognition (Google Cloud has no face-matching API) |
 | Telugu quality | Dialogue was written by AI | Native review of every scene; recorded voices for leads | Your review, or a Telugu writer/voice artists with consent |
 | DaVinci Resolve timeline | Today: movie + stems, not an editable timeline | OTIO/FCPXML export | — |

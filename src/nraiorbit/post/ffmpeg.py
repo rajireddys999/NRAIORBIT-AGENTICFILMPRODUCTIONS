@@ -109,7 +109,7 @@ def conform_clip(src: Path, out: Path, duration_s: float, resolution: tuple[int,
     out.parent.mkdir(parents=True, exist_ok=True)
     run([
         "-i", str(src), "-t", f"{duration_s:.3f}", "-an",
-        "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,"
+        "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,"
                f"setsar=1,fps={fps},tpad=stop_mode=clone:stop_duration={duration_s:.3f}",
         "-frames:v", str(int(round(duration_s * fps))), *VIDEO_ENCODE, str(out),
     ])

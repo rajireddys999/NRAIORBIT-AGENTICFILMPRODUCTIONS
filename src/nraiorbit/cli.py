@@ -9,6 +9,7 @@
   nraiorbit identity build <slug>                           character reference images (Gemini)
   nraiorbit run <slug> --only trailer [--max-spend 20]      paid run limited to trailer shots, with a budget cap
   nraiorbit retake <slug> <shot_id>... [--use N]            redo chosen shots (paid) or pick an earlier attempt (free)
+  nraiorbit retake <slug> <shot_id>... --keep-keyframe      new motion from the same first frame (no new image)
   nraiorbit google models                                   models your Google key can use
   nraiorbit approve <slug> <gate>                           approve a review gate
   nraiorbit status <slug>
@@ -20,13 +21,14 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from pathlib import Path
 
 import yaml
 
 from .config import REPO_ROOT, load_pipeline_config
-from .costing import BudgetExceeded
+from .costing import BudgetExceeded, UnknownVideoTier
 from .library.registry import AssetRegistry
 from .pipeline import STAGES, GatePending, Pipeline, PipelineBlocked, ProjectPaths
 from .providers.google_ai import GoogleAPIError, GoogleSetupError
@@ -128,6 +130,23 @@ def cmd_run(args) -> None:
     _run(Pipeline(root, llm, cfg=cfg), args.slug, args.until, args.force)
 
 
+def _keep_keyframe(root: Path, shot_id: str, current: int, attempt: int) -> tuple[Path, Path] | None:
+    """(keyframe of the attempt in use, else the newest; new attempt's keyframe) to copy, or None when that
+    attempt already has one."""
+    folder = root / "06_keyframes" / shot_id
+    target = folder / f"take_{attempt}.png"
+    if target.exists():
+        return None
+    if (folder / f"take_{current}.png").exists():
+        return folder / f"take_{current}.png", target
+    takes = sorted((int(p.stem.split("_")[1]), p) for p in folder.glob("take_*.png")
+                   if p.stem.split("_")[1].isdigit()) if folder.is_dir() else []
+    if not takes:
+        sys.exit(f"{shot_id} has no keyframe to keep (shots without lead characters are text-to-video); "
+                 "drop --keep-keyframe")
+    return takes[-1][1], target
+
+
 def cmd_retake(args) -> None:
     """Generate another attempt of chosen shots (or pick an earlier attempt with --use) and re-render."""
     from .costing import load_takes
@@ -144,8 +163,11 @@ def cmd_retake(args) -> None:
     takes_path = root / "takes.yaml"
     before = takes_path.read_text(encoding="utf-8") if takes_path.exists() else None
     takes = load_takes(root)
+    if args.keep_keyframe and args.use is not None:
+        sys.exit("--keep-keyframe is for a new attempt; --use picks an existing one")
+    copies: list[tuple[Path, Path]] = []
     for sid in args.shots:
-        have = len(clips_for(root, sid))
+        have, keep = len(clips_for(root, sid)), None
         if have == 0:
             sys.exit(f"{sid} has not been generated yet; run it first (e.g. nraiorbit run {args.slug} --only {sid})")
         if args.use is not None:
@@ -153,16 +175,34 @@ def cmd_retake(args) -> None:
                 sys.exit(f"{sid} has {have} attempt(s); --use must be between 1 and {have}")
             takes[sid] = args.use
         else:
-            takes[sid] = max(takes.get(sid, 1), have) + 1
-        print(f"  {sid}: using attempt {takes[sid]} ({have} already generated)")
+            current = takes.get(sid, 1)
+            takes[sid] = max(current, have) + 1
+            keep = _keep_keyframe(root, sid, current, takes[sid]) if args.keep_keyframe else None
+            if keep:
+                copies.append(keep)
+        print(f"  {sid}: using attempt {takes[sid]} ({have} already generated)"
+              + (f", first frame from {keep[0].name}" if keep else ""))
     takes_path.write_text(yaml.safe_dump(takes, sort_keys=True), encoding="utf-8")
+    for src, dest in copies:                                   # the new attempt animates the same still: no image paid
+        shutil.copy2(src, dest)
     cfg = _apply_run_options(load_pipeline_config(root), args)
     cfg.setdefault("render", {})["only"] = list(args.shots)    # generate only these; other paid clips are reused
-    if not _preflight(root, cfg, args.yes):
+
+    def undo() -> None:
         if before is None:
-            takes_path.unlink()
+            takes_path.unlink(missing_ok=True)
         else:
             takes_path.write_text(before, encoding="utf-8")
+        for _, dest in copies:
+            dest.unlink(missing_ok=True)
+
+    try:
+        approved = _preflight(root, cfg, args.yes)
+    except BaseException:                                      # e.g. an unknown video_tier: queue nothing unconfirmed
+        undo()
+        raise
+    if not approved:
+        undo()
         return
     llm = ClaudeClient(model=cfg["llm"]["model"], max_tokens=cfg["llm"]["max_tokens"],
                        usage_log=root / "reports" / "llm_usage.jsonl")
@@ -268,7 +308,8 @@ def cmd_shotpack(args) -> None:
         if not ProjectPaths(root).lock.exists():
             # casting is library-first; Claude is only called for characters the library lacks
             _run(Pipeline(root, ClaudeClient()), args.slug, until="cast")
-        pack = shotpack.export(root, AssetRegistry.load(REPO_ROOT / "library"), load_navarasa(), load_pricing(root))
+        pack = shotpack.export(root, AssetRegistry.load(REPO_ROOT / "library"), load_navarasa(), load_pricing(root),
+                               load_pipeline_config(root).get("google", {}))
         print(f"shot pack written to {pack}/SHOTPACK.md; save clips into {shotpack.inbox_dir(root, 'video')}")
     else:
         st = shotpack.status(root)
@@ -336,6 +377,8 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(f"Google setup needed: {e}")
     except GoogleAPIError as e:
         sys.exit(f"Google API error: {e}")
+    except UnknownVideoTier as e:
+        sys.exit(str(e))
 
 
 def _main(argv: list[str] | None = None) -> None:
@@ -364,6 +407,9 @@ def _main(argv: list[str] | None = None) -> None:
     p.add_argument("slug")
     p.add_argument("shots", nargs="+", help="shot ids, e.g. sc002_s005")
     p.add_argument("--use", type=int, help="use this existing attempt instead of generating a new one")
+    p.add_argument("--keep-keyframe", action="store_true",
+                   help="motion-only retake: animate the keyframe of the attempt in use (else the newest) again "
+                        "instead of paying for a new one")
     p.add_argument("--max-spend", type=float)
     p.add_argument("--yes", action="store_true")
     p.set_defaults(fn=cmd_retake)

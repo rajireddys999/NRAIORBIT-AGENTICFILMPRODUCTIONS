@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 Rasa = Literal[
     "shringara", "hasya", "karuna", "raudra", "veera", "bhayanaka",
@@ -147,7 +147,15 @@ class SceneScript(BaseModel):
 
 # ---------------------------------------------------------------- Shot list (S6)
 
+def _director_schema(schema: dict) -> None:
+    """Hide video_tier from Claude (tiers are a spending choice, set by hand) and keep strict output happy."""
+    schema.get("properties", {}).pop("video_tier", None)
+    schema["required"] = list(schema.get("properties", {}))
+
+
 class Shot(BaseModel):
+    model_config = ConfigDict(json_schema_extra=_director_schema)
+
     shot_id: str = Field(description="<scene_id>_s001 ...")
     block_ids: list[str] = Field(description="Script blocks this shot covers")
     size: ShotSize
@@ -165,6 +173,9 @@ class Shot(BaseModel):
     sfx_cues: list[str]
     trailer_candidate: bool
     punch_dialogue: bool = Field(description="Shot carries a quotable/mass dialogue")
+    video_tier: str | None = Field(default=None, description="Key of google.video_tiers in pipeline.yaml "
+                                   "(standard_1080p, standard_720p, fast_720p, lite_720p); null = the project's "
+                                   "default Veo settings")
 
 
 class ShotList(BaseModel):

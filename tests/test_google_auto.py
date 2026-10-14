@@ -541,3 +541,150 @@ def test_lip_sync_redraws_only_on_screen_speakers_with_their_own_lines(setup):
         if s["shot_id"] in synced:                               # conformed back for stream-copy joins
             assert ffmpeg.duration(s["clip"]) == pytest.approx(s["duration_s"], abs=0.05)
     assert ffmpeg.duration(setup.root / "11_master" / "trailer.mp4") > 10
+
+
+def _set_tier(root, shot_id, tier):
+    for path in (root / "04_shots").glob("*.json"):
+        shot_list = ShotList.model_validate_json(path.read_text())
+        for s in shot_list.shots:
+            if s.shot_id == shot_id:
+                s.video_tier = tier
+                path.write_text(shot_list.model_dump_json(indent=2))
+                return s
+    raise KeyError(shot_id)
+
+
+def test_shot_video_tier_picks_model_resolution_length_and_price(setup):
+    from nraiorbit.costing import veo_clip_seconds
+
+    short = "sc003_s004"                                     # a 5 s shot of Arjun
+    shot = _set_tier(setup.root, short, "fast_720p")
+    seconds = veo_clip_seconds(shot.duration_s, load_pricing(setup.root), "720p", "keyframe", True)
+    assert seconds == 6                                      # 720p allows a 6 s clip; 1080p would be 8 s
+    pipeline, cfg = setup.make(only=[short])
+    cfg["google"]["vertex"] = True                           # Vertex, Veo audio off: video-only price
+    assert preview_run(setup.root, cfg, load_pricing(setup.root))["video_usd"] == pytest.approx(seconds * 0.08)
+    pipeline.run(until="render")
+    call = setup.fake.video_calls[-1]
+    assert call["model"] == "veo-3.1-fast-generate-001"
+    assert call["config"].resolution == "720p" and call["config"].duration_seconds == seconds
+    (rec,) = _veo_records(setup.root, short)
+    assert rec["usd"] == pytest.approx(seconds * 0.08) and rec["seconds"] == seconds
+    assert (rec["tier"], rec["resolution"], rec["model"]) == ("fast", "720p", "veo-3.1-fast-generate-001")
+
+
+def test_budget_counts_the_first_frame_with_its_clip(setup):
+    pipeline, cfg = setup.make(only=[SHOT])
+    pre = preview_run(setup.root, cfg, load_pricing(setup.root))
+    assert pre["keyframes"] == 1
+    images = len(setup.fake.image_calls)
+    spent = SpendLedger(setup.root / "reports" / "cost.jsonl", None).spent()
+    room = spent + pre["video_usd"] + pre["keyframe_usd"] / 2         # the clip fits, the clip and its still do not
+    pipeline, _ = setup.make(budget=room, only=[SHOT])
+    with pytest.raises(PipelineBlocked, match="budget"):
+        pipeline.run(until="render")
+    assert len(setup.fake.image_calls) == images and setup.fake.video_calls == []
+    assert _veo_records(setup.root) == []
+
+
+def test_unknown_video_tier_stops_before_anything_is_paid(setup):
+    _set_tier(setup.root, SHOT, "turbo_4k")
+    images, videos = len(setup.fake.image_calls), len(setup.fake.video_calls)
+    pipeline, _ = setup.make(only=[SHOT])
+    with pytest.raises(PipelineBlocked, match="video_tier 'turbo_4k' is not in google.video_tiers"):
+        pipeline.run(until="render")
+    assert (len(setup.fake.image_calls), len(setup.fake.video_calls)) == (images, videos)
+    assert _veo_records(setup.root) == []
+
+
+def test_resumed_job_keeps_the_cost_it_was_submitted_with(setup):
+    _set_tier(setup.root, SHOT, "lite_720p")
+    pipeline, cfg = setup.make(only=[SHOT])
+    cfg["google"]["timeout_seconds"] = -1
+    with pytest.raises(PipelineBlocked, match="already paid for"):
+        pipeline.run(until="render")
+    pending = setup.root / "inbox" / "video" / ".pending" / f"{SHOT}.json"
+    job = json.loads(pending.read_text())
+    assert (job["tier"], job["resolution"], job["model"]) == ("lite", "720p", "veo-3.1-lite-generate-001")
+    paid = sum(r["usd"] for r in _veo_records(setup.root))
+    assert paid == pytest.approx(job["seconds"] * 0.05)
+
+    _set_tier(setup.root, SHOT, "standard_1080p")           # the shot's tier changes before the job is collected
+    resumed, _ = setup.make(only=[SHOT])
+    resumed.run(until="render")
+    assert len(setup.fake.video_calls) == 1 and not pending.exists()
+    assert sum(r["usd"] for r in _veo_records(setup.root)) == pytest.approx(paid)
+
+
+def _cli_for(setup, monkeypatch):
+    from nraiorbit import cli, llm
+
+    monkeypatch.setattr(cli, "PROJECTS", setup.root.parent)
+    monkeypatch.setattr(llm, "ClaudeClient", lambda **kw: None)
+    monkeypatch.setattr(cli, "Pipeline", lambda root, llm_, cfg: Pipeline(
+        root, llm=None, library=setup.library, log=lambda m: None,
+        cfg=deep_merge(cfg, {"film": {"resolution": [320, 180]}, "google": {"poll_seconds": 0}})))
+    monkeypatch.setattr(cli, "_run", lambda p, slug, until=None, force=(): p.run(until="render"))
+    return cli
+
+
+def test_retake_keep_keyframe_reuses_the_first_frame(setup, monkeypatch, capsys):
+    pipeline, _ = setup.make(only=[SHOT])
+    pipeline.run(until="render")
+    frames = setup.root / "06_keyframes" / SHOT
+    assert [p.name for p in frames.glob("take_*.png")] == ["take_1.png"]
+    images, videos = len(setup.fake.image_calls), len(setup.fake.video_calls)
+
+    cli = _cli_for(setup, monkeypatch)
+    cli.main(["retake", setup.root.name, SHOT, "--keep-keyframe", "--yes"])
+    out = capsys.readouterr().out
+    assert "first frame from take_1.png" in out and "Keyframes: 0 images" in out
+    assert (frames / "take_2.png").read_bytes() == (frames / "take_1.png").read_bytes()
+    assert len(setup.fake.image_calls) == images                          # no new image paid for
+    assert len(setup.fake.video_calls) == videos + 1
+    assert setup.fake.video_calls[-1]["image"] is not None
+    assert (setup.root / "inbox" / "video" / f"{SHOT}_2.mp4").exists()
+
+    with pytest.raises(SystemExit, match="--keep-keyframe is for a new attempt"):
+        cli.main(["retake", setup.root.name, SHOT, "--keep-keyframe", "--use", "1"])
+    textless = next(s.shot_id for s in _selected_shots(setup.root, trailer_only=False) if not s.characters_in_frame)
+    (setup.root / "inbox" / "video" / f"{textless}.mp4").write_bytes(b"")     # pretend it was generated
+    with pytest.raises(SystemExit, match="no keyframe to keep"):
+        cli.main(["retake", setup.root.name, textless, "--keep-keyframe", "--yes"])
+    assert len(setup.fake.video_calls) == videos + 1
+
+
+def test_retake_keep_keyframe_uses_the_take_in_use_and_queues_nothing_unconfirmed(setup, monkeypatch):
+    import shutil
+
+    import yaml
+
+    pipeline, _ = setup.make(only=[SHOT])
+    pipeline.run(until="render")
+    frames, inbox = setup.root / "06_keyframes" / SHOT, setup.root / "inbox" / "video"
+    (frames / "take_2.png").write_bytes(b"rejected still")              # attempt 2 had the wrong still
+    shutil.copy2(inbox / f"{SHOT}.mp4", inbox / f"{SHOT}_2.mp4")
+    cli = _cli_for(setup, monkeypatch)
+    cli.main(["retake", setup.root.name, SHOT, "--use", "1", "--yes"])
+    takes = setup.root / "takes.yaml"
+    before = takes.read_text()
+    new = frames / "take_3.png"
+
+    monkeypatch.setattr(cli, "_confirm", lambda question, assume_yes: assume_yes)   # without --yes: declined
+    cli.main(["retake", setup.root.name, SHOT, "--keep-keyframe"])     # declined: nothing left behind
+    assert not new.exists() and takes.read_text() == before
+    new.write_bytes(b"mine")                                           # an existing take file is never touched
+    cli.main(["retake", setup.root.name, SHOT, "--keep-keyframe"])
+    assert new.read_bytes() == b"mine" and takes.read_text() == before
+    new.unlink()
+
+    _set_tier(setup.root, SHOT, "turbo_4k")                            # the spend preview fails: undone as well
+    with pytest.raises(SystemExit, match="video_tier 'turbo_4k'"):
+        cli.main(["retake", setup.root.name, SHOT, "--keep-keyframe", "--yes"])
+    assert not new.exists() and takes.read_text() == before
+
+    _set_tier(setup.root, SHOT, None)
+    videos = len(setup.fake.video_calls)
+    cli.main(["retake", setup.root.name, SHOT, "--keep-keyframe", "--yes"])
+    assert new.read_bytes() == (frames / "take_1.png").read_bytes()    # the still of the attempt in use
+    assert yaml.safe_load(takes.read_text())[SHOT] == 3 and len(setup.fake.video_calls) == videos + 1

@@ -140,7 +140,7 @@ def test_cached_generation_is_never_paid_twice(root, tmp_path):
     again, _ = provider(root, fake)                        # a later run: new provider, same cue
     again.render_cue(cue(), root / "08_music" / "cue002_again.wav")
     assert len(fake.calls) == 1
-    assert lyria_records(root) == [{"provider": "lyria", "item": "cue002", "usd": 0.5, "model": "lyria-3-pro-preview",
+    assert lyria_records(root) == [{"provider": "lyria", "item": "cue002", "usd": 0.08, "model": "lyria-3-pro-preview",
                                     "mime": "audio/wav"}]
     again.render_cue(cue(notes="hit at 4 s"), root / "08_music" / "cue002.wav")   # new direction = new prompt
     assert len(fake.calls) == 2
@@ -148,7 +148,7 @@ def test_cached_generation_is_never_paid_twice(root, tmp_path):
 
 def test_budget_stops_before_the_call(root):
     fake = FakeLyria(text_only=True)
-    music, _ = provider(root, fake, budget=0.30)          # Lyria 3 Pro is priced 0.50 per track
+    music, _ = provider(root, fake, budget=0.05)          # Lyria 3 Pro is priced 0.08 per track
     with pytest.raises(BudgetExceeded, match="Lyria cue002"):
         music.render_cue(cue(), root / "08_music" / "cue002.wav")
     assert fake.calls == [] and lyria_records(root) == [] and not cache_dir(root).exists()
@@ -229,7 +229,7 @@ def test_preview_counts_lyria_cues(root, tmp_path, capsys):
     cfg = lyria_cfg(root)
     pre = preview_run(root, cfg, pricing)
     assert (pre["cues"], pre["cached_cues"]) == (10, 0)   # 9 cues in the sheet + the trailer's cue
-    assert pre["music_usd"] == pytest.approx(5.0) and pre["total_usd"] == pytest.approx(mock["total_usd"] + 5.0)
+    assert pre["music_usd"] == pytest.approx(0.8) and pre["total_usd"] == pytest.approx(mock["total_usd"] + 0.8)
     assert preview_run(root, lyria_cfg(root, music_model="lyria-3-clip-preview"), pricing)["music_usd"] == pytest.approx(1.0)
 
     (root / "inbox" / "music").mkdir(parents=True, exist_ok=True)
@@ -238,7 +238,7 @@ def test_preview_counts_lyria_cues(root, tmp_path, capsys):
     assert (pre["cues"], pre["cached_cues"]) == (9, 1)
 
     cli._preflight(root, cfg, assume_yes=True)
-    assert "Music (Lyria): 9 new cues -> $4.50  (1 already generated or in inbox/music, free)" in capsys.readouterr().out
+    assert "Music (Lyria): 9 new cues -> $0.72  (1 already generated or in inbox/music, free)" in capsys.readouterr().out
 
 
 @needs_ffmpeg
@@ -287,7 +287,7 @@ def test_pipeline_scores_film_and_trailer_with_lyria(tmp_path, monkeypatch):
     assert ffmpeg.duration(root / "08_music" / "trailer_cue.wav") == pytest.approx(
         ffmpeg.duration(master / "trailer.mp4"), abs=0.1)
     records = lyria_records(root)
-    assert records[-1]["item"] == "trailer" and sum(r["usd"] for r in records) == pytest.approx(0.5 * len(fake.calls))
+    assert records[-1]["item"] == "trailer" and sum(r["usd"] for r in records) == pytest.approx(0.08 * len(fake.calls))
 
     calls = len(fake.calls)                                               # re-cut: same plan, same prompt, free
     Pipeline(root, demo_llm(), cfg=cfg, log=lambda m: None).run(force=("trailer",))
@@ -301,7 +301,7 @@ def test_budget_stop_on_a_music_cue_ends_the_run_cleanly(root, tmp_path, monkeyp
     fake = FakeLyria(text_only=True)
     monkeypatch.setattr(google_ai, "CLIENT_FACTORY", lambda cfg: fake)
     cfg = deep_merge(load_pipeline_config(root), {"providers": {"video": "mock", "tts": "mock", "music": "lyria"},
-                                                  "film": {"resolution": [160, 90]}, "budget": {"max_usd": 0.30}})
+                                                  "film": {"resolution": [160, 90]}, "budget": {"max_usd": 0.05}})
     pipeline = Pipeline(root, llm=None, cfg=cfg, log=lambda m: None)
     monkeypatch.setattr(pipeline, "_render_line", lambda *a: (tmp_path / "line.wav", 1.0))   # music is what matters
     monkeypatch.setattr(pipeline, "_render_shot", lambda *a: tmp_path / "shot.mp4")

@@ -11,6 +11,7 @@ checked against the budget before it starts and logged to reports/cost.jsonl.
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import os
@@ -41,7 +42,7 @@ def _credentials():
 def gpu_price(pricing: dict, runner: str = "cloudrun") -> dict:
     p = (pricing.get("vertex_endpoint_gpu") if runner == "vertex_endpoint" else None) or pricing.get("cloud_run_gpu") or {}
     return {"per_hour": p.get("per_hour", 1.10), "startup_minutes": p.get("startup_minutes", 6.0),
-            "minutes_per_clip": p.get("minutes_per_clip", 2.0)}
+            "minutes_per_clip": p.get("minutes_per_clip", 10.0)}
 
 
 @register("lipsync", "latentsync_cloudrun")
@@ -169,7 +170,8 @@ class CloudRunLipSync:
 
             request = run_v2.RunJobRequest(name=name, overrides=run_v2.RunJobRequest.Overrides(
                 container_overrides=[run_v2.RunJobRequest.Overrides.ContainerOverride(
-                    env=[run_v2.EnvVar(name="MANIFEST", value=manifest_uri)])]))
+                    env=[run_v2.EnvVar(name="MANIFEST", value=manifest_uri)])],
+                timeout=datetime.timedelta(seconds=self.timeout_s)))   # else the job's deployed --task-timeout
         except ImportError:                              # fakes in tests take a plain dict
             request = {"name": name, "manifest": manifest_uri}
         try:

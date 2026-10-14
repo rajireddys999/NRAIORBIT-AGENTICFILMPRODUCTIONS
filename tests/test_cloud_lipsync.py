@@ -47,13 +47,14 @@ class FakeJobs:
     """Plays the worker: copies each staged video to its output and writes the status file."""
 
     def __init__(self, storage, fail_keys=()):
-        self.storage, self.fail_keys, self.runs = storage, set(fail_keys), []
+        self.storage, self.fail_keys, self.runs, self.requests = storage, set(fail_keys), [], []
 
     def run_job(self, request):
         name = request.name if hasattr(request, "name") else request["name"]
         uri = request.overrides.container_overrides[0].env[0].value if hasattr(request, "overrides") \
             else request["manifest"]
         self.runs.append((name, uri))
+        self.requests.append(request)
         path = uri.removeprefix("gs://")
         manifest = json.loads(self.storage.store[path])
         results = []
@@ -100,6 +101,19 @@ def test_batch_runs_once_caches_and_logs_gpu_time(tmp_path):
     again = sync.apply_many([(v, a, tmp_path / "again" / f"{v.stem}.mp4") for v, a in shots])
     assert len(jobs.runs) == 1 and all(p.exists() for p in again)                    # cached: no new GPU run
     assert len([r for r in ledger.records() if r["provider"] == "lipsync"]) == 1
+
+
+def test_cloud_run_job_gets_the_configured_timeout(tmp_path):
+    pytest.importorskip("google.cloud.run_v2")
+    storage = FakeStorage()
+    jobs = FakeJobs(storage)
+    cfg = {"lipsync": {"project": "film-proj", "bucket": "film-media", "job": "nraiorbit-lipsync",
+                       "timeout_seconds": 21600}}
+    sync = CloudRunLipSync(tmp_path, cfg, {"cloud_run_gpu": {"per_hour": 1.2}},
+                           SpendLedger(tmp_path / "cost.jsonl", None), storage, jobs)
+    v, a = _clip(tmp_path, "a", "red")
+    sync.apply(v, a, tmp_path / "out.mp4")
+    assert jobs.requests[0].overrides.timeout == dt.timedelta(hours=6)    # not the job's deployed 1 h
 
 
 def test_budget_stops_before_any_gpu_time(tmp_path):

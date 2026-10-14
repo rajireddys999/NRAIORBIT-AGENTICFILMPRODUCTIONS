@@ -13,7 +13,7 @@ import re
 import shutil
 from pathlib import Path
 
-from .costing import billed_seconds
+from .costing import VEO_TIER_NAMES, billed_seconds, veo_durations, veo_settings
 from .library.registry import AssetRegistry
 from .schemas import CastLock, Outline, SceneOutline, Shot, ShotList, StoryBible
 
@@ -120,13 +120,14 @@ def _reference_images(cid: str, costume_id: str | None, lock: CastLock, library:
     return images
 
 
-def export(root: Path, library: AssetRegistry, navarasa: dict, pricing: dict) -> Path:
+def export(root: Path, library: AssetRegistry, navarasa: dict, pricing: dict, google: dict | None = None) -> Path:
+    """google: the project's google: settings (default Veo resolution and the video_tiers shots pick)."""
     import yaml
 
     bible = StoryBible.model_validate_json((root / "01_story_bible.json").read_text(encoding="utf-8"))
     outline = Outline.model_validate_json((root / "02_outline.json").read_text(encoding="utf-8"))
     lock = CastLock.model_validate(yaml.safe_load((root / "cast.lock.yaml").read_text(encoding="utf-8")))
-    durations, ext = pricing["veo"]["durations_s"], pricing["veo"]["extension_s"]
+    ext = pricing["veo"]["extension_s"]
     pack = root / "shotpack"
     if pack.exists():
         shutil.rmtree(pack)
@@ -152,7 +153,9 @@ def export(root: Path, library: AssetRegistry, navarasa: dict, pricing: dict) ->
                             if b in script_blocks and script_blocks[b]["kind"] == "dialogue"
                             and script_blocks[b]["character_id"] in shot.characters_in_frame), None)
             prompt = veo_prompt(shot, sc, bible, lock, navarasa, names.get(speaker) if speaker else None)
-            clip_s, n_clips = billed_seconds(shot.duration_s, durations, ext)
+            _, tier_name, resolution = veo_settings(google or {}, shot)   # 1080p clips are 8 s only
+            tier = f"{VEO_TIER_NAMES.get(tier_name, tier_name)} {resolution}" if shot.video_tier else ""
+            clip_s, n_clips = billed_seconds(shot.duration_s, veo_durations(pricing, resolution), ext)
             folder = pack / shot.shot_id
             (folder / "refs").mkdir(parents=True)
             refs = []
@@ -168,12 +171,14 @@ def export(root: Path, library: AssetRegistry, navarasa: dict, pricing: dict) ->
             length = f"{clip_s} s" if n_clips == 1 else f"8 s + {n_clips - 1} extension(s) of {ext} s"
             (folder / "prompt.txt").write_text(
                 f"{prompt}\n\nNegative: {NEGATIVE}\nClip length: {length} (shot uses {shot.duration_s:g} s)\n"
-                f"Save as: inbox/video/{shot.shot_id}.mp4\n", encoding="utf-8")
+                + (f"Model: {tier}\n" if tier else "") + f"Save as: inbox/video/{shot.shot_id}.mp4\n",
+                encoding="utf-8")
             who = ", ".join(names.get(c, c) for c in shot.characters_in_frame) or "no lead characters"
-            index += [f"### {shot.shot_id} · {length} · {who}",
+            index += [f"### {shot.shot_id} · {length}{' · ' + tier if tier else ''} · {who}",
                       "", prompt, "", f"References: {', '.join(refs) if refs else 'none'}", ""]
             records.append({"shot_id": shot.shot_id, "scene_id": sc.scene_id, "prompt": prompt, "negative": NEGATIVE,
-                            "clip_seconds": clip_s, "clips": n_clips, "shot_seconds": shot.duration_s, "refs": refs})
+                            "clip_seconds": clip_s, "clips": n_clips, "shot_seconds": shot.duration_s, "refs": refs,
+                            "video_tier": shot.video_tier})
     if missing_refs:
         index[4:4] = [f"**Reference images missing** for: {', '.join(sorted(missing_refs))}. Add face and costume "
                       "images to their library folders (library/characters/<id>/refs/) and export again; without them "

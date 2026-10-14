@@ -52,6 +52,11 @@ google:                            # used by the veo / gemini / lyria providers 
   veo_tier: fast                   # pricing tier of that model: standard | fast | lite
   veo_resolution: 720p             # generate 720p; the edit upscales to film.resolution
   veo_mode: keyframe               # keyframe (Gemini first frame -> Veo) | reference (Veo asset references, 8 s)
+  video_tiers:                     # per-shot Veo settings (shot.video_tier picks one; null = the three above)
+    standard_1080p: {model: veo-3.1-generate-001, tier: standard, resolution: 1080p}
+    standard_720p: {model: veo-3.1-generate-001, tier: standard, resolution: 720p}
+    fast_720p: {model: veo-3.1-fast-generate-001, tier: fast, resolution: 720p}
+    lite_720p: {model: veo-3.1-lite-generate-001, tier: lite, resolution: 720p}   # public preview
   person_generation: allow_adult
   veo_audio: false                 # Vertex AI only: Veo's own audio (dropped in the edit; dialogue is TTS) costs extra
   poll_seconds: 10
@@ -69,7 +74,7 @@ lipsync:                           # used by providers.lipsync: latentsync_cloud
   bucket: null                     # default <GOOGLE_CLOUD_PROJECT>-media (private; staging deleted after 7 days)
   steps: 20                        # LatentSync inference steps
   guidance: 1.5
-  timeout_seconds: 3600
+  timeout_seconds: 21600           # 6 h: one shot takes ~10 min on an L4, so 3600 s fits only ~6
 
 budget:
   max_usd: 50                      # hard stop for paid generation in one project (cost.jsonl ledger)

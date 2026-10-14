@@ -11,6 +11,7 @@ import json
 import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 
 from .config import DEFAULT_CONFIG_DIR, deep_merge, load_yaml
 from .schemas import SceneScript, ShotList
@@ -20,10 +21,15 @@ AVG_SHOT_S = 4.5          # used when there is no shot plan yet
 SCENE_S = 90
 LINES_PER_SHOT = 0.25
 VEO_MB_PER_S = 1.5        # 720p clip size, for storage
+VEO_TIER_NAMES = {"standard": "Veo 3.1", "fast": "Veo 3.1 Fast", "lite": "Veo 3.1 Lite"}
 
 
 class BudgetExceeded(RuntimeError):
     pass
+
+
+class UnknownVideoTier(ValueError):
+    """A shot names a video_tier that google.video_tiers does not define."""
 
 
 class SpendLedger:
@@ -95,6 +101,29 @@ def veo_clip_seconds(duration: float, pricing: dict, resolution: str, mode: str,
     return min(billed_seconds(duration, durations, veo["extension_s"])[0], max(durations))
 
 
+def veo_price_per_second(pricing: dict, g: dict, tier: str, resolution: str) -> float:
+    """USD per generated Veo second. Vertex AI with Veo's own audio off bills the cheaper video-only rate."""
+    veo = pricing["veo"]
+    table = veo["api_per_second"]
+    if g.get("vertex") and not g.get("veo_audio", False):
+        table = veo.get("api_per_second_video_only") or table
+    return table[tier][resolution]
+
+
+def veo_settings(g: dict, shot=None) -> tuple[str, str, str]:
+    """(model, tier, resolution) for a shot: its video_tier from google.video_tiers, else the project's Veo defaults."""
+    key = getattr(shot, "video_tier", None)
+    if key:
+        tiers = g.get("video_tiers") or {}
+        if key not in tiers:
+            raise UnknownVideoTier(f"{shot.shot_id}: video_tier '{key}' is not in google.video_tiers "
+                                   f"({', '.join(sorted(tiers)) or 'none defined'}); fix the shot list or pipeline.yaml")
+        t = tiers[key]
+        return t["model"], t["tier"], t["resolution"]
+    return (g.get("veo_model", "veo-3.1-fast-generate-preview"), g.get("veo_tier", "fast"),
+            g.get("veo_resolution", "720p"))
+
+
 def lyria_price(pricing: dict, model: str) -> float:
     """USD per Lyria generation (pricing.yaml lyria.per_generation); an unlisted model costs as much as the dearest."""
     table = pricing.get("lyria", {}).get("per_generation") or {}
@@ -123,6 +152,7 @@ class PlanStats:
     lines: int
     from_plan: bool
     artifact_tokens: dict[str, int] = field(default_factory=dict)
+    tiers: dict[str, str] = field(default_factory=dict)     # shot_id -> video_tier, for shots that pick one
 
 
 def plan_stats(project_dir: Path | None, runtime_minutes: float | None = None) -> PlanStats:
@@ -144,6 +174,7 @@ def _stats_from_plan(root: Path) -> PlanStats:
         if (root / name).exists():
             tokens[name] = approx_tokens((root / name).read_text(encoding="utf-8"))
     shots: list[tuple[str, float, bool, bool]] = []
+    tiers: dict[str, str] = {}
     lines = 0
     scenes = sorted((root / "04_shots").glob("*.json"))
     for path in scenes:
@@ -161,8 +192,10 @@ def _stats_from_plan(root: Path) -> PlanStats:
             on_screen = any(speakers.get(b) in shot.characters_in_frame for b in shot.block_ids if b in speakers)
             needs_lipsync = on_screen and shot.size not in ("EWS", "WS", "aerial", "insert")
             shots.append((shot.shot_id, shot.duration_s, needs_lipsync, bool(shot.characters_in_frame)))
+            if shot.video_tier:
+                tiers[shot.shot_id] = shot.video_tier
     minutes = sum(d for _, d, _, _ in shots) / 60
-    return PlanStats(title, minutes, len(scenes), shots, lines, from_plan=True, artifact_tokens=tokens)
+    return PlanStats(title, minutes, len(scenes), shots, lines, from_plan=True, artifact_tokens=tokens, tiers=tiers)
 
 
 # ---------------------------------------------------------------------------- Claude
@@ -241,6 +274,8 @@ class Estimate:
     tts: dict[str, float] = field(default_factory=dict)
     identity_pack: float = 0.0
     ledger: dict | None = None
+    video_rates: dict[str, float] = field(default_factory=dict)    # USD per second by tier, as this project is billed
+    video_planned: dict[str, float] = field(default_factory=dict)  # each shot at its own video_tier (if any has one)
 
     def other_costs(self, level: str) -> float:
         claude = self.claude_logged[0] if self.claude_logged else (
@@ -280,8 +315,15 @@ def estimate(project_dir: Path | None = None, runtime_minutes: float | None = No
         seconds += s
         clips += c
 
-    video = {tier: {lv: seconds * att[lv] * prices[res] for lv in LEVELS}
-             for tier, prices in veo["api_per_second"].items()}
+    g = cfg.get("google", {})
+    rates = {tier: veo_price_per_second(pricing, g, tier, res) for tier in veo["api_per_second"]}
+    video = {tier: {lv: seconds * att[lv] * rate for lv in LEVELS} for tier, rate in rates.items()}
+    planned = 0.0
+    for sid, dur, _, leads in stats.shots if stats.tiers else []:      # mixed tiers: price every shot as planned
+        _, tier, r = veo_settings(g, SimpleNamespace(shot_id=sid, video_tier=stats.tiers.get(sid)))
+        s = veo.get("reference_clip_s", 8) if mode == "reference" and leads else \
+            billed_seconds(dur, veo_durations(pricing, r), veo["extension_s"])[0]
+        planned += s * veo_price_per_second(pricing, g, tier, r)
     plan = veo["flow_plan"]
     flow = {}
     for tier, per_clip in veo["flow_credits_per_clip"].items():
@@ -323,7 +365,8 @@ def estimate(project_dir: Path | None = None, runtime_minutes: float | None = No
         keyframes=keyframes, tts=tts, identity_pack=identity, ledger=_ledger_summary(project_dir),
         claude_api=claude_api_estimate(stats, pricing), claude_billing=pricing["claude"].get("billing", "api"),
         claude_logged=claude_actual(project_dir, pricing), lipsync=lipsync, lipsync_hours=lip_hours,
-        storage=storage, mac_hours=mac_hours, actual_veo=actual_veo_usage(project_dir, pricing),
+        storage=storage, mac_hours=mac_hours, actual_veo=actual_veo_usage(project_dir, pricing, g), video_rates=rates,
+        video_planned={lv: planned * att[lv] for lv in LEVELS} if stats.tiers else {},
     )
 
 
@@ -342,9 +385,6 @@ def preview_run(root: Path, cfg: dict, pricing: dict) -> dict:
     prov = cfg.get("providers", {})
     mode = g.get("veo_mode", "keyframe")
     only = cfg.get("render", {}).get("only") or []
-    veo = pricing["veo"]
-    res = g.get("veo_resolution", "720p")
-    per_s = veo["api_per_second"][g.get("veo_tier", "fast")][res]
     takes = load_takes(root)
     image = pricing.get("gemini", {}).get("image_per_image", 0.04)
     out = {"shots": 0, "cached_shots": 0, "seconds": 0, "keyframes": 0, "lines": 0, "video_usd": 0.0,
@@ -360,8 +400,11 @@ def preview_run(root: Path, cfg: dict, pricing: dict) -> dict:
             if len(clips_for(root, shot.shot_id)) >= attempt:
                 out["cached_shots"] += 1
                 continue
+            _, tier, res = veo_settings(g, shot)
+            seconds = veo_clip_seconds(shot.duration_s, pricing, res, mode, bool(shot.characters_in_frame))
             out["shots"] += 1
-            out["seconds"] += veo_clip_seconds(shot.duration_s, pricing, res, mode, bool(shot.characters_in_frame))
+            out["seconds"] += seconds
+            out["video_usd"] += seconds * veo_price_per_second(pricing, g, tier, res)
             keyframe = root / "06_keyframes" / shot.shot_id / f"take_{attempt}.png"
             if mode == "keyframe" and shot.characters_in_frame and not keyframe.exists():
                 out["keyframes"] += 1
@@ -373,7 +416,6 @@ def preview_run(root: Path, cfg: dict, pricing: dict) -> dict:
                 if b.kind == "dialogue" and not any((inbox_dir(root, "dialogue") / f"{b.block_id}{e}").exists()
                                                     for e in (".wav", ".mp3", ".m4a", ".flac", ".aiff")):
                     out["lines"] += 1
-    out["video_usd"] = out["seconds"] * per_s
     out["keyframe_usd"] = out["keyframes"] * image
     out["tts_usd"] = out["lines"] * 5 / 60 * pricing.get("gemini", {}).get("tts_per_minute", 0.02)
     if prov.get("music") == "lyria":
@@ -426,7 +468,7 @@ def _lyria_preview(root: Path, cfg: dict) -> tuple[int, int]:
     return new, cached
 
 
-def actual_veo_usage(project_dir: Path | None, pricing: dict) -> dict | None:
+def actual_veo_usage(project_dir: Path | None, pricing: dict, g: dict | None = None) -> dict | None:
     """Clips you generated and dropped into inbox/video (every attempt counts, kept or not)."""
     if project_dir is None:
         return None
@@ -442,7 +484,7 @@ def actual_veo_usage(project_dir: Path | None, pricing: dict) -> dict | None:
         seconds += billed_seconds(ffmpeg.duration(clip), veo["durations_s"], veo["extension_s"])[0]
     res = veo["resolution"]
     return {"clips": len(clips), "billed_seconds": seconds,
-            "usd": {tier: seconds * prices[res] for tier, prices in veo["api_per_second"].items()},
+            "usd": {tier: seconds * veo_price_per_second(pricing, g or {}, tier, res) for tier in veo["api_per_second"]},
             "flow_credits": {tier: len(clips) * c for tier, c in veo["flow_credits_per_clip"].items()}}
 
 
@@ -473,10 +515,14 @@ def render_markdown(e: Estimate, pricing: dict) -> str:
         "| Option | Low | Expected | High |",
         "|---|---|---|---|",
     ]
-    names = {"standard": "Veo 3.1", "fast": "Veo 3.1 Fast", "lite": "Veo 3.1 Lite"}
+    names = VEO_TIER_NAMES
     for tier, v in e.video_options.items():
-        rate = veo["api_per_second"][tier][e.veo_resolution]
+        rate = e.video_rates.get(tier) or veo["api_per_second"][tier][e.veo_resolution]
         out.append(f"| API: {names.get(tier, tier)} (${rate}/s) | {_usd(v['low'])} | {_usd(v['expected'])} | {_usd(v['high'])} |")
+    if e.video_planned:
+        p = e.video_planned
+        out.append(f"| API: as planned, each shot at its video_tier ({len(s.tiers)} of {len(s.shots)} shots set) | "
+                   f"{_usd(p['low'])} | {_usd(p['expected'])} | {_usd(p['high'])} |")
     plan = veo["flow_plan"]
     for tier, f in e.flow.items():
         per = veo["flow_credits_per_clip"][tier]

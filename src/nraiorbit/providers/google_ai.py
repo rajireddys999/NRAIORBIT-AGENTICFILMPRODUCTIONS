@@ -27,7 +27,7 @@ import wave
 from pathlib import Path
 from typing import Any, Callable
 
-from ..costing import SpendLedger
+from ..costing import SpendLedger, UnknownVideoTier, veo_clip_seconds, veo_price_per_second, veo_settings
 from ..post import ffmpeg
 from ..post.speech import tighten_pauses
 from ..schemas import CastLock, Outline, ScriptBlock, Shot, StoryBible
@@ -264,14 +264,12 @@ class VeoVideo:
             out.append((names.get(cid, cid), picked))
         return out
 
-    def _clip_seconds(self, shot: Shot, mode: str) -> int:
-        from ..costing import veo_clip_seconds
-
-        return veo_clip_seconds(shot.duration_s, self.pricing, self.g.get("veo_resolution", "720p"), mode,
-                                bool(shot.characters_in_frame))
-
-    def _price_per_second(self) -> float:
-        return self.pricing["veo"]["api_per_second"][self.g.get("veo_tier", "fast")][self.g.get("veo_resolution", "720p")]
+    def _settings(self, shot: Shot) -> tuple[str, str, str]:
+        """(model, tier, resolution) for this shot; an unknown video_tier stops before anything is paid."""
+        try:
+            return veo_settings(self.g, shot)
+        except UnknownVideoTier as e:
+            raise GoogleAPIError(str(e)) from None
 
     def _poll(self, operation):
         types = _types()
@@ -299,34 +297,36 @@ class VeoVideo:
         pending = dest.parent / ".pending" / f"{dest.stem}.json"
         types = _types()
         if pending.exists():                              # submitted and paid earlier; collect it, don't pay again
-            job = json.loads(pending.read_text(encoding="utf-8"))
+            job = json.loads(pending.read_text(encoding="utf-8"))   # keeps the price it was submitted at
             operation = types.GenerateVideosOperation(name=job["operation"])
             model, mode, seconds, cost = job["model"], job["mode"], job["seconds"], job["usd"]
         else:
+            model, tier, resolution = self._settings(shot)
             scene = next(s for s in self.outline.scenes if s.scene_id == ctx.scene_id)
             prompt = veo_prompt(shot, scene, self.bible, ctx.cast, self.navarasa, self._speaker(shot, ctx.scene_id))
             mode = self.g.get("veo_mode", "keyframe")
-            seconds = self._clip_seconds(shot, mode)
-            cost = seconds * self._price_per_second()
-            self.ledger.check(cost, f"Veo {shot.shot_id} ({seconds} s)")
+            seconds = veo_clip_seconds(shot.duration_s, self.pricing, resolution, mode, bool(shot.characters_in_frame))
+            cost = seconds * veo_price_per_second(self.pricing, self.g, tier, resolution)
+            refs = self._refs(shot, ctx.cast, 3) if shot.characters_in_frame else []
+            keyframe = self.root / "06_keyframes" / shot.shot_id / f"take_{attempt}.png"
+            first_frame = self.images.price if refs and mode != "reference" and not keyframe.exists() else 0
+            self.ledger.check(cost + first_frame, f"Veo {shot.shot_id} ({seconds} s)"
+                              + (" and its first frame" if first_frame else ""))
 
-            config = dict(duration_seconds=seconds, aspect_ratio="16:9", resolution=self.g.get("veo_resolution", "720p"),
+            config = dict(duration_seconds=seconds, aspect_ratio="16:9", resolution=resolution,
                           negative_prompt=NEGATIVE, number_of_videos=1)
             if self.g.get("vertex"):                      # Veo audio is dropped in the edit (dialogue is TTS); on
                 config["generate_audio"] = bool(self.g.get("veo_audio", False))  # Vertex it is billed extra
             if self.g.get("person_generation"):
                 config["person_generation"] = self.g["person_generation"]
-            model = self.g.get("veo_model", "veo-3.1-fast-generate-preview")
             kwargs: dict[str, Any] = {"model": model, "prompt": prompt}
 
-            refs = self._refs(shot, ctx.cast, 3) if shot.characters_in_frame else []
             if refs and mode == "reference":
                 config["reference_images"] = [
                     types.VideoGenerationReferenceImage(image=types.Image.from_file(location=str(p)),
                                                         reference_type=types.VideoGenerationReferenceType.ASSET)
                     for _, paths in refs for p in paths]
             elif refs:                                   # keyframe mode; shots without leads go text-to-video
-                keyframe = self.root / "06_keyframes" / shot.shot_id / f"take_{attempt}.png"
                 if not keyframe.exists():
                     self.images.generate(keyframe_prompt(shot, prompt, [(n, len(p)) for n, p in refs]), keyframe,
                                          refs=[p for _, paths in refs for p in paths], item=f"keyframe {shot.shot_id}")
@@ -336,11 +336,13 @@ class VeoVideo:
                               config=types.GenerateVideosConfig(**config))
             # Logged as soon as the job exists, so a crash, timeout or Ctrl-C while it runs still counts toward the
             # budget, and the job's name is kept so the next run collects the clip instead of paying for a new one.
-            self.ledger.record("veo", shot.shot_id, cost, seconds=seconds, model=model, mode=mode, attempt=attempt)
+            self.ledger.record("veo", shot.shot_id, cost, seconds=seconds, model=model, mode=mode, attempt=attempt,
+                               tier=tier, resolution=resolution)
             if getattr(operation, "name", None):
                 pending.parent.mkdir(parents=True, exist_ok=True)
                 pending.write_text(json.dumps({"operation": operation.name, "model": model, "mode": mode,
-                                               "seconds": seconds, "usd": cost}), encoding="utf-8")
+                                               "tier": tier, "resolution": resolution, "seconds": seconds,
+                                               "usd": cost}), encoding="utf-8")
 
         timeout = self.g.get("timeout_seconds", 900)
         deadline = time.time() + timeout

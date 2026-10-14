@@ -26,10 +26,15 @@ veo:
     720p: [4, 6, 8]
     1080p: [8]
   resolution: 720p           # 720p | 1080p (generate 720p, upscale finals)
-  api_per_second:            # Gemini API, billed per generated second
+  api_per_second:            # video + audio, per generated second: Vertex AI with veo_audio true (verified
+                             # 2026-10-14); also used for the Gemini API, whose rates were not rechecked
     standard: {720p: 0.40, 1080p: 0.40}
     fast:     {720p: 0.10, 1080p: 0.12}
     lite:     {720p: 0.05, 1080p: 0.08}
+  api_per_second_video_only: # Vertex AI with generate_audio false (google.vertex true, google.veo_audio false);
+    standard: {720p: 0.20, 1080p: 0.20}   # verified 2026-10-14 on cloud.google.com/vertex-ai/generative-ai/pricing
+    fast:     {720p: 0.08, 1080p: 0.10}
+    lite:     {720p: 0.03, 1080p: 0.05}
   flow_credits_per_clip:     # Gemini app / Flow subscription (non-Ultra accounts)
     standard: 100
     fast: 20
@@ -44,11 +49,10 @@ gemini:                      # Gemini API, third-party estimates; verify on ai.g
   tts_per_minute: 0.02       # Telugu speech (~$10 per 1M audio tokens)
 
 lyria:                       # Google Lyria 3 background score (providers.music: lyria), per generated track
-  # UNVERIFIED conservative placeholders: check the Vertex AI pricing page (Generative AI, Lyria) before budgeting.
   # Re-renders reuse cached tracks (cache/music/) and are not billed again.
   per_generation:
-    lyria-3-pro-preview: 0.50
-    lyria-3-clip-preview: 0.10
+    lyria-3-pro-preview: 0.08    # "Lyria 3 Pro full song $0.08 / 1 count", Vertex AI pricing, verified 2026-10-14
+    lyria-3-clip-preview: 0.10   # UNVERIFIED conservative placeholder: check the Vertex AI pricing page (Lyria)
 
 cloud: gcp                   # where lip-sync runs and media is backed up: gcp | aws
 
@@ -78,9 +82,9 @@ mac:                         # your MacBook: no bill, only time
 cloud_run_gpu:            # lip-sync worker (deploy/lipsync): Cloud Run job, 1x NVIDIA L4 + 4 vCPU / 16 GiB, us-central1
   per_hour: 1.10          # UNVERIFIED estimate (L4 ~$0.67/h + CPU/memory ~$0.37/h); check cloud.google.com/run/pricing
   startup_minutes: 6      # image pull + model load, once per job execution
-  minutes_per_clip: 2.0   # LatentSync on an 8 s 1080p shot (estimate)
+  minutes_per_clip: 10.0  # LatentSync 1.6 on a 6-8 s 1080p shot (measured ~9.7 min on an L4, 2026-10-14)
 
 vertex_endpoint_gpu:      # lip-sync on a temporary Vertex AI endpoint (g2-standard-8 + 1x L4), billed while deployed
-  per_hour: 1.80          # UNVERIFIED conservative estimate; check the Vertex AI prediction pricing page
+  per_hour: 0.98181       # Vertex AI prediction g2-standard-8 incl. 1x L4, us-central1 (verified 2026-10-14)
   startup_minutes: 25     # register + create + deploy (measured ~30 min end to end for 2 shots)
-  minutes_per_clip: 2.0
+  minutes_per_clip: 10.0  # measured ~9.7 min per 6-8 s 1080p shot (2 runs, 7 shots)

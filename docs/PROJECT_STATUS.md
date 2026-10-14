@@ -1,6 +1,6 @@
 # Project status
 
-_Last updated: 2026-10-14. Branch: `claude/telugu-ai-movie-generator-yhb6po` (not merged into `main` yet)._
+_Last updated: 2026-10-15. Branch: `claude/telugu-ai-movie-generator-yhb6po` (not merged into `main` yet)._
 
 ## 1. Completed
 
@@ -103,6 +103,29 @@ _Last updated: 2026-10-14. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
   access blocked, about $0.02/month): `godavari5/backup/` (base + update v2 + update v3 backups with sha256) and
   `godavari5/11_master/` (original trailer, movie, subtitles, stems). Files under `lipsync/` are staging and are
   deleted after 7 days.
+
+- **10-minute short film "godavari10" (Plan A, 2026-10-14)**: the owner chose a short film of the whole story
+  instead of a feature, within $200 including GST ($115 hard stop on the ledger for this stage).
+  - Planned with agents: a full 2h30m blueprint (40 sequences, 23 goosebump moments; about $8,300 expected at Veo 3.1
+    standard, which is why the feature is out of reach on $200), then a 10-minute version in 13 sequences (620 s,
+    133 shots, 58 Telugu dialogue blocks, 20 Lyria cues). The owner approved every Telugu line; Bhairava's line was
+    changed to avoid a famous catchphrase; AI voices for all lines (crowd chant layered from 6 Gemini voices; the
+    lullaby hums moved into the score).
+  - 11 new adult characters (Satti, Veeranna, Kaasi, the mother Lakshmamma, Rudra, Chitti, and flashback versions;
+    Raghavaiah built from Arjun's face), approved by the owner. No children on screen anywhere.
+  - Video mix chosen from a side-by-side pilot: Veo 3.1 Fast 720p for faces, fights and crowds, Lite 720p for faceless
+    wides, standard for 28 goosebump peaks; 14 godavari5 clips reused. All 81 first frames were checked against the
+    approved faces before any video was paid (3 wrong Arjun faces and 1 wrong Veeranna were remade).
+  - 7 shots were blocked by Veo's safety filter (not billed): knives, impact wording, a child's point of view, and
+    blood-like stains. All were softened and regenerated. One clip had a TV-style "24" logo drawn from the words "24
+    years ago" in the prompt; that wording was removed from all prompts and the clip retaken.
+  - Cards: Telugu + English title at 1:15, INTERVAL at 4:21 and an end card (Noto Serif Telugu; install the font, see
+    src/nraiorbit/post/cards.py for the paths searched).
+  - Cost so far: $88.91 on the ledger (real Vertex prices since the price-table fix). Lip-sync of all 34 on-camera
+    speaking shots is the last paid step (about $6). Media backed up to `gs://nraiorbit-agentic-film-product-media/
+    godavari10/` and `library/characters/*/refs`.
+  - Still missing: sound effects (no SFX track yet; 77 distinct effects are spotted in projects/godavari10/post/
+    sfx_spot_list.csv; candidate: Stable Audio 3.0 Small SFX, open weights, commercial use under $1M revenue).
 
 ### Verified vs. not verified
 

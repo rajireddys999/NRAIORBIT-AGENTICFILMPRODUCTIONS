@@ -1,6 +1,22 @@
 # Prompt for the next session
 
-## Where things stand (2026-10-14)
+## Where things stand (2026-10-15): the 10-minute film
+
+- **godavari10**, the whole Godavari Simham story as a 10-minute short (Plan A, owner-approved, $200 incl. GST):
+  13 sequences, 133 shots, 58 Telugu dialogue blocks (all approved; AI voices), 20 Lyria cues, Telugu title /
+  INTERVAL / end cards. 11 new adult characters approved (no children on screen). Every first frame was checked
+  against the approved faces before video was paid (`nraiorbit keyframes`).
+- First full cut done ($88.91 on the godavari10 ledger, real Vertex prices). A 4-part 720p preview without lip-sync
+  was sent in chat. The last paid step, lip-sync of all 34 on-camera speaking shots on one Vertex L4 batch (~$6),
+  was started on 2026-10-14 ~23:12 UTC. If a session finds an endpoint still deployed with nothing running, undeploy
+  and delete it (`gcloud ai endpoints list --region us-central1`).
+- Media: `gs://nraiorbit-agentic-film-product-media/godavari10/` (inbox clips, keyframes, caches, plan files, cost
+  log) and `gs://nraiorbit-agentic-film-product-media/library/characters/<id>/refs` for the 11 new characters.
+  Arjun, Meera and Bhairava's photos are in the godavari5 backups below.
+- Not done yet: sound effects (77 effects spotted in projects/godavari10/post/sfx_spot_list.csv), a native Telugu
+  review of the lines, the InsightFace licence question before any monetised release.
+
+## Earlier (2026-10-14): the 5-minute POC trailer
 
 - **Final trailer done** (v3) on Vertex AI:
   - 17 Veo 3.1 clips at 1080p and 13 Telugu lines (voice A, gemini-2.5-flash-tts).
@@ -54,40 +70,37 @@
 ## Prompt (copy everything in the box)
 
 ```text
-Continue the NRAIORBIT Telugu film POC on branch claude/telugu-ai-movie-generator-yhb6po. Read README.md,
-docs/PROJECT_STATUS.md, docs/POC_RUNBOOK.md and docs/NEXT_SESSION_PROMPT.md first. Talk to me in short, simple English.
+Continue the NRAIORBIT Telugu film work on branch claude/telugu-ai-movie-generator-yhb6po. Read README.md,
+docs/PROJECT_STATUS.md and docs/NEXT_SESSION_PROMPT.md first. Talk to me in short, simple English.
 
-State: the final trailer (v3) is done on Vertex AI: 17 Veo clips, 13 Telugu lines (voice A), a Lyria 3 Pro score with
-music.styles {elevation: epic_mythic, emotion: alaap_choir}, every talking shot lip-synced (LatentSync on a Vertex L4
-endpoint), $68.61 on the ledger. I approved the faces, the 13 Telugu lines, the voice and the music styles.
-Project media is not in git; restore it from gs://nraiorbit-agentic-film-product-media/godavari5/backup/.
+State: the 10-minute short film "godavari10" (Plan A) has a full first cut; lip-sync of the 34 on-camera speaking
+shots was the last paid step. I approved every Telugu line, the 11 new characters and the video-model mix.
+Project media is not in git; restore it from the private bucket gs://nraiorbit-agentic-film-product-media.
 You may run commands that use GOOGLE_APPLICATION_CREDENTIALS_JSON / GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION.
 Never print, log or commit any key. No paid step without my explicit OK in this session.
 
-1. Check the three GOOGLE_* variables are set without printing them. Write the JSON to a 0600 file outside the
-   repo only if a tool needs a file (gcloud), and delete it when done. Run gcloud with
-   `env -u CLOUDSDK_AUTH_ACCESS_TOKEN` (a preset token overrides the service account).
+1. Check the three GOOGLE_* variables are set without printing them. Run gcloud with
+   `env -u CLOUDSDK_AUTH_ACCESS_TOKEN` (a preset token overrides the service account). First check
+   `gcloud ai endpoints list --region us-central1`: if a lip-sync endpoint is still deployed, tell me, then undeploy
+   and delete it.
 2. pip install -e ".[dev,google]", run the test suite. If a host is blocked, tell me which one and stop.
-3. Restore projects/godavari5 and library/characters/*/refs from gs://nraiorbit-agentic-film-product-media/godavari5/backup/
-   (or from backup parts I attach): for each of godavari5_backup, godavari5_update_v2, godavari5_update_v3 in that
-   order, cat <name>.tar.part* > <name>.tar, check <name>.sha256, tar -xf in the repo root. If neither source is
-   available, STOP and tell me. Do not regenerate paid clips, voices, music or lip-sync.
-4. Free checks: `nraiorbit google models --vertex`; `nraiorbit estimate godavari5` ("Actual spend" should be
-   $68.61). Rebuild the trailer for free with a cap just above what was spent, so no paid call is possible:
-   `nraiorbit run godavari5 --only trailer --force render --yes --max-spend 68.70`. Send me the trailer (< 30 MB).
-5. Next feature, YouTube reference learning: I will pass YouTube links of Telugu action scenes and background scores.
-   Build it so Gemini on Vertex AI watches each public link (no downloading, no training on the films) and writes a
-   structured reference profile (character archetypes and strengths, emotional beats, BGM cue anatomy: build, drop,
-   hit, instruments, tempo, raga feel) into the asset library. The Story Analyst, Casting and Music Director agents
-   then use the profiles as examples, and the Lyria prompts use the BGM profiles. Show me the cost per video before
-   analysing any.
-6. Then STOP and ask me what to do next. Options (all need my OK, each with its cost):
-   - Full 5 minutes: `nraiorbit run godavari5 --yes --max-spend 200` (37 more Veo shots + keyframes, about $121 on
-     the ledger, plus about $4 of GPU time to lip-sync the new talking shots; voices and music are already paid).
-   - Redo shots I name: `nraiorbit retake godavari5 <shot_id> --yes --max-spend <cap>` (about $3.33 each).
-   - Re-score one cue in another style: change music.styles (presets in config/music_styles.yaml), about $0.50 per piece.
-   - A designed Telugu title image (about $0.13).
-   After any paid run, make an update backup and upload it and the new master files to the bucket.
+   Install the Telugu card font: Noto Serif/Sans Telugu Bold into /usr/local/share/fonts/noto-telugu/ (from
+   fonts.gstatic.com via fonts.googleapis.com/css2?family=Noto+Serif+Telugu:wght@700).
+3. Restore, never regenerate paid work:
+   a) godavari5 backups (Arjun, Meera, Bhairava's photos live there): from gs://.../godavari5/backup/, for each of
+      godavari5_backup, godavari5_update_v2, godavari5_update_v3 in order: cat parts > .tar, check .sha256, tar -xf.
+   b) gcloud storage rsync -r gs://.../godavari10/inbox projects/godavari10/inbox, the same for 06_keyframes, cache,
+      08_music and reports; copy gs://.../godavari10/project/* into projects/godavari10/ (03_scenes, 04_shots,
+      pipeline.yaml, pricing.yaml, cast.lock.yaml, takes.yaml, reuse.yaml, 01_story_bible.json, 02_outline.json, post/).
+   c) gcloud storage rsync -r gs://.../library/characters library/characters (new characters' photos).
+4. Free rebuild with a cap just above the ledger so nothing can be paid:
+   `nraiorbit run godavari10 --force render --yes --max-spend <ledger total + 0.10>`. Check the cut (one frame per
+   shot, no stray text, faces match), then send me the film in parts under 30 MB.
+5. Then STOP and ask me what to do next. Options (each needs my OK, with its cost):
+   - Sound effects for fights, rain, fire and crowds (open model on our L4, about $1-3 of GPU, plus code).
+   - Redo shots I name: `nraiorbit retake godavari10 <shot_id> [--keep-keyframe] --yes --max-spend <cap>`
+     (Fast 720p about $0.32-0.48 per shot, plus $0.15 for a new first frame).
+   - YouTube reference learning (Gemini watches public links I give and writes reference profiles for the agents).
 
 Rules: projects/ and library media stay gitignored. If code must change, add tests, run the suite, then commit
 and push to the same branch. Update docs/PROJECT_STATUS.md with what was done and what was spent.

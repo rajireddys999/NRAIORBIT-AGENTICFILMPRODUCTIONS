@@ -155,6 +155,64 @@ def test_pipeline_cards_on_off_never_remaster(tmp_path):
     assert movie.read_bytes() == original and not clean.exists() and not record.exists()
 
 
+@needs_ffmpeg
+def test_pipeline_never_cards_twice_when_the_clean_master_is_gone(tmp_path, monkeypatch):
+    pipe = _pipeline(tmp_path, [])
+    pipe.p.master.mkdir(parents=True)
+    movie = _movie(pipe.p.master / "movie.mp4", (640, 360), 4.0)
+    original = movie.read_bytes()
+    clean, record = pipe.p.edit / "movie_nocards.mp4", pipe.p.edit / "cards.json"
+    title = {"kind": "title", "at_s": 1.0, "length_s": 1.5, "text_en": "GODAVARI SIMHAM"}
+    remastered = []
+
+    def master(self, out):                                              # stands in for assembling the scenes again
+        remastered.append(out)
+        record.unlink(missing_ok=True)
+        out.write_bytes(original)
+
+    monkeypatch.setattr(Pipeline, "_master", master)
+    pipe = _pipeline(tmp_path, [title])
+    pipe._place_cards(movie)
+    once = _frame(movie, 1.75).mean()
+    clean.unlink()                                                      # 10_edit's big files cleared to free disk
+    pipe._place_cards(movie)
+    assert remastered == [movie] and clean.read_bytes() == original
+    assert abs(_frame(movie, 1.75).mean() - once) < 3                   # carded once, not twice
+
+    clean.unlink()                                                      # ... and then the cards are taken off
+    pipe = _pipeline(tmp_path, [])
+    pipe._place_cards(movie)
+    assert len(remastered) == 2 and movie.read_bytes() == original
+    assert not clean.exists() and not record.exists()
+
+
+@needs_ffmpeg
+def test_pipeline_relays_cards_when_the_image_or_font_changes(tmp_path, monkeypatch):
+    pipe = _pipeline(tmp_path, [])
+    pipe.p.master.mkdir(parents=True)
+    movie = _movie(pipe.p.master / "movie.mp4", (640, 360), 4.0)
+    card = {"kind": "title", "at_s": 1.0, "length_s": 1.5, "text_en": "GODAVARI SIMHAM", "image": "inbox/title.png"}
+    pipe = _pipeline(tmp_path, [card])
+    pipe._place_cards(movie)                                            # the image isn't there yet: text card
+    text_card = movie.read_bytes()
+    art = pipe.p.root / "inbox" / "title.png"
+    art.parent.mkdir(parents=True)
+    Image.new("RGBA", (960, 540), (200, 30, 30, 255)).save(art)
+    pipe._place_cards(movie)                                            # dropped in later: laid again
+    assert movie.read_bytes() != text_card
+    assert _frame(movie, 1.75)[180, 320, 0] > 150
+    with_art = movie.read_bytes()
+    pipe._place_cards(movie)
+    assert movie.read_bytes() == with_art                               # unchanged image: nothing to do
+
+    te = Card("title", 1.0, 1.5, "గోదావరి సింహం", "GODAVARI SIMHAM")
+    monkeypatch.setattr(cards, "telugu_font", lambda: None)
+    without = te.record()
+    monkeypatch.setattr(cards, "telugu_font", lambda: "/fonts/NotoSerifTelugu-Bold.ttf")
+    assert te.record() != without                                       # a Telugu font installed: laid again
+    assert Card("title", 1.0, 1.5, "", "GODAVARI SIMHAM").record()["telugu_font"] is None
+
+
 def test_card_config_rejects_unknown_kind(tmp_path):
     with pytest.raises(ValueError, match="card kind"):
         Card.from_config({"kind": "intermission", "at_s": 1, "length_s": 2}, tmp_path)

@@ -618,28 +618,33 @@ class Pipeline:
     def _assemble(self) -> None:
         movie = self.p.master / "movie.mp4"
         if not movie.exists() and not (self.p.edit / "movie_nocards.mp4").exists():
-            tl = json.loads((self.p.edit / "timeline.json").read_text(encoding="utf-8"))
-            outline = self._load(self.p.outline, Outline)
-            starts = scene_start_times(outline)
-            shots = [assemble.TimelineShot(**{**s, "clip": Path(s["clip"])}) for s in tl["shots"]]
-            dialogue = [assemble.AudioEvent(**{**e, "path": Path(e["path"])}) for e in tl["dialogue"]]
-            music = [assemble.AudioEvent(**{**e, "path": Path(e["path"])}) for e in tl["music"]]
-            scene_files = []
-            for sc in outline.scenes:
-                scene_shots = [s for s in shots if s.scene_id == sc.scene_id]
-                start, end = starts[sc.scene_id], starts[sc.scene_id] + sc.target_seconds
-                # every line overlapping the scene: one that runs past a cut is split there and joined seamlessly
-                scene_dlg = [e for e in dialogue if e.start_s < end and e.start_s + e.duration_s > start]
-                out = self.p.edit / "scenes" / f"{sc.scene_id}.mp4"
-                scene_files.append(assemble.render_scene(scene_shots, scene_dlg, starts[sc.scene_id], out))
-            film = assemble.join_scenes(scene_files, self.p.edit / "film_dialogue.mp4")
-            audio = self.cfg["audio"]
-            assemble.master(film, music, movie, audio["master_lufs"], audio["true_peak_db"])
-            self._write_stems(film, movie)
-            self._write_subtitles(dialogue)
-            self.log(f"  master: {movie} ({ffmpeg.duration(movie) / 60:.1f} min)")
+            self._master(movie)
         self._place_cards(movie)
         self.gate("pacing" if self._animatic() else "final_cut")
+
+    def _master(self, movie: Path) -> None:
+        """Assemble the scenes and master the film into `movie`, without cards."""
+        (self.p.edit / "cards.json").unlink(missing_ok=True)       # a fresh master carries no cards
+        tl = json.loads((self.p.edit / "timeline.json").read_text(encoding="utf-8"))
+        outline = self._load(self.p.outline, Outline)
+        starts = scene_start_times(outline)
+        shots = [assemble.TimelineShot(**{**s, "clip": Path(s["clip"])}) for s in tl["shots"]]
+        dialogue = [assemble.AudioEvent(**{**e, "path": Path(e["path"])}) for e in tl["dialogue"]]
+        music = [assemble.AudioEvent(**{**e, "path": Path(e["path"])}) for e in tl["music"]]
+        scene_files = []
+        for sc in outline.scenes:
+            scene_shots = [s for s in shots if s.scene_id == sc.scene_id]
+            start, end = starts[sc.scene_id], starts[sc.scene_id] + sc.target_seconds
+            # every line overlapping the scene: one that runs past a cut is split there and joined seamlessly
+            scene_dlg = [e for e in dialogue if e.start_s < end and e.start_s + e.duration_s > start]
+            out = self.p.edit / "scenes" / f"{sc.scene_id}.mp4"
+            scene_files.append(assemble.render_scene(scene_shots, scene_dlg, starts[sc.scene_id], out))
+        film = assemble.join_scenes(scene_files, self.p.edit / "film_dialogue.mp4")
+        audio = self.cfg["audio"]
+        assemble.master(film, music, movie, audio["master_lufs"], audio["true_peak_db"])
+        self._write_stems(film, movie)
+        self._write_subtitles(dialogue)
+        self.log(f"  master: {movie} ({ffmpeg.duration(movie) / 60:.1f} min)")
 
     def _place_cards(self, movie: Path) -> None:
         """Lay the configured cards (title, INTERVAL, end) over the master; changing them later never re-masters.
@@ -650,6 +655,11 @@ class Pipeline:
         cards = [Card.from_config(c, self.p.root) for c in self.cfg.get("cards") or []]
         wanted = [c.record() for c in cards]
         clean, record = self.p.edit / "movie_nocards.mp4", self.p.edit / "cards.json"
+        if not clean.exists() and record.exists():
+            # cards are on movie.mp4 but its clean copy is gone (10_edit cleared): master it again, never card twice
+            self.log("  cards: the master without cards (10_edit/movie_nocards.mp4) is missing; re-mastering")
+            movie.unlink(missing_ok=True)
+            self._master(movie)
         if not clean.exists():
             applied = []                          # movie.mp4 is the clean master
         elif record.exists() and movie.exists():

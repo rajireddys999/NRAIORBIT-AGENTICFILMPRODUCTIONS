@@ -52,8 +52,13 @@ class Card:
                    entry.get("text_en") or "", root / image if image else None)
 
     def record(self) -> dict:
+        """What the rendered card depends on: its config, plus the image file and the Telugu font actually used, so
+        dropping in or redesigning the image, or installing a Telugu font, lays the cards again."""
+        art = self.image.stat() if self.image is not None and self.image.exists() else None
         return {"kind": self.kind, "at_s": self.at_s, "length_s": self.length_s, "text_te": self.text_te,
-                "text_en": self.text_en, "image": str(self.image) if self.image else None}
+                "text_en": self.text_en, "image": str(self.image) if self.image else None,
+                "image_file": [art.st_size, art.st_mtime_ns] if art else None,
+                "telugu_font": telugu_font() if self.text_te and art is None else None}
 
 
 def telugu_font() -> str | None:

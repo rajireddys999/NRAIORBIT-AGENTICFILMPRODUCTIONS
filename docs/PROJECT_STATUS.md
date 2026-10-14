@@ -64,7 +64,23 @@ _Last updated: 2026-10-13. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
 - A pre-flight review before the paid run found and fixed: lost/double-paid Veo jobs on interrupted polling
   (now logged at submit and resumed from `inbox/video/.pending/`), no retries for images/TTS, uncaught Veo
   operation errors, unused Veo audio billed on Vertex, a poll with no timeout.
-- Not approved yet: the full 5 minutes (about $121 more), music.
+- Not approved yet: the full 5 minutes (about $121 more).
+- **Voice and music upgrade (v2, 2026-10-14)**, after you reported the trailer voice "breaking" and a score with no elevation.
+  Causes measured:
+  - 9 of 15 trailer cuts chopped a line.
+  - A movie line lost 5.4 s at a scene end, and two lines overlapped by 3.7 s.
+  - The slow TTS prompt put English notes next to the Telugu.
+  - The music was placeholder tones.
+
+  Fixed:
+  - Whole lines everywhere, and an AUDIO PROFILE / DIRECTOR'S NOTES / TRANSCRIPT TTS prompt with shorter pauses.
+    You picked voice A, gemini-2.5-flash-tts, from an audition of 3 models.
+  - A Lyria 3 Pro provider with style presets researched from Telugu mass scoring and frisson studies, scored to the
+    picture (the hit lands on the hero-reveal shot, aligned in the audio). From an audition of 6 pieces you picked
+    `epic_mythic` for elevation and `alaap_choir` for emotion.
+  - Lyria needs response_modalities [AUDIO, TEXT]. It once returned no audio for the trailer cue ($0) and worked on a retry.
+
+  Cost of v2: $7.54 on the ledger (cap $10). Total: $65.19.
 
 ### Verified vs. not verified
 
@@ -101,7 +117,7 @@ otherwise paid clips would be generated again. Setup and the copy-paste prompt: 
 | 2 | Restore the backup; free trailer rebuild with `--max-spend 57.80`; Cloud Storage backup | ≈ $0.02/month |
 | 3 | Full 5 minutes: `nraiorbit run godavari5 --yes --max-spend 200` | ≈ $121 on the ledger |
 | 4 | Retakes of shots you pick | ≈ $3.33 each |
-| 5 | Music: Lyria provider on Vertex, or your own tracks | to be estimated |
+| 5 | Music: done (Lyria 3 Pro, styles picked); re-score a cue in another style if wanted | ≈ $0.50 per piece |
 | 6 | Lip-sync on a Google Cloud L4 GPU | ≈ $1.50 |
 
 ## 2a. Earlier plan: the trailer test

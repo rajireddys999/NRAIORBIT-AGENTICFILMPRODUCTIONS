@@ -6,7 +6,7 @@
   nraiorbit poc <slug>                                      5-minute POC project (screenplay + shots pre-written)
   nraiorbit estimate [<slug>] [--runtime 105]               bill estimate before (and actuals after) generating
   nraiorbit shotpack export|status <slug>                   Veo prompts per shot / which clips are in the inbox
-  nraiorbit identity build <slug>                           character reference images (Gemini)
+  nraiorbit identity build <slug> [--only id1,id2]          character reference images (Gemini)
   nraiorbit run <slug> --only trailer [--max-spend 20]      paid run limited to trailer shots, with a budget cap
   nraiorbit retake <slug> <shot_id>... [--use N]            redo chosen shots (paid) or pick an earlier attempt (free)
   nraiorbit retake <slug> <shot_id>... --keep-keyframe      new motion from the same first frame (no new image)
@@ -108,7 +108,7 @@ def _preflight(root: Path, cfg: dict, assume_yes: bool) -> bool:
           f"  Veo: {pre['shots']} new clips, {pre['seconds']} s -> ${pre['video_usd']:.2f}"
           f"  ({pre['cached_shots']} shots already generated, reused for free)\n"
           f"  Keyframes: {pre['keyframes']} images -> ${pre['keyframe_usd']:.2f}\n"
-          f"  Telugu voices (Gemini TTS): {pre['lines']} lines -> ${pre['tts_usd']:.2f}\n"
+          f"  Telugu voices (Gemini TTS): {pre['lines']} takes (a crowd line is one per voice) -> ${pre['tts_usd']:.2f}\n"
           + (f"  Music (Lyria): {pre['cues']} new cues -> ${pre['music_usd']:.2f}"
              f"  ({pre['cached_cues']} already generated or in inbox/music, free)\n" if lyria else "")
           + f"  Total about ${pre['total_usd']:.2f} for one attempt per shot. Spent so far ${spent:.2f}"
@@ -211,7 +211,7 @@ def cmd_retake(args) -> None:
 
 def cmd_identity(args) -> None:
     from .costing import SpendLedger, load_pricing
-    from .identity import build_identity_pack
+    from .identity import build_identity_pack, images_to_make, plan_identity_pack
     from .llm import ClaudeClient
     from .providers.google_ai import GeminiImages, google_client
     from .schemas import CastLock, StoryBible
@@ -227,16 +227,25 @@ def cmd_identity(args) -> None:
     lock = CastLock.model_validate(yaml.safe_load(paths.lock.read_text(encoding="utf-8")))
     pricing = load_pricing(root)
     library = AssetRegistry.load(REPO_ROOT / "library")
-    n_images = sum(2 + len(getattr(library.resolve(e.character_asset), "costumes", []))
-                   for e in lock.characters.values() if not e.character_asset.endswith("@pending"))
+    only = [c.strip() for c in (args.only or "").split(",") if c.strip()] or None
+    try:
+        jobs = plan_identity_pack(bible, lock, library, only=only, log=lambda m: None)
+    except (KeyError, ValueError) as e:
+        sys.exit(f"identity build: {e.args[0] if e.args else e}")
+    n_images = len(images_to_make(jobs, args.force))
     price = pricing.get("gemini", {}).get("image_per_image", 0.04)
-    print(f"Character reference images: up to {n_images} images (existing ones are kept"
-          f"{', except with --force' if not args.force else ''}) -> at most ${n_images * price:.2f}")
+    who = f" for {', '.join(job.spec.id for job in jobs) or 'nobody'}" if only else ""
+    if not n_images:
+        print(f"Character reference images{who}: nothing to generate (existing images are kept; --force regenerates)")
+        return
+    print(f"Character reference images{who}: {n_images} image(s) "
+          f"({'existing ones are regenerated' if args.force else 'existing ones are kept; --force regenerates'})"
+          f" -> at most ${n_images * price:.2f}")
     if not _confirm("Generate them with Gemini?", args.yes):
         return
     ledger = SpendLedger(paths.reports / "cost.jsonl", cfg.get("budget", {}).get("max_usd"))
     images = GeminiImages(google_client(cfg.get("google", {}), "image"), cfg.get("google", {}), pricing, ledger)
-    build_identity_pack(bible, lock, library, images, force=args.force)
+    build_identity_pack(bible, lock, library, images, force=args.force, only=only)
     print("Review the images in library/characters/*/refs/ before generating video; delete any you dislike and run "
           "this again to regenerate just those.")
 
@@ -418,6 +427,7 @@ def _main(argv: list[str] | None = None) -> None:
     p.add_argument("action", choices=["build"])
     p.add_argument("slug")
     p.add_argument("--force", action="store_true", help="regenerate existing images")
+    p.add_argument("--only", help="comma-separated Story Bible character ids, e.g. raghavaiah_father,kaasi_young")
     p.add_argument("--max-spend", type=float)
     p.add_argument("--yes", action="store_true")
     p.set_defaults(fn=cmd_identity)

@@ -55,6 +55,16 @@ class InboxTTS:
         ffmpeg.run(["-i", str(src), "-ar", str(ffmpeg.SAMPLE_RATE), "-ac", "2", str(out)])
         return ffmpeg.duration(out)
 
+    def can_chant(self, line: ScriptBlock) -> bool:
+        """A crowd recording in the inbox, or a fallback that can chant (the pipeline says the single voice otherwise)."""
+        return _find_audio(self.folder, line.block_id) is not None or hasattr(self.fallback, "synthesize_crowd")
+
+    def synthesize_crowd(self, line: ScriptBlock, voice_ref: str | None, out: Path, voices: int) -> float:
+        """A recording in the inbox is used as it is; else the fallback chants it."""
+        if _find_audio(self.folder, line.block_id) is None:
+            return self.fallback.synthesize_crowd(line, voice_ref, out, voices)
+        return self.synthesize(line, voice_ref, out)
+
 
 @register("music", "inbox")
 class InboxMusic:

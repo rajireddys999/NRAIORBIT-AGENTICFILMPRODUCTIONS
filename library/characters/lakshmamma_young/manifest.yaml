@@ -1,0 +1,28 @@
+id: lakshmamma_young
+kind: character
+version: 1
+name: Young Lakshmamma
+role: family
+description: "Lakshmamma 24 years younger, 32: gentle oval face, large dark eyes, quick smile, red kumkum, jasmine in her plait."
+tags: [mother, female, 30s, godavari, flashback, lakshmamma_mother]
+identity_from:                      # identity build draws the front portrait from this character's refs/face/01_front.png
+  asset: lakshmamma_mother
+  change: "the same person 24 years younger, an adult woman of about 32: a long black plait with jasmine instead of the grey bun, smoother skin, a quick smile, the same gentle oval face, large dark eyes and small mole on the left cheek"
+physical:
+  gender: "female"
+  age: 32
+  height_cm: 158
+  build: "slim"
+  skin_tone: "medium brown"
+  face: "lakshmamma_mother's face, younger: gentle oval face, large dark eyes, quick smile"
+  hair: "long black plait with jasmine"
+  eyes: "dark brown"
+  marks: "small mole on the left cheek (shared with lakshmamma_mother)"
+  # skin_tone_lab / skin_tone_tolerance_de: measure from the approved identity pack
+costumes:
+  - {id: cst_lakshmamma_young_saree, description: "maroon cotton saree, glass bangles, gold mangalsutra, red kumkum, jasmine in her plait", refs: refs/costumes/cst_lakshmamma_young_saree/}
+default_voice: lakshmamma_young_voice
+license: {type: owned, commercial_use: true, source: "in-house synthetic identity pack (to be generated)"}
+consent: {required: false}
+files:
+  face_refs: refs/face/

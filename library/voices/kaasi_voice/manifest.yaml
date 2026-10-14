@@ -1,0 +1,15 @@
+id: kaasi_voice
+kind: voice
+version: 1
+name: Kaasi (Gemini TTS)
+tags: [male, 50s, godavari, breathy, quiet]
+dialect: godavari
+gender: male
+age_range: [45, 58]
+pitch: low
+timbre_tags: [dry, breathy, quiet]
+gemini_voice: Enceladus       # Gemini TTS prebuilt voice; audition and change to taste
+emotion_refs: {}       # a prebuilt voice: no reference clips; each line's delivery is the TTS instruction
+license: {type: owned, commercial_use: true, source: "synthetic speech from the Gemini 2.5 Flash TTS prebuilt voice Enceladus (Vertex AI), generated per line; no human voice artist, no voice clone"}
+consent: {required: false}          # no person's voice is used
+files: {}              # nothing to store: the voice is the Gemini prebuilt voice above

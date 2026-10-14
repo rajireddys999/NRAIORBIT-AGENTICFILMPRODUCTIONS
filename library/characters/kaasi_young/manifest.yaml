@@ -1,0 +1,28 @@
+id: kaasi_young
+kind: character
+version: 1
+name: Young Kaasi
+role: supporting
+description: "Kaasi 24 years younger, 26: thin, nervous young henchman with a wisp of moustache and a sickle in his waistband."
+tags: [henchman, male, 20s, godavari, flashback, kaasi_henchman]
+identity_from:                      # identity build draws the front portrait from this character's refs/face/01_front.png
+  asset: kaasi_henchman
+  change: "the same person 24 years younger, an adult man of about 26: black hair cropped close and a wisp of moustache instead of grey stubble, a thin but fuller face, nervous eyes"
+physical:
+  gender: "male"
+  age: 26
+  height_cm: 172
+  build: "thin"
+  skin_tone: "dark brown"
+  face: "kaasi_henchman's face, younger: thin face, deep-set watchful eyes, a wisp of moustache"
+  hair: "black hair cropped close"
+  eyes: "dark brown"
+  marks: "curved sickle in the waistband (shared with kaasi_henchman)"
+  # skin_tone_lab / skin_tone_tolerance_de: measure from the approved identity pack
+costumes:
+  - {id: cst_kaasi_young, description: "sleeveless grey cotton vest, white lungi, a curved sickle tucked in the waistband", refs: refs/costumes/cst_kaasi_young/}
+default_voice: kaasi_young_voice
+license: {type: owned, commercial_use: true, source: "in-house synthetic identity pack (to be generated)"}
+consent: {required: false}
+files:
+  face_refs: refs/face/

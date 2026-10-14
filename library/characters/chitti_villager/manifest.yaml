@@ -1,0 +1,25 @@
+id: chitti_villager
+kind: character
+version: 1
+name: Chitti
+role: supporting
+description: "Fisherman's grown daughter, 21, an adult woman; round face, big eyes, nose stud, jasmine in a long plait, yellow cotton saree."
+tags: [female, 20s, adult, godavari, fisherwoman, village]
+physical:
+  gender: "female"
+  age: 21
+  height_cm: 156
+  build: "slim"
+  skin_tone: "dusky brown"
+  face: "round adult face, big eyes, small nose stud"
+  hair: "long black plait with a string of jasmine"
+  eyes: "dark brown"
+  marks: "none"
+  # skin_tone_lab / skin_tone_tolerance_de: measure from the approved identity pack
+costumes:
+  - {id: cst_chitti_saree, description: "simple yellow cotton saree with a red border, glass bangles, jasmine in her plait, small nose stud", refs: refs/costumes/cst_chitti_saree/}
+default_voice: chitti_voice
+license: {type: owned, commercial_use: true, source: "in-house synthetic identity pack (to be generated)"}
+consent: {required: false}
+files:
+  face_refs: refs/face/

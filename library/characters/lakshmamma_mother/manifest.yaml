@@ -1,0 +1,27 @@
+id: lakshmamma_mother
+kind: character
+version: 1
+name: Lakshmamma
+role: family
+description: "Small, grey-haired mother in her mid 50s; gentle face, large dark eyes, a large red kumkum and mangalsutra she has worn for 24 years."
+tags: [mother, female, 50s, godavari, widow, family]
+physical:
+  gender: "female"
+  age: 56
+  height_cm: 158
+  build: "small, slight"
+  skin_tone: "medium brown"
+  face: "gentle oval face, large dark eyes with deep lines at the corners, firm mouth"
+  hair: "grey hair in a low bun"
+  eyes: "dark brown"
+  marks: "small mole on the left cheek (kumkum and mangalsutra belong to cst_lakshmamma_waiting only)"
+  # skin_tone_lab / skin_tone_tolerance_de: measure from the approved identity pack
+costumes:
+  - {id: cst_lakshmamma_waiting, description: "faded green cotton saree, glass bangles, gold mangalsutra, large round red kumkum on the forehead", refs: refs/costumes/cst_lakshmamma_waiting/}
+  - {id: cst_lakshmamma_white, description: "plain white cotton saree, bare forehead with no kumkum, no mangalsutra, no bangles", refs: refs/costumes/cst_lakshmamma_white/}
+  - {id: cst_lakshmamma_river, description: "faded green cotton saree soaked to the waist, forehead wet with a faint red smear where the kumkum was wiped away, no mangalsutra, glass bangles", refs: refs/costumes/cst_lakshmamma_river/}
+default_voice: lakshmamma_voice
+license: {type: owned, commercial_use: true, source: "in-house synthetic identity pack (to be generated)"}
+consent: {required: false}
+files:
+  face_refs: refs/face/

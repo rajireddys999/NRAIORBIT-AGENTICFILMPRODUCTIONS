@@ -1,0 +1,26 @@
+id: rudra_son
+kind: character
+version: 1
+name: Rudra
+role: villain
+description: "Muscular, hot-headed son of the river boss, late 20s; shaved sides, trimmed beard, gold ear stud, black shirt."
+tags: [villain, henchman, male, 20s, coastal_andhra, menacing]
+physical:
+  gender: "male"
+  age: 28
+  height_cm: 178
+  build: "muscular, broad-shouldered"
+  skin_tone: "medium brown"
+  face: "sharp jaw, thin trimmed beard, flared nostrils, restless eyes, heavy brow like his father's"
+  hair: "black, shaved at the sides, longer on top, slicked back"
+  eyes: "dark brown"
+  marks: "small gold stud in the left ear"
+  # skin_tone_lab / skin_tone_tolerance_de: measure from the approved identity pack
+costumes:
+  - {id: cst_rudra_black, description: "black shirt open at the collar, white dhoti, thick gold chain, silver kada, gold ear stud", refs: refs/costumes/cst_rudra_black/}
+  - {id: cst_rudra_plaster, description: "same black shirt and dhoti, right forearm in a white plaster cast and sling, gold chain", refs: refs/costumes/cst_rudra_plaster/}
+default_voice: rudra_voice
+license: {type: owned, commercial_use: true, source: "in-house synthetic identity pack (to be generated)"}
+consent: {required: false}
+files:
+  face_refs: refs/face/

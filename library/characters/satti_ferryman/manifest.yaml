@@ -1,0 +1,26 @@
+id: satti_ferryman
+kind: character
+version: 1
+name: Satti
+role: comic
+description: "Wiry, comic ferryman in his late 30s from a Godavari village; big talker, quick to panic, loyal in the end."
+tags: [comic, sidekick, male, 30s, godavari, ferryman, village]
+physical:
+  gender: "male"
+  age: 38
+  height_cm: 168
+  build: "wiry, thin"
+  skin_tone: "dark brown"
+  face: "long narrow face, big expressive eyes, gap between his front teeth, thin curled moustache"
+  hair: "short curly black hair, receding at the temples"
+  eyes: "dark brown"
+  marks: "faded anchor tattoo on the right forearm"
+  # skin_tone_lab / skin_tone_tolerance_de: measure from the approved identity pack
+costumes:
+  - {id: cst_satti_ferry, description: "faded sleeveless off-white banian, checked blue lungi folded at the knee, red-and-white towel over one shoulder", refs: refs/costumes/cst_satti_ferry/}
+  - {id: cst_satti_night, description: "same banian soaked and muddy, lungi tied up, a conch shell hung on a cord at his hip", refs: refs/costumes/cst_satti_night/}
+default_voice: satti_voice
+license: {type: owned, commercial_use: true, source: "in-house synthetic identity pack (to be generated)"}
+consent: {required: false}
+files:
+  face_refs: refs/face/

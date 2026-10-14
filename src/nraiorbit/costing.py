@@ -341,7 +341,9 @@ def estimate(project_dir: Path | None = None, runtime_minutes: float | None = No
     lead_shots = sum(1 for *_, leads in stats.shots if leads)
     keyframes = {lv: (lead_shots * att[lv] * gem.get("image_per_image", 0.04) if veo_api and mode == "keyframe" else 0.0)
                  for lv in LEVELS}
-    tts = {lv: (stats.lines * 5 / 60 * gem.get("tts_per_minute", 0.02) * {"low": 1, "expected": 2, "high": 3}[lv]
+    lines, calls = tts_calls(project_dir, cfg) if project_dir is not None and stats.from_plan else (0, 0)
+    tts_lines = stats.lines + calls - lines                       # a crowd line (voice.crowd) is one call per voice
+    tts = {lv: (tts_lines * 5 / 60 * gem.get("tts_per_minute", 0.02) * {"low": 1, "expected": 2, "high": 3}[lv]
                 if gemini_tts else 0.0) for lv in LEVELS}
     n_chars = 3
     if project_dir is not None and (project_dir / "01_story_bible.json").exists():
@@ -377,9 +379,32 @@ def _ledger_summary(project_dir: Path | None) -> dict | None:
     return {"by_provider": ledger.summary(), "total": ledger.spent(), "calls": len(ledger.records())}
 
 
+def crowd_voices(cfg: dict, block_id: str) -> int:
+    """voice.crowd.<block_id>.voices in pipeline.yaml: that line is chanted by this many voices (1: a single voice)."""
+    crowd = (cfg.get("voice", {}).get("crowd") or {}).get(block_id)
+    if crowd is None:
+        return 1
+    return max(1, int(crowd.get("voices", 1) if isinstance(crowd, dict) else crowd))
+
+
+def tts_calls(root: Path, cfg: dict) -> tuple[int, int]:
+    """(dialogue lines with no inbox/dialogue recording, TTS calls to voice them): a crowd line is one call per voice."""
+    from .providers.inbox import _find_audio
+    from .shotpack import inbox_dir
+
+    folder = inbox_dir(root, "dialogue")
+    lines = calls = 0
+    for path in sorted((root / "03_scenes").glob("*.json")):
+        for b in SceneScript.model_validate_json(path.read_text(encoding="utf-8")).blocks:
+            if b.kind == "dialogue" and _find_audio(folder, b.block_id) is None:
+                lines += 1
+                calls += crowd_voices(cfg, b.block_id)
+    return lines, calls
+
+
 def preview_run(root: Path, cfg: dict, pricing: dict) -> dict:
     """What the next `run` would spend on paid generators, given what is already generated and cached."""
-    from .shotpack import clips_for, inbox_dir, selected
+    from .shotpack import clips_for, selected
 
     g = cfg.get("google", {})
     prov = cfg.get("providers", {})
@@ -411,11 +436,7 @@ def preview_run(root: Path, cfg: dict, pricing: dict) -> dict:
     uses_gemini_tts = prov.get("tts") == "gemini" or (prov.get("tts") == "inbox"
                                                        and cfg.get("voice", {}).get("inbox_fallback") == "gemini")
     if uses_gemini_tts:
-        for path in sorted((root / "03_scenes").glob("*.json")):
-            for b in SceneScript.model_validate_json(path.read_text(encoding="utf-8")).blocks:
-                if b.kind == "dialogue" and not any((inbox_dir(root, "dialogue") / f"{b.block_id}{e}").exists()
-                                                    for e in (".wav", ".mp3", ".m4a", ".flac", ".aiff")):
-                    out["lines"] += 1
+        out["lines"] = tts_calls(root, cfg)[1]
     out["keyframe_usd"] = out["keyframes"] * image
     out["tts_usd"] = out["lines"] * 5 / 60 * pricing.get("gemini", {}).get("tts_per_minute", 0.02)
     if prov.get("music") == "lyria":

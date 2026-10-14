@@ -1,0 +1,26 @@
+id: veeranna_elder
+kind: character
+version: 1
+name: Veeranna
+role: supporting
+description: "Weathered fishermen's elder, about 60, Meera's father; white beard, stooped, always a red-checked towel on his shoulder."
+tags: [elder, male, 60s, godavari, fisherman, father, village]
+physical:
+  gender: "male"
+  age: 60
+  height_cm: 170
+  build: "lean, wiry, slightly stooped"
+  skin_tone: "deep brown, sun-weathered"
+  face: "deep-set tired eyes, hollow cheeks, short white beard, deep forehead lines"
+  hair: "thin white hair cut short"
+  eyes: "dark brown"
+  marks: "red-checked towel on the shoulder (identity marker, shared with veeranna_young)"
+  # skin_tone_lab / skin_tone_tolerance_de: measure from the approved identity pack
+costumes:
+  - {id: cst_veeranna_elder, description: "white cotton banian, faded brown lungi, red-checked towel on the shoulder", refs: refs/costumes/cst_veeranna_elder/}
+  - {id: cst_veeranna_fire, description: "the same clothes blackened with soot and scorched at the hem, red-checked towel on the shoulder", refs: refs/costumes/cst_veeranna_fire/}
+default_voice: veeranna_voice
+license: {type: owned, commercial_use: true, source: "in-house synthetic identity pack (to be generated)"}
+consent: {required: false}
+files:
+  face_refs: refs/face/

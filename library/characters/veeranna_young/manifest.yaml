@@ -1,0 +1,28 @@
+id: veeranna_young
+kind: character
+version: 1
+name: Young Veeranna
+role: supporting
+description: "Veeranna 24 years younger, 36: lean oarsman with a short black beard and the same red-checked towel on his shoulder."
+tags: [male, 30s, godavari, fisherman, flashback, veeranna_elder]
+identity_from:                      # identity build draws the front portrait from this character's refs/face/01_front.png
+  asset: veeranna_elder
+  change: "the same person 24 years younger, an adult man of about 36: short black hair and a short black beard instead of white, smoother skin, standing straight, the same deep-set eyes"
+physical:
+  gender: "male"
+  age: 36
+  height_cm: 170
+  build: "lean, wiry"
+  skin_tone: "deep brown"
+  face: "veeranna_elder's face, younger: deep-set eyes, short black beard"
+  hair: "short black hair"
+  eyes: "dark brown"
+  marks: "red-checked towel on the shoulder (shared with veeranna_elder)"
+  # skin_tone_lab / skin_tone_tolerance_de: measure from the approved identity pack
+costumes:
+  - {id: cst_veeranna_young, description: "white cotton banian, brown lungi, red-checked towel on the shoulder", refs: refs/costumes/cst_veeranna_young/}
+default_voice: veeranna_young_voice
+license: {type: owned, commercial_use: true, source: "in-house synthetic identity pack (to be generated)"}
+consent: {required: false}
+files:
+  face_refs: refs/face/

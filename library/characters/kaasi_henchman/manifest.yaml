@@ -1,0 +1,25 @@
+id: kaasi_henchman
+kind: character
+version: 1
+name: Kaasi
+role: supporting
+description: "Gaunt, silent right hand of the river boss, about 50; grey stubble, watchful sunken eyes, a sickle in his waistband."
+tags: [henchman, male, 50s, godavari, silent, village]
+physical:
+  gender: "male"
+  age: 50
+  height_cm: 172
+  build: "gaunt"
+  skin_tone: "dark brown"
+  face: "sunken cheeks, deep-set watchful eyes, grey stubble, a thin face that rarely moves"
+  hair: "grey hair cropped close"
+  eyes: "dark brown"
+  marks: "curved sickle tucked in the waistband (identity marker, shared with kaasi_young)"
+  # skin_tone_lab / skin_tone_tolerance_de: measure from the approved identity pack
+costumes:
+  - {id: cst_kaasi_mansion, description: "grey half-sleeve cotton shirt, white dhoti, brown wool shawl, a curved sickle tucked in the waistband", refs: refs/costumes/cst_kaasi_mansion/}
+default_voice: kaasi_voice
+license: {type: owned, commercial_use: true, source: "in-house synthetic identity pack (to be generated)"}
+consent: {required: false}
+files:
+  face_refs: refs/face/

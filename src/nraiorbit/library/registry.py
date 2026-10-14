@@ -152,4 +152,9 @@ class AssetRegistry:
             default_voice = getattr(asset, "default_voice", None)
             if default_voice and f"voice:{default_voice}" not in self.assets:
                 report.errors.append(f"{key}: default_voice '{default_voice}' not in library")
+            identity_from = getattr(asset, "identity_from", None)
+            if identity_from and f"character:{identity_from.asset}" not in self.assets:
+                report.errors.append(f"{key}: identity_from asset '{identity_from.asset}' not in library")
+            elif identity_from and identity_from.asset == asset.id:
+                report.errors.append(f"{key}: identity_from refers to itself")
         return report

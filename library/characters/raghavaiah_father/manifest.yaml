@@ -1,0 +1,29 @@
+id: raghavaiah_father
+kind: character
+version: 1
+name: Raghavaiah
+role: family
+description: "Arjun's father in the flashback, 42: the same face as arjun_hero about eight years older, with a thick black moustache, grey at the temples, and NO scar above the eyebrow. The front portrait is drawn from arjun_hero/refs/face/01_front.png (identity_from) so the resemblance is unmistakable."
+tags: [father, male, 40s, godavari, fisherman, flashback, double_role]
+identity_from:                      # identity build draws the front portrait from this character's refs/face/01_front.png
+  asset: arjun_hero
+  change: "about eight years older, a thick black moustache, grey at the temples, no scar above the eyebrow"
+physical:
+  gender: "male"
+  age: 42
+  height_cm: 180
+  build: "athletic, broad"
+  skin_tone: "medium brown, sun-darkened"
+  face: "arjun_hero's face, older: strong jaw, thick eyebrows, calm eyes, thick black moustache"
+  hair: "short black hair with a little grey at the temples"
+  eyes: "dark brown"
+  marks: "none (no scar: that is the son's)"
+  # skin_tone_lab / skin_tone_tolerance_de: measure from the approved identity pack
+costumes:
+  - {id: cst_raghavaiah_fisher, description: "sleeveless off-white banian, checked veshti tied at the knee, red towel at the waist, copper kada on the right wrist", refs: refs/costumes/cst_raghavaiah_fisher/}
+  - {id: cst_raghavaiah_race, description: "white veshti tied up for rowing, saffron cloth band tied round the head, bare arms, copper kada on the right wrist", refs: refs/costumes/cst_raghavaiah_race/}
+default_voice: raghavaiah_voice
+license: {type: owned, commercial_use: true, source: "in-house synthetic identity pack (to be generated)"}
+consent: {required: false}
+files:
+  face_refs: refs/face/

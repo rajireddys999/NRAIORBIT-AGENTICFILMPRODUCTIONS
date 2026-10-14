@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 import shutil
 import time
 import wave
@@ -442,23 +443,24 @@ class GeminiTTS:
             return ffmpeg.duration(wav)
         return tighten_pauses(wav, self.max_pause_s, keep_s=min(0.3, self.max_pause_s))
 
-    def synthesize(self, line: ScriptBlock, voice_ref: str | None, out: Path) -> float:
+    def _voice_name(self, voice: dict) -> str:
+        return voice.get("gemini_voice") or ("Charon" if voice.get("gender") == "male" else "Kore")
+
+    def _take(self, line: ScriptBlock, voice_name: str, instruction: str, out: Path, item: str) -> None:
+        """One raw (untightened) take of the model at out: from the cache when the same call was paid before."""
         types = _types()
-        voice = self.voices.get(voice_ref or "", {})
-        voice_name = voice.get("gemini_voice") or ("Charon" if voice.get("gender") == "male" else "Kore")
         model = self.g.get("tts_model", "gemini-2.5-flash-preview-tts")
-        instruction = tts_instruction(line, voice)
         key = hashlib.sha1(json.dumps([model, voice_name, instruction]).encode("utf-8")).hexdigest()[:16]
         cached = self.cache_dir / f"{key}.wav"
+        out.parent.mkdir(parents=True, exist_ok=True)
         if cached.exists():                               # same line, voice and delivery: already paid
-            out.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(cached, out)
-            return self._tighten(out)
-        self.ledger.check(self.per_minute * 0.25, f"TTS {line.block_id}")
+            return
+        self.ledger.check(self.per_minute * 0.25, f"TTS {item}")
         speech = types.SpeechConfig(
             voice_config=types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)),
             **({"language_code": self.g["tts_language_code"]} if self.g.get("tts_language_code") else {}))
-        response = _call(self.client.models.generate_content, f"Gemini TTS {line.block_id}",
+        response = _call(self.client.models.generate_content, f"Gemini TTS {item}",
                          model=model, contents=instruction,
                          config=types.GenerateContentConfig(response_modalities=["AUDIO"], speech_config=speech))
         pcm, mime = _first_inline(response)
@@ -466,7 +468,6 @@ class GeminiTTS:
         for piece in mime.split(";"):
             if piece.strip().startswith("rate="):
                 rate = int(piece.split("=")[1])
-        out.parent.mkdir(parents=True, exist_ok=True)
         raw = out.with_suffix(".pcm.wav")
         if pcm[:4] == b"RIFF":                            # some TTS models answer with a WAV file, not raw L16
             raw.write_bytes(pcm)
@@ -479,8 +480,86 @@ class GeminiTTS:
         ffmpeg.run(["-i", str(raw), "-ar", str(ffmpeg.SAMPLE_RATE), "-ac", "2", str(out)])
         raw.unlink()
         seconds = ffmpeg.duration(out)
-        self.ledger.record("gemini_tts", line.block_id, self.per_minute * seconds / 60, seconds=round(seconds, 2),
+        self.ledger.record("gemini_tts", item, self.per_minute * seconds / 60, seconds=round(seconds, 2),
                            voice=voice_name)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(out, cached)
+
+    def synthesize(self, line: ScriptBlock, voice_ref: str | None, out: Path) -> float:
+        voice = self.voices.get(voice_ref or "", {})
+        self._take(line, self._voice_name(voice), tts_instruction(line, voice), out, line.block_id)
         return self._tighten(out)
+
+    def synthesize_crowd(self, line: ScriptBlock, voice_ref: str | None, out: Path, voices: int) -> float:
+        """A chant: the character's own voice leads, voices-1 other prebuilt voices of mixed gender say the same
+        line (one paid call each), staggered 0-150 ms and quieter, with a light room reverb, mixed and normalised."""
+        lead = self.voices.get(voice_ref or "", {})
+        lead_name = self._voice_name(lead)
+        members = [(lead_name, lead, 0.0, 0.0)]
+        rng = random.Random(f"{line.block_id}:{voices}")   # the same line always gets the same crowd and timing
+        for name, gender in crowd_voices(lead_name, voices - 1, rng):
+            member = {"name": "Villager", "gender": gender, "dialect": lead.get("dialect")}
+            members.append((name, member, rng.uniform(0.0, 0.150), rng.uniform(-9.0, -5.0)))
+        model = self.g.get("tts_model", "gemini-2.5-flash-preview-tts")
+        recipe = [model, CHANT_MIX, *([n, tts_instruction(line, v), round(d, 4), round(g, 2)] for n, v, d, g in members)]
+        cached = self.cache_dir / f"crowd_{hashlib.sha1(json.dumps(recipe).encode('utf-8')).hexdigest()[:16]}.wav"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if cached.exists():                               # the same chant was mixed before
+            shutil.copy2(cached, out)
+            return self._tighten(out)
+        work = out.parent / f"{out.stem}_crowd"
+        parts = []
+        for i, (name, voice, delay, gain) in enumerate(members):
+            part = work / f"{i:02d}_{name}.wav"
+            self._take(line, name, tts_instruction(line, voice), part,
+                       line.block_id if i == 0 else f"{line.block_id} crowd {i + 1}/{len(members)}")
+            parts.append((part, delay, gain))
+        mix_chant(parts, out)
+        shutil.rmtree(work, ignore_errors=True)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(out, cached)
+        return self._tighten(out)
+
+
+# Gemini TTS prebuilt voices by gender, for crowd chants.
+GEMINI_MALE_VOICES = ["Charon", "Puck", "Fenrir", "Orus", "Enceladus", "Iapetus", "Umbriel", "Algieba", "Algenib",
+                      "Rasalgethi", "Alnilam", "Schedar", "Achird", "Zubenelgenubi", "Sadachbia", "Sadaltager"]
+GEMINI_FEMALE_VOICES = ["Kore", "Zephyr", "Leda", "Aoede", "Callirrhoe", "Autonoe", "Despina", "Erinome",
+                        "Laomedeia", "Achernar", "Gacrux", "Pulcherrima", "Vindemiatrix", "Sulafat"]
+
+
+def crowd_voices(lead: str, n: int, rng: random.Random) -> list[tuple[str, str]]:
+    """n prebuilt voices other than the lead, alternating gender (starting with the lead's opposite)."""
+    pools = {"male": [v for v in GEMINI_MALE_VOICES if v != lead], "female": [v for v in GEMINI_FEMALE_VOICES if v != lead]}
+    for pool in pools.values():
+        rng.shuffle(pool)
+    order = ["female", "male"] if lead in GEMINI_MALE_VOICES else ["male", "female"]
+    picked: list[tuple[str, str]] = []
+    while len(picked) < n and any(pools.values()):
+        gender = order[len(picked) % 2]
+        if not pools[gender]:
+            gender = order[(len(picked) + 1) % 2]
+        picked.append((pools[gender].pop(), gender))
+    return picked
+
+
+CHANT_MIX = "aecho=0.8:0.6:40|70:0.25|0.15,loudnorm=I=-16:TP=-1.5:LRA=11"   # light room reverb, then loudness
+
+
+def mix_chant(parts: list[tuple[Path, float, float]], out: Path) -> Path:
+    """parts: (wav, delay_s, gain_db); the first is the lead. Mixed to one wav, light room reverb, loudness-normalised."""
+    inputs, filters, labels = [], [], []
+    for i, (path, delay, gain) in enumerate(parts):
+        inputs += ["-i", str(path)]
+        filters.append(f"[{i}:a]aresample={ffmpeg.SAMPLE_RATE},aformat=channel_layouts=stereo,volume={gain:.2f}dB,"
+                       f"adelay=delays={int(round(delay * ffmpeg.SAMPLE_RATE))}S:all=1[c{i}]")
+        labels.append(f"[c{i}]")
+    filters.append(f"{''.join(labels)}amix=inputs={len(labels)}:duration=longest:normalize=0,"
+                   f"{CHANT_MIX},aresample={ffmpeg.SAMPLE_RATE}[out]")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    script = out.with_suffix(".filter.txt")
+    script.write_text(";\n".join(filters), encoding="utf-8")
+    ffmpeg.run([*inputs, "-filter_complex_script", str(script), "-map", "[out]", "-ar", str(ffmpeg.SAMPLE_RATE),
+                "-ac", "2", str(out)])
+    script.unlink()
+    return out

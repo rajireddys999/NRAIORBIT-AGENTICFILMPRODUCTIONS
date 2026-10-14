@@ -1,0 +1,15 @@
+id: lakshmamma_young_voice
+kind: voice
+version: 1
+name: Young Lakshmamma (Gemini TTS, no lines in godavari10)
+tags: [female, 30s, godavari, warm]
+dialect: godavari
+gender: female
+age_range: [28, 36]
+pitch: mid
+timbre_tags: [warm, light]
+gemini_voice: Sulafat       # Gemini TTS prebuilt voice; audition and change to taste
+emotion_refs: {}       # a prebuilt voice: no reference clips; each line's delivery is the TTS instruction
+license: {type: owned, commercial_use: true, source: "synthetic speech from the Gemini 2.5 Flash TTS prebuilt voice Sulafat (Vertex AI), generated per line; no human voice artist, no voice clone"}
+consent: {required: false}          # no person's voice is used
+files: {}              # nothing to store: the voice is the Gemini prebuilt voice above

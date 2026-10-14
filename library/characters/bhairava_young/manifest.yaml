@@ -1,0 +1,28 @@
+id: bhairava_young
+kind: character
+version: 1
+name: Young Bhairava
+role: villain
+description: "Bhairava 24 years younger, 31: same heavy brow and cold stare, black moustache, black oiled hair, the gold tooth already there."
+tags: [villain, male, 30s, coastal_andhra, flashback, bhairava_villain]
+identity_from:                      # identity build draws the front portrait from this character's refs/face/01_front.png
+  asset: bhairava_villain
+  change: "the same person 24 years younger, an adult man of about 31: black oiled-back hair and a thick black moustache instead of grey, smoother skin, the same heavy brow, cold stare and gold tooth"
+physical:
+  gender: "male"
+  age: 31
+  height_cm: 176
+  build: "solid, thickset"
+  skin_tone: "dark brown"
+  face: "bhairava_villain's face, younger: heavy brow, cold stare, thick black moustache"
+  hair: "black, oiled back"
+  eyes: "dark brown"
+  marks: "gold tooth (shared with bhairava_villain)"
+  # skin_tone_lab / skin_tone_tolerance_de: measure from the approved identity pack
+costumes:
+  - {id: cst_bhairava_young_white, description: "starched white shirt and dhoti, a thinner gold chain, one gold ring", refs: refs/costumes/cst_bhairava_young_white/}
+default_voice: bhairava_young_voice
+license: {type: owned, commercial_use: true, source: "in-house synthetic identity pack (to be generated)"}
+consent: {required: false}
+files:
+  face_refs: refs/face/

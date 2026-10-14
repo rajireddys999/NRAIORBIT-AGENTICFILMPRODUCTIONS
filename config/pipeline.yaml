@@ -86,6 +86,8 @@ voice:
   mode: tts                        # performance_vc | tts | api_tts_vc  (see docs/VOICE_TELUGU.md)
   takes_per_line: 3
   max_pause_s: 0.6                 # generated speech: pauses longer than this are shortened to ~0.3 s (null = off)
+  # crowd: {sc012_b007: {voices: 6}}  # chanted lines (Gemini TTS): the speaker's voice leads, voices-1 other
+  #                                   # prebuilt voices join (one paid call each); no voice guard on these
 
 guards:
   identity:

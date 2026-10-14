@@ -1,0 +1,15 @@
+id: raghavaiah_voice
+kind: voice
+version: 1
+name: Raghavaiah (Gemini TTS)
+tags: [male, 40s, godavari, warm, father]
+dialect: godavari
+gender: male
+age_range: [38, 48]
+pitch: low
+timbre_tags: [warm, resonant, rough]
+gemini_voice: Alnilam       # Gemini TTS prebuilt voice; audition and change to taste
+emotion_refs: {}       # a prebuilt voice: no reference clips; each line's delivery is the TTS instruction
+license: {type: owned, commercial_use: true, source: "synthetic speech from the Gemini 2.5 Flash TTS prebuilt voice Alnilam (Vertex AI), generated per line; no human voice artist, no voice clone"}
+consent: {required: false}          # no person's voice is used
+files: {}              # nothing to store: the voice is the Gemini prebuilt voice above

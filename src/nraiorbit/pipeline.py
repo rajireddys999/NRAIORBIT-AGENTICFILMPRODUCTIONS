@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 from .agents import CastingAgent, DialogueCritic, Director, MusicDirector, Screenwriter, StoryAnalyst
 from .config import REPO_ROOT, load_navarasa, load_pipeline_config
-from .costing import BudgetExceeded, SpendLedger, load_pricing, load_takes
+from .costing import BudgetExceeded, SpendLedger, crowd_voices, load_pricing, load_takes
 from .guards.identity import IdentityGuard, IdentityThresholds
 from .guards.voice import VoiceGuard, VoiceTake, VoiceThresholds
 from .library.registry import AssetRegistry
@@ -346,11 +346,13 @@ class Pipeline:
     def _render(self) -> None:
         timeline_path = self.p.edit / "timeline.json"
         only = list(self.cfg.get("render", {}).get("only") or [])
+        crowd = dict(self.cfg.get("voice", {}).get("crowd") or {})
         if timeline_path.exists():
             previous = json.loads(timeline_path.read_text(encoding="utf-8"))
-            if previous.get("only", []) == only and previous.get("takes", {}) == self.takes:
+            if previous.get("only", []) == only and previous.get("takes", {}) == self.takes \
+                    and previous.get("crowd", {}) == crowd:
                 return
-            self.log("  shot selection or chosen takes changed: re-rendering (paid clips are reused)")
+            self.log("  shot selection, chosen takes or crowd lines changed: re-rendering (paid clips are reused)")
             self.invalidate("render")
         outline = self._load(self.p.outline, Outline)
         lock = self._lock()
@@ -427,6 +429,7 @@ class Pipeline:
         timeline = {
             "only": only,
             "takes": self.takes,
+            "crowd": crowd,
             "film_seconds": sum(s.target_seconds for s in outline.scenes),
             "shots": [{**asdict(s), "clip": str(s.clip)} for s in shots_out],
             "dialogue": [{**asdict(e), "path": str(e.path)} for e in dialogue_out],
@@ -496,13 +499,30 @@ class Pipeline:
         self._report("review_queue", {"shot_id": shot.shot_id, "reason": last_result.issues if last_result else []})
         return clip
 
+    def _crowd_voices(self, block_id: str) -> int:
+        """voice.crowd.<block_id>.voices in pipeline.yaml: that line is chanted by this many voices (1: a single voice)."""
+        return crowd_voices(self.cfg, block_id)
+
     def _render_line(self, tts, block, voice, voice_guard, speaker_embedder) -> tuple[Path, float]:
+        crowd = self._crowd_voices(block.block_id)
+        chants = tts.can_chant(block) if hasattr(tts, "can_chant") else hasattr(tts, "synthesize_crowd")
+        if crowd > 1 and not chants:
+            self.log(f"  {block.block_id}: the tts provider cannot voice a crowd; using the single voice")
+            crowd = 1
+        if crowd > 1:
+            voice_guard = None             # a chant of several voices never matches one speaker's centroid
         takes = self.cfg["voice"]["takes_per_line"] if voice_guard else 1
         results, files = [], {}
         for take in range(1, takes + 1):
-            wav = self.p.dialogue / block.block_id / f"take_{take}.wav"
+            prefix = f"crowd{crowd}_" if crowd > 1 else ""     # a chant never reuses (or replaces) a single take
+            wav = self.p.dialogue / block.block_id / f"{prefix}take_{take}.wav"
             try:
-                dur = ffmpeg.duration(wav) if wav.exists() else tts.synthesize(block, voice, wav)
+                if wav.exists():
+                    dur = ffmpeg.duration(wav)
+                elif crowd > 1:
+                    dur = tts.synthesize_crowd(block, voice, wav, crowd)
+                else:
+                    dur = tts.synthesize(block, voice, wav)
             except ShotFiltered as blocked:
                 self._report("review_queue", {"line_id": block.block_id, "reason": [str(blocked)]})
                 dur = MockTTS().synthesize(block, voice, wav)

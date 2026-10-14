@@ -292,11 +292,20 @@ class Costume(BaseModel):
     refs: str | None = None
 
 
+class IdentityFrom(BaseModel):
+    """Derive this character's face from another character's front portrait (a relative, or the same person at
+    another age): `nraiorbit identity build` draws the portrait from that image, changed as described."""
+
+    asset: str = Field(description="character asset id whose refs/face/01_front.png is the reference")
+    change: str = Field(description="how this person differs, e.g. 'about eight years older, a thick moustache'")
+
+
 class CharacterAsset(AssetBase):
     kind: Literal["character"] = "character"
     role: Role | None = None
     physical: dict = {}
     costumes: list[Costume] = []
+    identity_from: IdentityFrom | None = None
     guard: dict[str, float] = {}
     default_voice: str | None = None
 

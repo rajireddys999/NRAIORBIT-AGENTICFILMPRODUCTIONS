@@ -113,7 +113,7 @@ def test_longer_track_is_trimmed_with_a_fade(root, tmp_path):
     assert (rate, channels) == (48000, 2) and seconds == pytest.approx(cue_seconds(c), abs=0.02)   # 10 s - 1.5 s silence
     call = fake.calls[0]
     assert call["model"] == "lyria-3-pro-preview" and call["contents"] == music.prompt(c)
-    assert call["config"].response_modalities == ["AUDIO"]
+    assert call["config"].response_modalities == ["AUDIO", "TEXT"]          # Lyria 3 refuses AUDIO alone
     with wave.open(str(out)) as w:
         pcm = np.frombuffer(w.readframes(w.getnframes()), "<i2").astype(float)
     assert np.abs(pcm[-960:]).mean() < 0.1 * np.abs(pcm[: len(pcm) // 2]).mean()                  # faded out

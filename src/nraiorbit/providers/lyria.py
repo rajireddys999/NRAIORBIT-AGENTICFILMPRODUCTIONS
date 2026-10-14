@@ -207,7 +207,7 @@ def first_audio(response) -> tuple[bytes, str]:
     text = " ".join(texts)[:400]
     raise GoogleAPIError(
         f"no audio in the response (finish_reason={reason}, prompt_feedback={feedback}, text={text!r}). If the "
-        "model answered in text only, try google.music_response_modalities: [AUDIO, TEXT] (or null); if it was "
+        "model answered in text only, check google.music_response_modalities (Lyria 3 needs [AUDIO, TEXT]); if it was "
         "blocked, change the cue (or put a track in inbox/music/). Re-run to resume.")
 
 
@@ -294,7 +294,7 @@ class LyriaMusic:
     def _generate(self, cue: Cue, prompt: str) -> Path:
         what = f"Lyria {cue.cue_id}"
         self.ledger.check(self.price, what)
-        modalities = self.g.get("music_response_modalities", ["AUDIO"])
+        modalities = self.g.get("music_response_modalities", ["AUDIO", "TEXT"])   # Lyria 3 refuses AUDIO alone (400)
         config = _types().GenerateContentConfig(response_modalities=list(modalities)) if modalities else None
         response = _call(self.client.models.generate_content, what, model=self.model, contents=prompt, config=config)
         try:

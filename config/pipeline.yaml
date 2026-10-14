@@ -60,7 +60,8 @@ google:                            # used by the veo / gemini / lyria providers 
   tts_model: gemini-2.5-flash-preview-tts
   tts_language_code: null          # auto-detected from Telugu script; set if your model needs it
   music_model: lyria-3-pro-preview # providers.music: lyria; lyria-3-clip-preview = cheaper 30 s clips, looped to the cue
-  music_response_modalities: [AUDIO]   # if Lyria answers text only or refuses, try [AUDIO, TEXT] or null (no config)
+  music_response_modalities: [AUDIO, TEXT]   # Lyria 3 on Vertex refuses [AUDIO] alone (400 INVALID_ARGUMENT); it returns
+                                             # a text description plus audio/mpeg (verified 2026-10-14)
 
 budget:
   max_usd: 50                      # hard stop for paid generation in one project (cost.jsonl ledger)

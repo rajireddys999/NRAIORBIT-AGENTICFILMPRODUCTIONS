@@ -31,6 +31,7 @@ from .planning.runtime import (
     TEMPLATES, describe_template, fit_shots_to_scene, rebalance_outline, scene_start_times, validate_outline,
 )
 from .post import assemble, ffmpeg
+from .post.cards import Card, apply_cards
 from .post.subtitles import write_srt
 from .post.trailer import PUNCH_DROP_S, TrailerLine, elevation_arc, plan_trailer
 from .providers import RenderContext, get_provider
@@ -84,7 +85,8 @@ class ProjectPaths:
             "render": [self.edit / "timeline.json", self.dialogue, self.video]
                       + sorted(self.music.glob("cue*.wav")),
             "assemble": [self.master / "movie.mp4", self.edit / "film_dialogue.mp4", self.edit / "scenes",
-                         self.master / "stems"],
+                         self.master / "stems", self.edit / "movie_nocards.mp4", self.edit / "cards.json",
+                         self.edit / "cards"],
             "trailer": [self.master / "trailer.mp4", self.edit / "trailer_plan.json"],
         }[stage]
 
@@ -615,7 +617,7 @@ class Pipeline:
 
     def _assemble(self) -> None:
         movie = self.p.master / "movie.mp4"
-        if not movie.exists():
+        if not movie.exists() and not (self.p.edit / "movie_nocards.mp4").exists():
             tl = json.loads((self.p.edit / "timeline.json").read_text(encoding="utf-8"))
             outline = self._load(self.p.outline, Outline)
             starts = scene_start_times(outline)
@@ -636,7 +638,42 @@ class Pipeline:
             self._write_stems(film, movie)
             self._write_subtitles(dialogue)
             self.log(f"  master: {movie} ({ffmpeg.duration(movie) / 60:.1f} min)")
+        self._place_cards(movie)
         self.gate("pacing" if self._animatic() else "final_cut")
+
+    def _place_cards(self, movie: Path) -> None:
+        """Lay the configured cards (title, INTERVAL, end) over the master; changing them later never re-masters.
+
+        While cards are on, the master without them is kept in 10_edit/movie_nocards.mp4 and cards.json records the
+        cards on movie.mp4. Without cards movie.mp4 is the master itself, exactly as assembled.
+        """
+        cards = [Card.from_config(c, self.p.root) for c in self.cfg.get("cards") or []]
+        wanted = [c.record() for c in cards]
+        clean, record = self.p.edit / "movie_nocards.mp4", self.p.edit / "cards.json"
+        if not clean.exists():
+            applied = []                          # movie.mp4 is the clean master
+        elif record.exists() and movie.exists():
+            applied = json.loads(record.read_text(encoding="utf-8"))
+        else:
+            applied = None                        # an interrupted card pass: redo it from the clean master
+        if wanted == applied:
+            return
+        if clean.exists():
+            movie.unlink(missing_ok=True)
+            record.unlink(missing_ok=True)
+        else:
+            clean.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(movie, clean)
+        if not cards:
+            shutil.move(clean, movie)
+            record.unlink(missing_ok=True)
+            self.log("  cards: none")
+            return
+        resolution = tuple(self.cfg.get("animatic", {}).get("resolution", [640, 360])) if self._animatic() \
+            else tuple(self._film["resolution"])
+        apply_cards(clean, cards, movie, resolution, self._film["fps"], card_dir=self.p.edit / "cards", log=self.log)
+        record.write_text(json.dumps(wanted, indent=1, ensure_ascii=False), encoding="utf-8")
+        self.log(f"  cards: {', '.join(f'{c.kind} at {c.at_s:.1f} s' for c in cards)}")
 
     def _write_stems(self, film_with_dialogue: Path, movie: Path) -> None:
         """Separate dialogue and music tracks for mixing in DaVinci Resolve (Fairlight)."""

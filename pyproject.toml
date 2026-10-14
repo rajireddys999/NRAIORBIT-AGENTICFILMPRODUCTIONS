@@ -13,6 +13,7 @@ dependencies = [
   "pydantic>=2.7",
   "pyyaml>=6",
   "numpy>=1.26",
+  "pillow>=10",                                     # movie cards (Telugu shaping needs libraqm: post/cards.py)
 ]
 
 [project.optional-dependencies]

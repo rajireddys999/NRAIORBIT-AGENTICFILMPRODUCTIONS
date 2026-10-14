@@ -390,11 +390,14 @@ def _lyria_preview(root: Path, cfg: dict) -> tuple[int, int]:
     render.only says; the trailer's cue counts while trailer.mp4 is not built (its length is only known then)."""
     from .config import load_navarasa
     from .planning.music import plan_cues
+    from .planning.score import film_spans, load_styles, score_cue, slot_for
     from .providers.inbox import _find_audio
     from .providers.lyria import cached_raw, characters, cue_prompt, music_model
     from .schemas import CueSheet, Outline, StoryBible
 
     navarasa, model, chars = load_navarasa(), music_model(cfg.get("google", {})), characters(root)
+    styles = load_styles(cfg)                          # the same timed sections _render will add
+    spans = film_spans(root) if styles and (root / "02_outline.json").exists() else []
     inbox = root / "inbox" / "music"
     sheet = root / "08_music" / "cue_sheet.json"
     if sheet.exists():
@@ -409,7 +412,9 @@ def _lyria_preview(root: Path, cfg: dict) -> tuple[int, int]:
     for cue in cues:
         if not cue.instruments:
             continue                                   # deliberate silence
-        if _find_audio(inbox, cue.cue_id) or cached_raw(root, model, cue_prompt(cue, model, chars, navarasa)):
+        cue = score_cue(cue, spans, styles)
+        prompt = cue_prompt(cue, model, chars, navarasa, styles.get(slot_for(cue)))
+        if _find_audio(inbox, cue.cue_id) or cached_raw(root, model, prompt):
             cached += 1
         else:
             new += 1

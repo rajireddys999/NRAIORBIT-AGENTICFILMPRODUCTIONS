@@ -97,6 +97,21 @@ def timed_structure(cue: Cue, preset: dict, peak_at: float | None) -> str:
                       (length - OUTRO_S, length, "Outro", sec.get("outro", ""))])
 
 
+def film_spans(root) -> list[tuple[float, Shot]]:
+    """(film start, shot) for every planned shot, timed exactly as Pipeline._render places them."""
+    from ..planning.runtime import scene_start_times
+    from ..schemas import Outline, ShotList
+
+    outline = Outline.model_validate_json((root / "02_outline.json").read_text(encoding="utf-8"))
+    spans, starts = [], scene_start_times(outline)
+    for sc in outline.scenes:
+        path, t = root / "04_shots" / f"{sc.scene_id}.json", starts[sc.scene_id]
+        for shot in (ShotList.model_validate_json(path.read_text(encoding="utf-8")).shots if path.exists() else []):
+            spans.append((round(t, 3), shot))
+            t += shot.duration_s
+    return spans
+
+
 def score_cue(cue: Cue, spans: list[tuple[float, Shot]], styles: dict[str, dict]) -> Cue:
     """The cue with timed sections from its slot's preset; unchanged without a preset or when it has notes."""
     preset = styles.get(slot_for(cue))

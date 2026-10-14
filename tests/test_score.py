@@ -78,3 +78,28 @@ def test_prompt_uses_the_preset_style_line():
     assert "wordless textures" in p and "Structure (follow these timings)" in p and "Avoid: lyrics" in p
     villain = cue_prompt(cue(rasa="raudra"))
     assert "Villain menace" in villain and "hero style" not in villain
+
+
+def test_preview_counts_a_styled_cue_cached_under_its_scored_prompt(tmp_path):
+    """The cost preview must build the same prompt as the render (with timed sections), or a cached pick looks new."""
+    from nraiorbit.config import deep_merge, load_navarasa, load_pipeline_config
+    from nraiorbit.costing import load_pricing, preview_run
+    from nraiorbit.planning.score import film_spans
+    from nraiorbit.poc import create_poc
+    from nraiorbit.providers.lyria import cache_dir, cache_key, characters, cue_prompt, music_model
+    from nraiorbit.schemas import CueSheet
+
+    root = create_poc(tmp_path / "godavari5")
+    cfg = deep_merge(load_pipeline_config(root), {"providers": {"music": "lyria"}, **STYLES})
+    before = preview_run(root, cfg, load_pricing(root))
+    hero = next(c for c in CueSheet.model_validate_json((root / "08_music" / "cue_sheet.json").read_text()).cues
+                if slot_for(c) == "elevation")
+    styles = load_styles(cfg)
+    scored = score_cue(hero, film_spans(root), styles)
+    assert scored.notes.startswith("[0:00 - ")
+    model = music_model(cfg["google"])
+    prompt = cue_prompt(scored, model, characters(root), load_navarasa(), styles["elevation"])
+    cache_dir(root).mkdir(parents=True, exist_ok=True)
+    (cache_dir(root) / f"{cache_key(model, prompt)}.mp3").write_bytes(b"x")
+    after = preview_run(root, cfg, load_pricing(root))
+    assert after["cached_cues"] == before["cached_cues"] + 1 and after["cues"] == before["cues"] - 1

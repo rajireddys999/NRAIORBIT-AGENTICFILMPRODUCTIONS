@@ -74,3 +74,8 @@ mac:                         # your MacBook: no bill, only time
   keyframe_seconds_per_image: {low: 40, expected: 90, high: 180}
   keyframe_candidates_per_shot: 4
   tts_seconds_per_line: {low: 10, expected: 25, high: 60}
+
+cloud_run_gpu:            # lip-sync worker (deploy/lipsync): Cloud Run job, 1x NVIDIA L4 + 4 vCPU / 16 GiB, us-central1
+  per_hour: 1.10          # UNVERIFIED estimate (L4 ~$0.67/h + CPU/memory ~$0.37/h); check cloud.google.com/run/pricing
+  startup_minutes: 6      # image pull + model load, once per job execution
+  minutes_per_clip: 2.0   # LatentSync on an 8 s 1080p shot (estimate)

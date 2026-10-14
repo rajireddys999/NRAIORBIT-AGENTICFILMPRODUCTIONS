@@ -440,25 +440,33 @@ class Pipeline:
                   resolution: tuple[int, int], fps: int) -> list:
         """Every generated shot that was filmed with a speaker in frame (the video model animates that mouth) gets the
         mouth redrawn to that speaker's own lines, as they fall inside the shot, and to silence everywhere else, so a
-        face never mouths words without a voice. Off-screen voices never drive a face; placeholders are skipped."""
-        out = []
-        for ts, (t, shot) in zip(shots_out, spans):
+        face never mouths words without a voice. Off-screen voices never drive a face; placeholders are skipped.
+        Providers with apply_many get every shot at once (one GPU job loads the model once)."""
+        jobs = []                                       # (index, timeline shot, audio, raw output)
+        for i, (ts, (t, shot)) in enumerate(zip(shots_out, spans)):
             spoken = {b for b in shot.block_ids if speaker_of.get(b) in shot.characters_in_frame}
             if not ts.real or not spoken:
-                out.append(ts)
                 continue
             events = [(e.path, e.start_s - t, 0.0) for e in dialogue
                       if e.ref_id in spoken and e.start_s < t + ts.duration_s and e.start_s + e.duration_s > t]
             work = self.p.video / shot.shot_id
             audio = ffmpeg.place_audio(events, ts.duration_s, work / f"{ts.clip.stem}.lipsync.wav")
-            try:
-                raw = syncer.apply(ts.clip, audio, work / f"{ts.clip.stem}_lipsync_raw.mp4")
-            except (BudgetExceeded, GoogleAPIError) as stop:
-                raise PipelineBlocked(str(stop)) from None
+            jobs.append((i, ts, audio, work / f"{ts.clip.stem}_lipsync_raw.mp4"))
+        out = list(shots_out)
+        if not jobs:
+            return out
+        try:
+            if hasattr(syncer, "apply_many"):
+                raws = syncer.apply_many([(ts.clip, audio, raw) for _, ts, audio, raw in jobs])
+            else:
+                raws = [syncer.apply(ts.clip, audio, raw) for _, ts, audio, raw in jobs]
+        except (BudgetExceeded, GoogleAPIError) as stop:
+            raise PipelineBlocked(str(stop)) from None
+        for (i, ts, _, _), raw in zip(jobs, raws):
             # back to the edit's exact length, size, frame rate and codec, so scenes still join by stream copy
-            synced = ffmpeg.conform_clip(raw, work / f"{ts.clip.stem}_lipsync.mp4", ts.duration_s, resolution, fps)
-            out.append(replace(ts, clip=synced))
-        self.log(f"  lip-sync: {sum(a.clip != b.clip for a, b in zip(out, shots_out))} shots")
+            synced = ffmpeg.conform_clip(raw, raw.with_name(raw.name.replace("_raw", "")), ts.duration_s, resolution, fps)
+            out[i] = replace(ts, clip=synced)
+        self.log(f"  lip-sync: {len(jobs)} shots")
         return out
 
     def _render_shot(self, video, shot, ctx: RenderContext, face_guard) -> Path:

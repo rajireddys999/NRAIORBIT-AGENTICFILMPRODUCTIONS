@@ -36,6 +36,7 @@ from .inbox import InboxMusic, _find_audio
 DEFAULT_MODEL = "lyria-3-pro-preview"
 CLIP_SECONDS = 30                 # Lyria 3 Clip's fixed length
 FADE_OUT_S = 1.5
+SHORT_PAD_S = 4.0                 # a track up to this much (or 12%) short is padded at the end, never looped
 EXTRA_S = 2                       # ask for a little more than the cue needs; the edit trims (timing drifts)
 EXT = {"audio/wav": ".wav", "audio/x-wav": ".wav", "audio/wave": ".wav", "audio/vnd.wave": ".wav", "audio/mpeg": ".mp3",
        "audio/mp3": ".mp3", "audio/ogg": ".ogg", "audio/ogg_opus": ".ogg", "audio/opus": ".opus", "audio/flac": ".flac",
@@ -261,20 +262,25 @@ def _store(data: bytes, mime: str, folder: Path, key: str) -> Path:
     return dest
 
 
-HIT_MARK = re.compile(r"\[(\d+):(\d\d) - \d+:\d\d\] Hit:")
-HIT_SEARCH_S = (-3.0, 20.0)       # where to look for the generated hit, around the planned one
+HIT_MARK = re.compile(r"\[(\d+):(\d\d) - \d+:\d\d\] (Hit|Peak):")
+SEARCH_S = {"Hit": (-4.0, 12.0), "Peak": (-8.0, 8.0)}   # where to look for the generated moment, around the plan
 ENV_HOP_S = 0.05
+SILENCE_DB = 15.0                 # a drop or breath is at least this far below the track's median loudness
+LOOK_AHEAD_S = 3.0                # the hit is the first moment near full power after the silence
+NEAR_FULL_DB = 6.0
+EARLY_MAX_S = 3.0                 # an early hit is delayed by padding the head, at most this much
 
 
 def planned_hit(cue: Cue) -> float | None:
-    """Seconds into the cue where the timed sections (planning/score.py) put the big hit."""
+    """Seconds into the cue where the timed sections (planning/score.py) put the big hit or emotional peak."""
     m = HIT_MARK.search(cue.notes)
     return int(m.group(1)) * 60 + int(m.group(2)) if m else None
 
 
-def find_hit(src: Path, near: float) -> float | None:
-    """Time of the strongest sudden loudness jump around `near` (the generated hit); None if none stands out.
-    Generators drift by seconds and stretch intros, so the hit is found in the audio, not trusted to the prompt."""
+def find_hit(src: Path, near: float, kind: str = "Hit") -> float | None:
+    """When the generated hit or swell arrives, around `near`: the deepest near-silence in the search window, then
+    the first moment after it within 6 dB of the loudest point of the next 3 s. None if there is no clear silence.
+    Generators drift by seconds and stretch intros, so the moment is found in the audio, not trusted to the prompt."""
     raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(src), "-ac", "1", "-ar", "8000", "-f", "s16le", "-"],
                          capture_output=True, check=True).stdout
     a = np.frombuffer(raw, "<i2").astype(np.float64)
@@ -282,19 +288,43 @@ def find_hit(src: Path, near: float) -> float | None:
     if len(a) < hop * 40:
         return None
     rms = np.sqrt(np.convolve(a ** 2, np.ones(hop) / hop, "valid")[::hop]) + 1e-9
-    db = 20 * np.log10(rms / 32768)
-    back = int(1.0 / ENV_HOP_S)                       # loudness jump against the previous second
-    jump = np.array([db[i] - db[max(0, i - back):i].mean() if i else 0.0 for i in range(len(db))])
-    lo, hi = (max(1, int((near + d) / ENV_HOP_S)) for d in HIT_SEARCH_S)
-    window = jump[lo:min(hi, len(jump))]
-    if not len(window) or window.max() < 6.0:         # no clear impact (at least +6 dB over the last second)
+    db = np.convolve(20 * np.log10(rms / 32768), np.ones(4) / 4, "same")        # 0.2 s smoothing
+    before_s, after_s = SEARCH_S.get(kind, SEARCH_S["Hit"])
+    lo, hi = max(0, int((near + before_s) / ENV_HOP_S)), min(len(db), int((near + after_s) / ENV_HOP_S))
+    if hi - lo < 4:
         return None
-    return (lo + int(window.argmax())) * ENV_HOP_S
+    quiet = lo + int(db[lo:hi].argmin())
+    if db[quiet] > float(np.median(db)) - SILENCE_DB:      # no real silence: leave the track as generated
+        return None
+    j = quiet
+    while j < len(db) - 1 and db[j] < db[quiet] + 10:      # end of the silent stretch
+        j += 1
+    ahead = db[j:j + int(LOOK_AHEAD_S / ENV_HOP_S)]
+    if not len(ahead):
+        return None
+    k = int(np.argmax(ahead >= ahead.max() - NEAR_FULL_DB))
+    return round((j + k) * ENV_HOP_S, 2)
+
+
+def alignment(raw: Path, cue: Cue, seconds: float) -> float:
+    """Seconds to drop from the head (negative: silence to add) so the generated hit or peak lands on its shot."""
+    planned = planned_hit(cue)
+    if planned is None:
+        return 0.0
+    kind = HIT_MARK.search(cue.notes).group(3)
+    found = find_hit(raw, planned, kind)
+    if found is None:
+        return 0.0
+    shift = found - planned
+    if shift < -EARLY_MAX_S or abs(shift) <= 0.3 or ffmpeg.duration(raw) - max(shift, 0.0) < 0.7 * seconds:
+        return 0.0
+    return round(shift, 2)
 
 
 def fit_to_cue(src: Path, seconds: float, out: Path, start: float = 0.0) -> Path:
-    """Exactly `seconds` of 48 kHz stereo from `start` s into the track: a longer track is trimmed with a 1.5 s
-    fade-out, a shorter one is looped with crossfades until long enough, then trimmed and faded."""
+    """Exactly `seconds` of 48 kHz stereo from `start` s into the track (negative: that much silence first). A track
+    that is long enough, or only a little short, is trimmed or padded at the end with a 1.5 s fade-out; a much
+    shorter one (a 30 s clip under a long cue) is looped with crossfades, then trimmed and faded."""
     out.parent.mkdir(parents=True, exist_ok=True)
     try:
         have = ffmpeg.duration(src) - start
@@ -305,8 +335,9 @@ def fit_to_cue(src: Path, seconds: float, out: Path, start: float = 0.0) -> Path
         raise GoogleAPIError(f"{src}: only {have:.2f} s of audio, too short for a cue. Delete it to generate again.")
     norm = f"aresample={ffmpeg.SAMPLE_RATE},aformat=sample_fmts=fltp:channel_layouts=stereo"
     end = f"atrim=0:{seconds:.3f},afade=t=out:st={max(0.0, seconds - FADE_OUT_S):.3f}:d={min(FADE_OUT_S, seconds):.3f}"
-    if have + 0.05 >= seconds:
-        ffmpeg.run([*(["-ss", f"{start:.3f}"] if start > 0 else []), "-i", str(src), "-af", f"{norm},apad,{end}",
+    if have + 0.05 >= seconds - max(SHORT_PAD_S, 0.12 * seconds) or start:
+        head = f"adelay=delays={round(-start * 1000)}:all=1," if start < 0 else ""
+        ffmpeg.run([*(["-ss", f"{start:.3f}"] if start > 0 else []), "-i", str(src), "-af", f"{norm},{head}apad,{end}",
                     "-ar", str(ffmpeg.SAMPLE_RATE), "-ac", "2", str(out)])
         return out
     start = 0.0                                       # too short to drop a head: loop it whole
@@ -353,10 +384,8 @@ class LyriaMusic:
             return self.inbox.render_cue(cue, out)
         prompt = self.prompt(cue)
         raw = cached_raw(self.root, self.model, prompt) or self._generate(cue, prompt)
-        planned = planned_hit(cue)
-        found = find_hit(raw, planned) if planned is not None else None
-        late = found - planned if found is not None else 0.0
-        return fit_to_cue(raw, cue_seconds(cue), out, start=late if late > 0.3 else 0.0)   # hit lands on the picture
+        seconds = cue_seconds(cue)
+        return fit_to_cue(raw, seconds, out, start=alignment(raw, cue, seconds))   # the hit lands on its shot
 
     def _generate(self, cue: Cue, prompt: str) -> Path:
         what = f"Lyria {cue.cue_id}"

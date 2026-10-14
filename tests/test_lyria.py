@@ -338,3 +338,47 @@ def test_generated_hit_is_aligned_to_the_picture(root, tmp_path):
     assert np.argmax(np.diff(level)) + 1 in (99, 100, 101)        # the hit now starts at 10.0 s (100 x 0.1 s)
     assert find_hit(tmp_path / "aligned.wav", 10) == pytest.approx(10.0, abs=0.1)
     assert planned_hit(cue()) is None
+
+
+def _tone_track(path, total_s, loud_from_s, silence=(None, None), rate=48000):
+    t = np.arange(int(rate * total_s)) / rate
+    sig = np.where(t >= loud_from_s, 0.6, 0.06) * np.sin(2 * np.pi * 80 * t)
+    if silence[0] is not None:
+        sig[(t >= silence[0]) & (t < silence[1])] = 0.0
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes((sig * 32767).astype("<i2").tobytes())
+    return path
+
+
+def _onset(path):
+    with wave.open(str(path)) as w:
+        a = np.frombuffer(w.readframes(w.getnframes()), "<i2").astype(float)[::2]
+    hop = 4800
+    level = [np.abs(a[i:i + hop]).mean() for i in range(0, len(a) - hop, hop)]
+    return (int(np.argmax(np.diff(level))) + 1) / 10
+
+
+@needs_ffmpeg
+def test_early_hit_is_delayed_and_short_track_is_padded_not_looped(tmp_path):
+    from nraiorbit.providers.lyria import alignment, fit_to_cue
+
+    c = cue().model_copy(update={"duration_s": 24.0, "silence_before_s": 0.0,
+                                 "notes": "[0:00 - 0:09] Build: x. [0:09 - 0:10] Drop: y. [0:10 - 0:12] Hit: z."})
+    early = _tone_track(tmp_path / "early.wav", 24.0, 8.0, silence=(7.0, 8.0))        # hit 2 s early
+    shift = alignment(early, c, 24.0)
+    assert shift == pytest.approx(-2.0, abs=0.15)
+    out = fit_to_cue(early, 24.0, tmp_path / "early_fit.wav", start=shift)
+    assert _onset(out) == pytest.approx(10.0, abs=0.15) and ffmpeg.duration(out) == pytest.approx(24.0, abs=0.02)
+
+    short = _tone_track(tmp_path / "short.wav", 21.5, 5.0)                             # 2.5 s short of 24 s
+    padded = fit_to_cue(short, 24.0, tmp_path / "short_fit.wav")
+    with wave.open(str(padded)) as w:
+        a = np.frombuffer(w.readframes(w.getnframes()), "<i2").astype(float)[::2]
+    assert np.abs(a[-48000:]).max() < 50                                               # silent tail, no loop
+    assert np.abs(a[int(48000 * 1.0):int(48000 * 4.0)]).mean() < 0.2 * np.abs(a[int(48000 * 6):int(48000 * 9)]).mean()
+
+    no_drop = _tone_track(tmp_path / "flat.wav", 24.0, 0.0)                            # no silence: leave as is
+    assert alignment(no_drop, c, 24.0) == 0.0

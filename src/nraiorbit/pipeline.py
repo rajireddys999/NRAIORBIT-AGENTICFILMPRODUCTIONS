@@ -26,6 +26,7 @@ from .guards.voice import VoiceGuard, VoiceTake, VoiceThresholds
 from .library.registry import AssetRegistry
 from .llm import LLM
 from .planning.music import apply_revisions, plan_cues
+from .planning.score import load_styles, score_cue
 from .planning.runtime import (
     TEMPLATES, describe_template, fit_shots_to_scene, rebalance_outline, scene_start_times, validate_outline,
 )
@@ -364,7 +365,7 @@ class Pipeline:
         fps = self._film["fps"]
 
         uses_inbox = prov["video"] in ("veo", "shotpack")     # paid / hand-made clips live in inbox/video
-        shots_out, dialogue_out = [], []
+        shots_out, dialogue_out, spans = [], [], []
         starts = scene_start_times(outline)
         film_end = sum(s.target_seconds for s in outline.scenes)
         prev_end = -DIALOGUE_GAP_S                            # end of the last placed line, across shots and scenes
@@ -388,6 +389,7 @@ class Pipeline:
                 real = not uses_inbox or bool(clips_for(self.p.root, shot.shot_id))
                 shots_out.append(assemble.TimelineShot(shot.shot_id, sc.scene_id, round(t, 3), shot.duration_s,
                                                        clip, real))
+                spans.append((round(t, 3), shot))
                 for bid in shot.block_ids:
                     block = blocks.get(bid)
                     if block is None or block.kind != "dialogue" or bid in placed:
@@ -406,10 +408,12 @@ class Pipeline:
                 t += shot.duration_s
 
         sheet = self._load(self.p.music / "cue_sheet.json", CueSheet)
+        styles = load_styles(self.cfg)                 # music.styles: timed sections scored to the picture
         music_out = []
         for cue in sheet.cues:
             if not cue.instruments:
                 continue   # deliberate silence
+            cue = score_cue(cue, spans, styles)
             wav = music.render_cue(cue, self.p.music / f"{cue.cue_id}.wav")
             music_out.append(assemble.AudioEvent(wav, cue.start_s + cue.silence_before_s,
                                                  cue.duration_s - cue.silence_before_s, "music", -4.0, cue.cue_id))

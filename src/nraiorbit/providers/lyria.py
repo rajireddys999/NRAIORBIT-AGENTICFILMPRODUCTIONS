@@ -25,6 +25,7 @@ from pathlib import Path
 
 from ..costing import SpendLedger, lyria_price
 from ..post import ffmpeg
+from ..planning.score import load_styles, slot_for
 from ..schemas import Cue
 from .base import register
 from .google_ai import GoogleAPIError, _call, _types, google_client
@@ -101,6 +102,8 @@ VOCAL_TEXTURES = {"choir", "choir_sanskrit_chant", "male_chant", "group_chant", 
 ROLE_WORDS = {"hero": "the hero", "heroine": "the heroine", "villain": "the villain"}
 MASS = ("Mass elevation, Telugu hero style: thunderous thavil and dappu, epic brass stabs, a rising build, "
         "big hits on the accents, wordless choir chant, crowd whistles; huge, theatrical, larger than life.")
+MASS_VILLAIN = ("Villain menace, Telugu mass style: crushing low brass and taiko, pounding thavil and chenda, distorted "
+                "low guitars, dark wordless male chant, heavy hits; dangerous, towering, merciless.")
 TRAILER_ARC = ("Arc: low drone and heartbeat hits, a rising thavil and dappu roll, a beat of silence, then a huge "
                "full-band hit and a driving finale that keeps climbing.")
 
@@ -134,7 +137,9 @@ def scale_notes(scale: list[int]) -> str:
 
 
 def cue_prompt(cue: Cue, model: str = DEFAULT_MODEL, chars: dict[str, tuple[str, str]] | None = None,
-               navarasa: dict | None = None) -> str:
+               navarasa: dict | None = None, style: dict | None = None) -> str:
+    """style: the cue's slot preset from config/music_styles.yaml (planning/score.py); its style line replaces the
+    generic mass / dialogue-space wording, and its timed sections arrive in cue.notes."""
     seconds = cue_seconds(cue)
     big = cue.peak or cue.cue_type == "trailer"
     level = ("gentle and restrained" if cue.intensity <= 3 else "moderate" if cue.intensity <= 6
@@ -156,8 +161,12 @@ def cue_prompt(cue: Cue, model: str = DEFAULT_MODEL, chars: dict[str, tuple[str,
         name, role = (chars or {}).get(cue.leitmotif_character, (cue.leitmotif_character.title(), ""))
         who = f"{name}, {ROLE_WORDS[role]}" if role in ROLE_WORDS else name
         parts.append(f"Weave in a short, memorable leitmotif for {who}, stated clearly in the raga.")
-    if big:
-        parts.append(MASS)
+    if style and style.get("style"):
+        parts.append(f"Style: {' '.join(style['style'].split())}")
+        if cue.cue_type == "trailer" and not cue.notes.strip():
+            parts.append(TRAILER_ARC)
+    elif big:
+        parts.append(MASS_VILLAIN if cue.rasa == "raudra" and cue.cue_type != "trailer" else MASS)
         if cue.cue_type == "trailer" and not cue.notes.strip():
             parts.append(TRAILER_ARC)
         elif cue.cue_type != "trailer":
@@ -165,7 +174,7 @@ def cue_prompt(cue: Cue, model: str = DEFAULT_MODEL, chars: dict[str, tuple[str,
     else:
         parts.append("Leave space for dialogue: not too dense in the mid range (voice frequencies), "
                      "no busy lead melody all the way through.")
-    if big or VOCAL_TEXTURES & set(cue.instruments):
+    if big or VOCAL_TEXTURES & set(cue.instruments) or (style or {}).get("wordless_vocals"):
         parts.append("The only voices allowed are wordless textures (chant, alaap, hum: pure vowels, never words).")
     target = min(seconds, CLIP_SECONDS) if "clip" in model else seconds
     parts.append(f"Length: about {round(target)} seconds"
@@ -273,6 +282,7 @@ class LyriaMusic:
         self.navarasa = navarasa or {}
         self.inbox = InboxMusic(project_root)
         self.chars = characters(project_root)
+        self.styles = load_styles(cfg)
         self._client = client                         # made on the first paid call: cached cues need no sign-in
 
     @property
@@ -282,7 +292,7 @@ class LyriaMusic:
         return self._client
 
     def prompt(self, cue: Cue) -> str:
-        return cue_prompt(cue, self.model, self.chars, self.navarasa)
+        return cue_prompt(cue, self.model, self.chars, self.navarasa, self.styles.get(slot_for(cue)))
 
     def render_cue(self, cue: Cue, out: Path) -> Path:
         if _find_audio(self.inbox.folder, cue.cue_id):  # a composer's or hand-made track wins, no call

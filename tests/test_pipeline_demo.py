@@ -206,6 +206,32 @@ def test_every_cut_lands_on_the_film_frame_grid(tmp_path):
     assert assemble.fit_frames(shots[0].clip, 12, tmp_path / "same.mp4") == shots[0].clip    # a fitting clip is reused
 
 
+def test_a_shot_cut_into_later_shows_its_clip_on_the_frames_it_was_made_for(tmp_path):
+    """A 1 s clip (frame k at grey 8 + 10k) lip-synced to start at 0.5 s; the edit then cuts into it 0.208 s later
+    (in_s) and the red shot before it takes the time. Its clip's frame 0 still sits at film frame 12, so the cut at
+    frame 17 opens on clip frame 5 and the lips stay on the voice, which keeps its time."""
+    from nraiorbit.post import assemble
+    red = tmp_path / "red.mp4"
+    ffmpeg.run(["-f", "lavfi", "-i", "color=c=red:s=64x36:r=24", "-frames:v", "17", *ffmpeg.VIDEO_ENCODE, str(red)])
+    ramp = _grey_clip(tmp_path / "ramp.mp4", [8 + 10 * k for k in range(24)])
+    shots = [assemble.TimelineShot("s0", "sc0", 0.0, 0.708, red),
+             assemble.TimelineShot("s1", "sc0", 0.708, 0.792, ramp, in_s=0.208)]
+    assert assemble.lead_frames(shots[1], 24) == 5 and assemble.lead_frames(shots[0], 24) == 0
+    assemble.render_scene(shots, [], 0.0, tmp_path / "sc0.mp4", fps=24)
+    frames = _rgb(tmp_path / ".sc0" / "video.mp4")
+    assert len(frames) == 36
+    assert (frames[:17, 0] > 200).all() and (frames[:17, 1] < 60).all()          # red up to the cut at frame 17
+    assert np.abs(frames[17:, 1] - [8 + 10 * k for k in range(5, 24)]).max() <= 4  # then clip frames 5..23
+
+
+def _grey_clip(out, levels):
+    """A 64x36 clip at 24 fps whose frame k is flat grey levels[k]."""
+    raw = np.repeat(np.array(levels, np.uint8)[:, None, None, None], 36 * 64 * 3).tobytes()
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "64x36", "-r", "24",
+                    "-i", "-", *ffmpeg.VIDEO_ENCODE, str(out)], input=raw, check=True)
+    return out
+
+
 def test_the_picture_sets_the_length_when_the_sound_comes_out_short(tmp_path):
     """Every AAC pass loses a few milliseconds at the end, and a remux with -shortest then cut the picture to the sound
     (the master lost the last 0.2 s of its end card). Short sound is padded with silence; every frame stays."""

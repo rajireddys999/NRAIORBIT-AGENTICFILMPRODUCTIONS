@@ -760,6 +760,78 @@ def test_paste_back_options_and_an_edit_trim_keep_the_paid_lip_sync(setup):
         assert s_m[i] == pytest.approx(o_m[i] + g * (255 - o_m[i]), abs=12)
 
 
+def test_a_shot_the_edit_cuts_into_later_keeps_its_paid_lip_sync(setup):
+    """cut_in_s: the edit starts a lip-synced shot 0.25 s later (say a silent open mouth at its head) and the shot
+    before it takes the time. The take, its lip-sync audio and its lines keep their film times, so LatentSync is sent
+    the very same crop and audio (nothing is paid again); the assembly starts the clip 6 frames in."""
+    import hashlib
+
+    from nraiorbit.post import assemble
+    from nraiorbit.post import facelock as fl
+    from nraiorbit.providers.base import register
+    from nraiorbit.providers.mock import MockLipSync
+    from nraiorbit.schemas import SceneScript
+
+    sent = []
+
+    @register("lipsync", "lock_cut")
+    class LockCut(MockLipSync):
+        def __init__(self, **kw):
+            pass
+
+        def cached(self, video, audio):            # no whole-frame results: every speaking shot goes to crops
+            return None
+
+        def apply(self, video, audio, out):
+            ffmpeg.run(["-i", str(video), "-an", *ffmpeg.VIDEO_ENCODE, str(out)])
+            return out
+
+        def apply_many(self, items):
+            sent.extend(items)
+            return [self.apply(v, a, o) for v, a, o in items]
+
+    pipeline, cfg = setup.make(only=["trailer"])
+    pipeline.face_detector = lambda rgb: [fl.Face([60, 40, 130, 110], 0.9, [[81, 64.5], [109, 64.5]], [95, 78.5],
+                                                  [95, 92.5])]
+    pipeline.run(until="render")
+    real = {s["shot_id"] for s in json.loads((setup.root / "10_edit" / "timeline.json").read_text())["shots"] if s["real"]}
+    speaker = {b.block_id: b.character_id for p in (setup.root / "03_scenes").glob("*.json")
+               for b in SceneScript.model_validate_json(p.read_text()).blocks if b.kind == "dialogue"}
+    path, shots, prev, cut = next((p, sl, a, b) for p in sorted((setup.root / "04_shots").glob("*.json"))
+                                  for sl in [ShotList.model_validate_json(p.read_text())]
+                                  for a, b in zip(sl.shots, sl.shots[1:])
+                                  if b.shot_id in real and any(speaker.get(x) in b.characters_in_frame for x in b.block_ids))
+    cfg["providers"]["lipsync"] = "lock_cut"
+    cfg["lipsync"].update(mesh=False, shots={cut.shot_id: {"speaker": [95 / 320, 75 / 180]}})
+    pipeline.run(until="render", force=("render",))
+
+    def digest():                                       # the crops and audio sent for the cut shot
+        return {Path(v).name: hashlib.sha1(Path(v).read_bytes() + Path(a).read_bytes()).hexdigest()
+                for v, a, _ in sent if Path(v).parent.name == cut.shot_id}
+
+    before = digest()
+    assert before
+    timeline = json.loads((setup.root / "10_edit" / "timeline.json").read_text())
+    was = next(s for s in timeline["shots"] if s["shot_id"] == cut.shot_id)
+    lines = {e["ref_id"]: e["start_s"] for e in timeline["dialogue"]}
+    frames = ffmpeg.frame_count(Path(was["clip"]))
+    prev.duration_s = round(prev.duration_s + 0.25, 3)  # the edit cuts in later; the shot before takes the time
+    cut.duration_s = round(cut.duration_s - 0.25, 3)
+    path.write_text(shots.model_dump_json(indent=2))
+    cfg["lipsync"]["shots"][cut.shot_id]["cut_in_s"] = 0.25
+    sent.clear()
+    pipeline.run(until="render", force=("render",))
+
+    assert digest() == before                           # the same crop and audio: a real provider's cache hits
+    timeline = json.loads((setup.root / "10_edit" / "timeline.json").read_text())
+    now = next(s for s in timeline["shots"] if s["shot_id"] == cut.shot_id)
+    assert now["start_s"] == pytest.approx(was["start_s"] + 0.25) and now["in_s"] == 0.25
+    assert ffmpeg.frame_count(Path(now["clip"])) == frames                     # the clip as it was lip-synced
+    assert {e["ref_id"]: e["start_s"] for e in timeline["dialogue"]} == lines  # every line where it was
+    shown = assemble.TimelineShot(**{**now, "clip": Path(now["clip"])})
+    assert assemble.lead_frames(shown, 24) == round(now["start_s"] * 24) - round(was["start_s"] * 24) == 6
+
+
 def _set_tier(root, shot_id, tier):
     for path in (root / "04_shots").glob("*.json"):
         shot_list = ShotList.model_validate_json(path.read_text())

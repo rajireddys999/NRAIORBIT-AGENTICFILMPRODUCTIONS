@@ -113,7 +113,10 @@ lipsync:                           # used by providers.lipsync: latentsync_cloud
                                    # whole-frame result | {protect: {above: 185}} keep as filmed the pixels brighter
                                    # (or {below: 40} darker) than this | {detail: 0.5} | {mesh: false} |
                                    # {sync_s: 4.8} the shot was cut shorter in the edit after lip-sync: its take
-                                   # stays at the synced length (the lip-sync is reused), the edit plays the start
+                                   # stays at the synced length (the lip-sync is reused), the edit plays the start |
+                                   # {cut_in_s: 0.25} the edit cuts into the shot this much later (04_shots: the
+                                   # shot shortened, the one before it lengthened by as much): its take, lip-sync
+                                   # and lines keep their film times (the lip-sync is reused)
 
 budget:
   max_usd: 50                      # hard stop for paid generation in one project (cost.jsonl ledger)

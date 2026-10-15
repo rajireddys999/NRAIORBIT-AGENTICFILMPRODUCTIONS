@@ -20,6 +20,7 @@ class TimelineShot:
     duration_s: float
     clip: Path
     real: bool = True       # False = placeholder card (not generated yet, or blocked)
+    in_s: float = 0.0       # the clip's first in_s are not shown: the edit cuts into the shot later (cut_in_s)
 
 
 @dataclass
@@ -44,14 +45,25 @@ def frame_grid(shots: list[TimelineShot], fps: int) -> list[int]:
     return [max(1, b - a) for a, b in zip(marks, marks[1:])]
 
 
-def fit_frames(clip: Path, frames: int, out: Path) -> Path:
-    """`clip` with exactly `frames` frames: its tail trimmed or its last frame held (a frame or so at a cut). Clips
-    that already fit are used as they are."""
-    have = ffmpeg.frame_count(clip)
-    if have == frames:
+def lead_frames(shot: TimelineShot, fps: int) -> int:
+    """Frames of the shot's clip before its first shown frame. A shot the edit cuts into later (in_s) keeps its clip on
+    the grid it was made for: the clip's first frame sits at round((start - in_s) * fps), so its lips stay on its
+    lines, which keep their times."""
+    if not shot.in_s:
+        return 0
+    return int(round(shot.start_s * fps)) - int(round(round(shot.start_s - shot.in_s, 3) * fps))
+
+
+def fit_frames(clip: Path, frames: int, out: Path, skip: int = 0) -> Path:
+    """`clip` from its frame `skip` on, with exactly `frames` frames: its tail trimmed or its last frame held (a frame
+    or so at a cut). Clips that already fit are used as they are."""
+    have = ffmpeg.frame_count(clip) - skip
+    if have == frames and not skip:
         return clip
-    hold = f"tpad=stop_mode=clone:stop={frames - have}" if frames > have else "null"
-    ffmpeg.run(["-i", str(clip), "-vf", hold, "-frames:v", str(frames), "-an", *ffmpeg.VIDEO_ENCODE, str(out)])
+    chain = ([f"trim=start_frame={skip}", "setpts=PTS-STARTPTS"] if skip else []) + \
+        ([f"tpad=stop_mode=clone:stop={frames - have}"] if frames > have else [])
+    ffmpeg.run(["-i", str(clip), "-vf", ",".join(chain) or "null", "-frames:v", str(frames), "-an",
+                *ffmpeg.VIDEO_ENCODE, str(out)])
     return out
 
 
@@ -59,11 +71,13 @@ def render_scene(shots: list[TimelineShot], dialogue: list[AudioEvent], scene_st
                  fps: int = 24) -> Path:
     """dialogue: every line overlapping the scene. Its audio is exactly as long as its video; a line crossing either
     edge is cut there and carries on in the neighbouring scene (see join_scenes). Each shot's picture is fitted to
-    the film's frame grid (see frame_grid), so the lips stay on the voice however long the film runs."""
+    the film's frame grid (see frame_grid), so the lips stay on the voice however long the film runs; a shot cut into
+    later starts at its clip's frame lead_frames."""
     work = out.parent / f".{out.stem}"
     work.mkdir(parents=True, exist_ok=True)
     grid = frame_grid(shots, fps)
-    clips = [fit_frames(s.clip, n, work / f"fit_{i:03d}.mp4") for i, (s, n) in enumerate(zip(shots, grid))]
+    clips = [fit_frames(s.clip, n, work / f"fit_{i:03d}.mp4", lead_frames(s, fps))
+             for i, (s, n) in enumerate(zip(shots, grid))]
     video = ffmpeg.concat(clips, work / "video.mp4")
     total = sum(s.duration_s for s in shots)
     events = [(e.path, e.start_s - scene_start_s, e.gain_db) for e in dialogue]

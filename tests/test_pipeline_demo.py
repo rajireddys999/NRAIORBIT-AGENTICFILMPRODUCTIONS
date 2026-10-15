@@ -224,6 +224,98 @@ def test_a_shot_cut_into_later_shows_its_clip_on_the_frames_it_was_made_for(tmp_
     assert np.abs(frames[17:, 1] - [8 + 10 * k for k in range(5, 24)]).max() <= 4  # then clip frames 5..23
 
 
+def test_a_cut_into_take_keeps_its_place_on_the_clock():
+    """take_span: a shot the edit cuts into later (cut_in_s; the shot before it lengthened by as much) keeps its take's
+    first frame and length as they were, so its lip-sync audio comes out sample for sample the same (the paid result
+    is reused), also for lengths in whole frames as the shot planner writes them (145/24 s) and cut-ins of whole
+    frames (5/24 s). The shown start and in_s give back that first frame exactly."""
+    from nraiorbit.post import assemble
+    for before in range(48, 121):                       # the shot before: every length from 2 to 5 s in frames
+        for d in (115 / 24, 145 / 24, 4.8, 6.0):
+            for h in (0.25, 5 / 24, 0.208333, 1 / 24, 0.123):
+                origin, length = assemble.take_span(10.0 + before / 24, d)
+                t = 10.0 + (before / 24 + h)
+                o, n = assemble.take_span(t, d - h, h)
+                assert o == origin and round(n * SR) == round(length * SR), (before, d, h)
+                assert round(round(t, 3) - round(round(t, 3) - o, 3), 3) == origin
+    assert assemble.take_span(12.5, 4.0, sync_s=4.8) == (12.5, 4.8)
+    assert assemble.take_span(12.5, 4.8, sync_s=4.0) == (12.5, 4.8)
+
+
+def test_cut_in_keeps_a_line_pulled_to_the_film_end_and_skips_a_scene_start(tmp_path):
+    """cut_in_s on the film's last shot, whose line is pulled to end with the film: the line keeps its time, so the
+    take and its lip-sync audio stay the same (nothing would be paid again). On a scene's first shot it is ignored and
+    reported: a scene starts at a fixed time, so no shot before it can take the time, and its line stays put."""
+    import hashlib
+
+    from nraiorbit.providers.base import register
+    from nraiorbit.providers.mock import MockLipSync
+    from nraiorbit.schemas import Outline, SceneScript, ShotList
+
+    sent = []
+
+    @register("lipsync", "rec_cut_in")
+    class Rec(MockLipSync):
+        def __init__(self, **kw):
+            pass
+
+        def apply_many(self, items):
+            sent.extend(items)
+            return [self.apply(v, a, o) for v, a, o in items]
+
+    root, cfg = _project(tmp_path)
+    pipeline = Pipeline(root, demo_llm(), cfg=cfg, log=lambda m: None)
+    pipeline.run(until="shots")
+    scenes = Outline.model_validate_json((root / "02_outline.json").read_text()).scenes
+
+    def give_line(scene_id, index):                 # the scene's last line goes to one shot, its speaker in frame
+        path = root / "04_shots" / f"{scene_id}.json"
+        shots = ShotList.model_validate_json(path.read_text())
+        script = SceneScript.model_validate_json((root / "03_scenes" / f"{scene_id}.json").read_text())
+        line = next(b for b in reversed(script.blocks) if b.kind == "dialogue")
+        for s in shots.shots:
+            s.block_ids = [b for b in s.block_ids if b != line.block_id]
+        shot = shots.shots[index]
+        shot.block_ids.append(line.block_id)
+        shot.characters_in_frame = list(dict.fromkeys(shot.characters_in_frame + [line.character_id]))
+        return path, shots, shot
+
+    path, shots, end = give_line(scenes[-1].scene_id, -1)
+    prev = shots.shots[-2]
+    prev.duration_s, end.duration_s = round(prev.duration_s + end.duration_s - 2.0, 3), 2.0   # line runs past the end
+    path.write_text(shots.model_dump_json(indent=2))
+    first_path, first_shots, first = give_line(scenes[1].scene_id, 0)
+    first_path.write_text(first_shots.model_dump_json(indent=2))
+    cfg["providers"]["lipsync"] = "rec_cut_in"
+    cfg["lipsync"] = {**cfg.get("lipsync", {}), "speaker_lock": False, "shots": {}}
+    pipeline.run(until="render", force=("render",))
+
+    def key(shot_id):
+        video, audio, _ = next(i for i in sent if Path(i[0]).parent.name == shot_id)
+        return hashlib.sha1(Path(video).read_bytes() + Path(audio).read_bytes()).hexdigest()
+
+    def timeline():
+        tl = json.loads((root / "10_edit" / "timeline.json").read_text())
+        return {s["shot_id"]: s for s in tl["shots"]}, {e["ref_id"]: e["start_s"] for e in tl["dialogue"]}
+
+    keys, (was, lines) = {s: key(s) for s in (end.shot_id, first.shot_id)}, timeline()
+    assert lines[end.block_ids[-1]] + 4.0 > 180 > was[end.shot_id]["start_s"] + 0.2 + 1e-6 > lines[end.block_ids[-1]]
+    sent.clear()
+    prev.duration_s, end.duration_s = round(prev.duration_s + 0.25, 3), round(end.duration_s - 0.25, 3)
+    path.write_text(shots.model_dump_json(indent=2))
+    cfg["lipsync"]["shots"] = {end.shot_id: {"cut_in_s": 0.25}, first.shot_id: {"cut_in_s": 0.25}}
+    pipeline.run(until="render", force=("render",))
+
+    now, lines_now = timeline()
+    assert lines_now == lines                                   # every line where it was
+    assert {s: key(s) for s in keys} == keys                    # the same takes and lip-sync audio
+    assert now[end.shot_id]["start_s"] == pytest.approx(was[end.shot_id]["start_s"] + 0.25)
+    assert now[end.shot_id]["in_s"] == 0.25
+    assert now[first.shot_id]["in_s"] == 0.0 and now[first.shot_id]["start_s"] == was[first.shot_id]["start_s"]
+    queue = [json.loads(x) for x in (root / "reports" / "review_queue.jsonl").read_text().splitlines()]
+    assert any(q["shot_id"] == first.shot_id and "cut_in_s ignored" in q["reason"][0] for q in queue)
+
+
 def _grey_clip(out, levels):
     """A 64x36 clip at 24 fps whose frame k is flat grey levels[k]."""
     raw = np.repeat(np.array(levels, np.uint8)[:, None, None, None], 36 * 64 * 3).tobytes()

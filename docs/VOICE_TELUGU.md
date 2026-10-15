@@ -172,7 +172,7 @@ Per-shot fixes from review go in `lipsync.shots.<shot_id>`:
 | `{bridge_gaps: 8}` | Close gaps of up to 8 frames where the detector lost the face mid-line. In crop mode the gap takes the whole-frame result |
 | `{extend_track: true}` | Another track of the same face carries the speaker's on, when the detector split one face in two. A number sets the least box overlap that counts (default 0.3) |
 | `{sync_s: 4.8}` | The shot was cut shorter in the edit after lip-sync. Its take stays at the synced length, so the paid lip-sync is reused, and the edit plays only the start. Use it to cut a shot right after its line when the filmed mouth goes on talking in silence |
-| `{cut_in_s: 0.25}` | The edit cuts into the shot this much later. In `04_shots` shorten the shot and lengthen the one before it by the same amount. The take, its lip-sync and its lines keep their film times, so the paid lip-sync is reused, and the assembly starts the clip that many frames in. Use it when the filmed mouth shouts in silence before the line starts |
+| `{cut_in_s: 0.25}` | The edit cuts into the shot this much later. In `04_shots` shorten the shot and lengthen the shot before it in the same scene by exactly the same amount. The take, its lip-sync and its lines keep their film times, so the paid lip-sync is reused, and the assembly starts the clip that many frames in. Use it when the filmed mouth shouts in silence before the line starts. A scene's first shot cannot start later (scene starts are fixed), so there it is ignored and reported in `review_queue` |
 | `{mesh: false}`, `{detail: 0.5}` | Per-shot overrides of the global settings |
 | `{mode: crop}` | Never reuse a whole-frame result |
 

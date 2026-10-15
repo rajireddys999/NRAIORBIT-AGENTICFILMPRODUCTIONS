@@ -115,8 +115,8 @@ lipsync:                           # used by providers.lipsync: latentsync_cloud
                                    # {sync_s: 4.8} the shot was cut shorter in the edit after lip-sync: its take
                                    # stays at the synced length (the lip-sync is reused), the edit plays the start |
                                    # {cut_in_s: 0.25} the edit cuts into the shot this much later (04_shots: the
-                                   # shot shortened, the one before it lengthened by as much): its take, lip-sync
-                                   # and lines keep their film times (the lip-sync is reused)
+                                   # shot shortened, the one before it lengthened by exactly as much; not a scene's
+                                   # first shot): its take, lip-sync and lines keep their film times (reused)
 
 budget:
   max_usd: 50                      # hard stop for paid generation in one project (cost.jsonl ledger)

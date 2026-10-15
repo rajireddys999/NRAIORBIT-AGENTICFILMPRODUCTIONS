@@ -45,6 +45,15 @@ def frame_grid(shots: list[TimelineShot], fps: int) -> list[int]:
     return [max(1, b - a) for a, b in zip(marks, marks[1:])]
 
 
+def take_span(start: float, duration_s: float, cut_in_s: float = 0.0, sync_s: float = 0.0) -> tuple[float, float]:
+    """A shot's take on the film's clock: (its first frame, its length). The take is longer than the shot when the
+    edit cut the shot after lip-sync: shorter (sync_s, the length it was synced at) or later (cut_in_s, its head not
+    shown). `start` is the shot's start as accumulated, unrounded: the first frame is rounded just as an uncut shot's
+    start is, so the take and its lip-sync audio come out byte for byte as they were made."""
+    length = max(duration_s + cut_in_s, sync_s)
+    return round(start - cut_in_s, 3), (round(length, 6) if length > duration_s else duration_s)
+
+
 def lead_frames(shot: TimelineShot, fps: int) -> int:
     """Frames of the shot's clip before its first shown frame. A shot the edit cuts into later (in_s) keeps its clip on
     the grid it was made for: the clip's first frame sits at round((start - in_s) * fps), so its lips stay on its

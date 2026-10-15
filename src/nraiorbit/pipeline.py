@@ -376,6 +376,7 @@ class Pipeline:
         sync_len = {sid: float(o["sync_s"]) for sid, o in per_shot.items() if o.get("sync_s")}
         cut_in = {sid: float(o["cut_in_s"]) for sid, o in per_shot.items() if o.get("cut_in_s")}
         shots_out, dialogue_out, spans, speaker_of = [], [], [], {}
+        takes_at = []                                 # each shot's take: (first frame on the film's clock, length)
         starts = scene_start_times(outline)
         film_end = sum(s.target_seconds for s in outline.scenes)
         prev_end = -DIALOGUE_GAP_S                            # end of the last placed line, across shots and scenes
@@ -392,10 +393,15 @@ class Pipeline:
                 # a lip-synced shot cut shorter in the edit keeps its take at the length it was lip-synced at
                 # (lipsync.shots.<id>.sync_s), so that lip-sync is reused; the assembly plays its first duration_s.
                 # One the edit cuts into later (cut_in_s) keeps the head it was lip-synced with, and the assembly
-                # starts it that far in.
+                # starts it that far in. A scene starts at a fixed time, so its first shot has no shot before it to
+                # take that time.
                 head = cut_in.get(shot.shot_id, 0.0)
-                length = max(shot.duration_s + head, sync_len.get(shot.shot_id, 0.0))
-                made = shot if length <= shot.duration_s else shot.model_copy(update={"duration_s": round(length, 3)})
+                if head and shot is shot_list.shots[0]:
+                    self._report("review_queue", {"shot_id": shot.shot_id, "reason": [
+                        "lipsync cut_in_s ignored: a scene's first shot cannot start later (scene starts are fixed)"]})
+                    head = 0.0
+                origin, length = assemble.take_span(t, shot.duration_s, head, sync_len.get(shot.shot_id, 0.0))
+                made = shot if length == shot.duration_s else shot.model_copy(update={"duration_s": length})
                 if selected(shot, sc.scene_id, only):
                     clip = self._render_shot(video, made, ctx, face_guard)
                 elif len(paid) >= take:                    # outside --only but already generated: use it, free
@@ -406,8 +412,9 @@ class Pipeline:
                                                    note="not generated yet")
                 real = not uses_inbox or bool(clips_for(self.p.root, shot.shot_id))
                 shots_out.append(assemble.TimelineShot(shot.shot_id, sc.scene_id, round(t, 3), shot.duration_s,
-                                                       clip, real, in_s=head))
+                                                       clip, real, in_s=round(round(t, 3) - origin, 3)))
                 spans.append((round(t, 3), shot))
+                takes_at.append((origin, length))
                 for bid in shot.block_ids:
                     block = blocks.get(bid)
                     if block is None or block.kind != "dialogue" or bid in placed:
@@ -419,7 +426,7 @@ class Pipeline:
                     # the lead-in counts from the take's first frame: a shot cut into later keeps its lines in place
                     start = max(t - head + DIALOGUE_LEAD_IN_S, prev_end + DIALOGUE_GAP_S)
                     if start + dur > film_end:
-                        start = max(prev_end + DIALOGUE_GAP_S, min(start, max(t, film_end - dur)))
+                        start = max(prev_end + DIALOGUE_GAP_S, min(start, max(t - head, film_end - dur)))
                     start = round(start, 3)
                     dialogue_out.append(assemble.AudioEvent(wav, start, dur, "dialogue", ref_id=bid))
                     placed.add(bid)
@@ -429,7 +436,7 @@ class Pipeline:
         lipsync = prov.get("lipsync") or "none"
         if lipsync != "none":                          # the speaker's mouth redrawn to the Telugu line, shot by shot
             syncer = get_provider("lipsync", lipsync, **self._provider_kwargs("lipsync", lipsync, lock))
-            shots_out = self._lip_sync(syncer, shots_out, spans, dialogue_out, speaker_of, resolution, fps)
+            shots_out = self._lip_sync(syncer, shots_out, spans, takes_at, dialogue_out, speaker_of, resolution, fps)
 
         sheet = self._load(self.p.music / "cue_sheet.json", CueSheet)
         styles = load_styles(self.cfg)                 # music.styles: timed sections scored to the picture
@@ -455,7 +462,7 @@ class Pipeline:
         timeline_path.write_text(json.dumps(timeline, indent=1), encoding="utf-8")
         self.log(f"  rendered {len(shots_out)} shots, {len(dialogue_out)} lines, {len(music_out)} cues")
 
-    def _lip_sync(self, syncer, shots_out: list, spans: list, dialogue: list, speaker_of: dict[str, str],
+    def _lip_sync(self, syncer, shots_out: list, spans: list, takes: list, dialogue: list, speaker_of: dict[str, str],
                   resolution: tuple[int, int], fps: int) -> list:
         """Every generated shot that was filmed with a speaker in frame (the video model animates that mouth) gets the
         mouth redrawn to that speaker's own lines, as they fall inside the shot, and to silence everywhere else, so a
@@ -466,16 +473,13 @@ class Pipeline:
         ls = self.cfg.get("lipsync") or {}
         per_shot = ls.get("shots") or {}
         jobs = []                                       # (index, timeline shot, audio, raw output)
-        for i, (ts, (t, shot)) in enumerate(zip(shots_out, spans)):
+        for i, (ts, (_, shot), (origin, length)) in enumerate(zip(shots_out, spans, takes)):
             spoken = {b for b in shot.block_ids if speaker_of.get(b) in shot.characters_in_frame}
             opts = per_shot.get(shot.shot_id) or {}
             if not ts.real or not spoken or opts.get("sync") is False:
                 continue
-            # the clip's own length and its first frame on the film's clock: longer than the shot, and starting
-            # before it, when the edit cut it after lip-sync (sync_s, cut_in_s, see _render)
-            head = float(opts.get("cut_in_s") or 0.0)
-            length = max(ts.duration_s + head, float(opts.get("sync_s") or 0.0))
-            length, origin = (round(length, 3), round(t - head, 3)) if head else (length, t)
+            # the take's own window on the film's clock (origin, length): longer than the shot, and starting before
+            # it, when the edit cut it after lip-sync (sync_s, cut_in_s; see _render and take_span)
             events = [(e.path, e.start_s - origin, 0.0) for e in dialogue
                       if e.ref_id in spoken and e.start_s < origin + length and e.start_s + e.duration_s > origin]
             work = self.p.video / shot.shot_id

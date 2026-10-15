@@ -569,7 +569,7 @@ class Pipeline:
                 record.setdefault("failed_segments", []).append({"start": seg.start, "end": seg.end,
                                                                  "why": why.strip().splitlines()[-1][:300]})
                 continue
-            synced = ffmpeg.conform_clip(got, raw_out.with_name(raw_out.name.replace("_raw", "")),
+            synced = ffmpeg.conform_clip(got, raw_out.with_name(raw_out.name.replace("_raw", "_synced")),
                                          (seg.end - seg.start) / fps, seg.window[2:], fps)
             plan.segments.append((seg, synced))
         made = kept = 0
@@ -590,8 +590,9 @@ class Pipeline:
                 continue
             result = facelock.composite(ts.clip, plan, ts.clip.with_name(f"{ts.clip.stem}_lipsync.mp4"),
                                         detail=float(ls.get("detail", 1.0)))
-            record["synced_frames"] = (len(plan.faces) if plan.full is not None else
-                                       sum(s.end - s.start for s, _ in plan.segments)) - len(plan.keep)
+            covered = range(len(plan.faces)) if plan.full is not None else \
+                [n for s, _ in plan.segments for n in range(s.start, s.end)]
+            record["synced_frames"] = sum(1 for n in covered if n not in plan.keep and plan.faces[n] is not None)
             self._report("lipsync", record)
             out[i] = replace(ts, clip=result)
             made += 1

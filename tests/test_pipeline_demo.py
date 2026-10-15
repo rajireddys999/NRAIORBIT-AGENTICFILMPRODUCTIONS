@@ -15,7 +15,7 @@ from nraiorbit.config import deep_merge, load_pipeline_config
 from nraiorbit.demo import DEMO_CONFIG, DEMO_PLOT, demo_llm
 from nraiorbit.pipeline import DIALOGUE_GAP_S, GatePending, Pipeline
 from nraiorbit.post import ffmpeg
-from nraiorbit.post.speech import tighten_pauses
+from nraiorbit.post.speech import level_gain_db, tighten_pauses
 from nraiorbit.post.trailer import PUNCH_DROP_S
 
 pytestmark = pytest.mark.skipif(not ffmpeg.available(), reason="ffmpeg not installed")
@@ -27,6 +27,12 @@ def _samples(path: Path) -> np.ndarray:
     raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-f", "f32le", "-ac", "1", "-ar", str(SR), "-"],
                          capture_output=True, check=True).stdout
     return np.frombuffer(raw, np.float32)
+
+
+def _levelled(path: Path, cfg: dict) -> np.ndarray:
+    """A take's samples at the speaking level the mix brings every line to (audio.dialogue_level_dbfs)."""
+    target = cfg["audio"].get("dialogue_level_dbfs")
+    return _samples(path) * (10 ** (level_gain_db(path, target) / 20) if target is not None else 1.0)
 
 
 def _db(x: np.ndarray, a: float, b: float) -> float:
@@ -93,7 +99,7 @@ def test_demo_end_to_end(tmp_path):
     paths = {e["ref_id"]: e["path"] for e in timeline["dialogue"]}
     for c in carried:
         assert c["line_at_s"] + c["line_duration_s"] <= c["trailer_start_s"] + c["duration_s"] + 1e-6
-        line = _samples(Path(paths[c["line_id"]]))
+        line = _levelled(Path(paths[c["line_id"]]), cfg)
         at = int(round(c["line_at_s"] * SR))
         assert at + len(line) <= len(trailer_dialogue)
         assert np.abs(trailer_dialogue[at:at + len(line)] - line).max() < 1e-3      # the whole line, uncut
@@ -142,7 +148,7 @@ def test_long_line_runs_into_the_next_scene_intact(tmp_path):
     assert lines["sc002_b002"]["start_s"] >= line["start_s"] + long_s + DIALOGUE_GAP_S - 1e-3   # the next line waits
 
     stem = _samples(root / "11_master" / "stems" / "dialogue.wav")
-    source = _samples(Path(line["path"]))
+    source = _levelled(Path(line["path"]), cfg)                             # as placed: at the speaking level
     at = int(round(line["start_s"] * SR))
     assert len(source) == pytest.approx(long_s * SR, abs=2)
     assert np.abs(stem[at:at + len(source)] - source).max() < 1e-3           # sample-exact across the scene cut

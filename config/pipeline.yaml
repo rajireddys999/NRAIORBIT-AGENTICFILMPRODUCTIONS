@@ -130,4 +130,6 @@ audio:
   master_lufs: -14
   true_peak_db: -1
   dialogue_duck_db: -10
+  dialogue_level_dbfs: -20             # every take brought to this speaking level before mixing (null = off)
+  min_voice_over_music_db: 12          # any line quieter than this over the music is lifted (0 = off)
   sample_rate: 48000

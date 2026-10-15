@@ -32,6 +32,7 @@ from .planning.runtime import (
 )
 from .post import assemble, ffmpeg
 from .post.cards import Card, apply_cards
+from .post.speech import clarify_dialogue, level_gain_db
 from .post.subtitles import write_srt
 from .post.trailer import PUNCH_DROP_S, TrailerLine, elevation_arc, plan_trailer
 from .providers import RenderContext, get_provider
@@ -629,7 +630,7 @@ class Pipeline:
         outline = self._load(self.p.outline, Outline)
         starts = scene_start_times(outline)
         shots = [assemble.TimelineShot(**{**s, "clip": Path(s["clip"])}) for s in tl["shots"]]
-        dialogue = [assemble.AudioEvent(**{**e, "path": Path(e["path"])}) for e in tl["dialogue"]]
+        dialogue = self._levelled([assemble.AudioEvent(**{**e, "path": Path(e["path"])}) for e in tl["dialogue"]])
         music = [assemble.AudioEvent(**{**e, "path": Path(e["path"])}) for e in tl["music"]]
         scene_files = []
         for sc in outline.scenes:
@@ -642,9 +643,39 @@ class Pipeline:
         film = assemble.join_scenes(scene_files, self.p.edit / "film_dialogue.mp4")
         audio = self.cfg["audio"]
         assemble.master(film, music, movie, audio["master_lufs"], audio["true_peak_db"])
+        self._clarify(movie, dialogue, "film")
         self._write_stems(film, movie)
         self._write_subtitles(dialogue)
         self.log(f"  master: {movie} ({ffmpeg.duration(movie) / 60:.1f} min)")
+
+    def _levelled(self, lines: list) -> list:
+        """Every dialogue take brought to the same speaking level (audio.dialogue_level_dbfs), so a quiet take is
+        not lost under the music and a loud one does not jump out."""
+        target = self.cfg["audio"].get("dialogue_level_dbfs")
+        if target is None:
+            return lines
+        return [replace(e, gain_db=e.gain_db + level_gain_db(e.path, target)) for e in lines]
+
+    def _clarify(self, master: Path, lines: list, label: str) -> None:
+        """Lift any line that is not audio.min_voice_over_music_db above the music in the finished mix (the music
+        under it stays as it is), then put the new sound back under the untouched picture."""
+        audio = self.cfg["audio"]
+        min_db = audio.get("min_voice_over_music_db") or 0
+        if not min_db or not lines:
+            return
+        work = master.parent / f".{master.stem}" / "clarity"
+        wav = work / "mix.wav"
+        report = clarify_dialogue(master, [(e.path, e.start_s, e.gain_db) for e in lines], wav, min_db=min_db,
+                                  true_peak=audio["true_peak_db"])
+        lifted = [r for r in report if r["boost_db"] > 0]
+        self._report("mix", {"master": label, "min_voice_over_music_db": min_db, "lines": report})
+        if lifted:
+            tmp = work / f"remux{master.suffix}"
+            ffmpeg.run(["-i", str(master), "-i", str(wav), "-map", "0:v", "-map", "1:a", "-c:v", "copy",
+                        "-c:a", "aac", "-b:a", "256k", "-shortest", str(tmp)])
+            tmp.replace(master)
+        self.log(f"  dialogue clarity ({label}): {len(lifted)} of {len(report)} lines lifted"
+                 + (f", at most +{max(r['boost_db'] for r in lifted):.1f} dB" if lifted else ""))
 
     def _place_cards(self, movie: Path) -> None:
         """Lay the configured cards (title, INTERVAL, end) over the master; changing them later never re-masters.
@@ -746,7 +777,9 @@ class Pipeline:
                 title_backdrop_s=behind.film_start_s + behind.duration_s / 2 if behind else None)
             total = round(sum(c.duration_s for c in plan), 4)
             wavs = {e["ref_id"]: Path(e["path"]) for e in tl["dialogue"]}
-            dialogue = ffmpeg.place_audio([(wavs[c.line_id], c.line_at_s, 0.0) for c in plan if c.line_id], total,
+            said = self._levelled([assemble.AudioEvent(wavs[c.line_id], c.line_at_s, 0.0, "dialogue", ref_id=c.line_id)
+                                   for c in plan if c.line_id])
+            dialogue = ffmpeg.place_audio([(e.path, e.start_s, e.gain_db) for e in said], total,
                                           self.p.edit / ".trailer_dialogue" / "dialogue.wav")
             film = ffmpeg.mux(raw, dialogue, self.p.edit / "trailer_dialogue.mp4")
             notes, drop_at = elevation_arc(plan)
@@ -762,6 +795,7 @@ class Pipeline:
             # the score drops to near-silence right before the punch line, then hits on the title card
             assemble.master(film, [assemble.AudioEvent(wav, 0.0, total, "music", -2.0, "trailer")], out,
                             audio["master_lufs"], audio["true_peak_db"], music_dips=[(drop_at, PUNCH_DROP_S, -20.0)])
+            self._clarify(out, said, "trailer")
             self.log(f"  trailer: {out} ({total:.0f} s, {sum(c.shot_id is not None for c in plan)} clips, "
                      f"{sum(bool(c.line_id) for c in plan)} whole lines)")
         self.gate("trailer")

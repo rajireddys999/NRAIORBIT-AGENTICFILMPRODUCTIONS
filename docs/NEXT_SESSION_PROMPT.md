@@ -6,10 +6,16 @@
   13 sequences, 133 shots, 58 Telugu dialogue blocks (all approved; AI voices), 20 Lyria cues, Telugu title /
   INTERVAL / end cards. 11 new adult characters approved (no children on screen). Every first frame was checked
   against the approved faces before video was paid (`nraiorbit keyframes`).
-- First full cut done ($88.91 on the godavari10 ledger, real Vertex prices). A 4-part 720p preview without lip-sync
-  was sent in chat. The last paid step, lip-sync of all 34 on-camera speaking shots on one Vertex L4 batch (~$6),
-  was started on 2026-10-14 ~23:12 UTC. If a session finds an endpoint still deployed with nothing running, undeploy
-  and delete it (`gcloud ai endpoints list --region us-central1`).
+- Full cut with lip-sync done: **$97.17 on the godavari10 ledger** (hard stop $115). All 34 on-camera speaking shots
+  are lip-synced (LatentSync on Vertex L4: one whole-frame batch, then speaker crops for 9 shots). Two frame-level QA
+  rounds (docs/PROJECT_STATUS.md) were fixed for free: speaker lock, face-mesh paste-back, frame-grid cuts and
+  per-shot settings in `projects/godavari10/pipeline.yaml` → `lipsync.shots` (26 shots). `lipsync.offline: true`
+  there, so a rebuild never starts a GPU job. Each rebuild is sent in chat as 6 parts under 30 MB plus the trailer.
+- Open choice for the owner: a targeted GPU re-run (about $2) for the closed mouths in sc008_s002, sc009_s006 and
+  sc011_s004 and some under-articulated vowels. This needs a small code change (re-sync only given frame ranges with
+  higher audio guidance) and the owner's OK. Also a uniform 2.35:1 matte (18 clips have baked-in bars).
+- If a session finds a lip-sync endpoint still deployed with nothing running, undeploy and delete it
+  (`gcloud ai endpoints list --region us-central1`).
 - Media: `gs://nraiorbit-agentic-film-product-media/godavari10/` (inbox clips, keyframes, caches, plan files, cost
   log) and `gs://nraiorbit-agentic-film-product-media/library/characters/<id>/refs` for the 11 new characters.
   Arjun, Meera and Bhairava's photos are in the godavari5 backups below.
@@ -73,8 +79,8 @@
 Continue the NRAIORBIT Telugu film work on branch claude/telugu-ai-movie-generator-yhb6po. Read README.md,
 docs/PROJECT_STATUS.md and docs/NEXT_SESSION_PROMPT.md first. Talk to me in short, simple English.
 
-State: the 10-minute short film "godavari10" (Plan A) has a full first cut; lip-sync of the 34 on-camera speaking
-shots was the last paid step. I approved every Telugu line, the 11 new characters and the video-model mix.
+State: the 10-minute short film "godavari10" (Plan A) is cut, lip-synced and QA'd twice ($97.17 of the $115 hard
+stop). I approved every Telugu line, the 11 new characters and the video-model mix.
 Project media is not in git; restore it from the private bucket gs://nraiorbit-agentic-film-product-media.
 You may run commands that use GOOGLE_APPLICATION_CREDENTIALS_JSON / GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION.
 Never print, log or commit any key. No paid step without my explicit OK in this session.
@@ -90,7 +96,8 @@ Never print, log or commit any key. No paid step without my explicit OK in this 
    the proxy, so fetch the two packages over HTTPS and install them:
    https://archive.ubuntu.com/ubuntu/pool/main/libg/libglvnd/libegl1_1.7.0-1build1_amd64.deb and
    .../libgles2_1.7.0-1build1_amd64.deb, then `dpkg -i` both. A "dependency problems" message is fine: the
-   libraries are unpacked.
+   libraries are unpacked. The face detector (1 MB) and face mesh (4 MB) models download once from
+   storage.googleapis.com on the first lip-sync run.
 3. Restore, never regenerate paid work:
    a) godavari5 backups (Arjun, Meera, Bhairava's photos live there): from gs://.../godavari5/backup/, for each of
       godavari5_backup, godavari5_update_v2, godavari5_update_v3 in order: cat parts > .tar, check .sha256, tar -xf.
@@ -98,10 +105,14 @@ Never print, log or commit any key. No paid step without my explicit OK in this 
       08_music and reports; copy gs://.../godavari10/project/* into projects/godavari10/ (03_scenes, 04_shots,
       pipeline.yaml, pricing.yaml, cast.lock.yaml, takes.yaml, reuse.yaml, 01_story_bible.json, 02_outline.json, post/).
    c) gcloud storage rsync -r gs://.../library/characters library/characters (new characters' photos).
-4. Free rebuild with a cap just above the ledger so nothing can be paid:
-   `nraiorbit run godavari10 --force render --yes --max-spend <ledger total + 0.10>`. Check the cut (one frame per
-   shot, no stray text, faces match), then send me the film in parts under 30 MB.
+4. Free rebuild with a cap just above the ledger so nothing can be paid (lipsync.offline is true in the project's
+   pipeline.yaml, so no GPU job starts either):
+   `nraiorbit run godavari10 --force render --yes --max-spend <ledger total + 0.10>`. Check reports/lipsync.jsonl:
+   every synced shot must say "speaker crops" or "whole frame", none "not synced". Check the cut (one frame per shot,
+   no stray text, faces match), then send me the film in parts under 30 MB.
 5. Then STOP and ask me what to do next. Options (each needs my OK, with its cost):
+   - Targeted lip-sync re-run (about $2 of GPU, plus code to re-sync only given frame ranges with higher audio
+     guidance) for the closed mouths in sc008_s002, sc009_s006, sc011_s004 and the vowels listed in PROJECT_STATUS.
    - Sound effects for fights, rain, fire and crowds (open model on our L4, about $1-3 of GPU, plus code).
    - Redo shots I name: `nraiorbit retake godavari10 <shot_id> [--keep-keyframe] --yes --max-spend <cap>`
      (Fast 720p about $0.32-0.48 per shot, plus $0.15 for a new first frame).

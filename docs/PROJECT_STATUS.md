@@ -138,7 +138,27 @@ _Last updated: 2026-10-15. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
       - sc002_s011: a stranger standing where Chitti should be;
       - sc004_s003: a raised fist over the mouth.
     - 2 shots are kept as filmed (sc005_s003, sc006_s002), and 5 have frame-level fixes in `lipsync.shots`.
-    - Ledger after the 3 remakes: $96.02.
+    - Ledger after the 3 remakes: $96.02. A GPU pass for the speaker crops of 9 shots followed: $1.15, ledger $97.17.
+  - **Lip-sync QA round 2 (2026-10-15):** a second frame-by-frame review of all 34 synced shots (every high finding
+    checked by two skeptics) found background blobs from the mouth patch (it reached past turned faces onto water,
+    collars and blouses), a patch on the cheek of three-quarter faces, unsynced gaps, mouths moving in silence before
+    or after a line, and melts. Fixed without any GPU job (ledger unchanged at $97.17):
+    - **Picture and sound in sync:** every cut now sits on the film's frame grid. Rounding each clip on its own had put
+      the voice up to 92 ms behind the lips by the last reel (125 ms at the end). The master keeps every frame (a remux
+      used to cut its last 0.2 s).
+    - **Face-mesh paste-back** (`lipsync.mesh`, MediaPipe Face Landmarker): the patch sits on the real lips and is
+      clipped to the face outline, so LatentSync's smears beside the face never show.
+    - **Free per-shot fixes** in `lipsync.shots`, all reusing the paid lip-sync: `filmed_frames`, `fade_frames`,
+      `repair_frames`, `bridge_gaps`, `extend_track`, `protect`, `sync_s` (cut a shot right after its line) and
+      `cut_in_s` (start a shot at its line). 16 shots got new settings in round 2.
+    - Re-timed inside their scenes (scene lengths and music unchanged): sc001_s002, sc003_s005 and sc008_s006 end soon
+      after their line; sc004_s003 starts at Arjun's voice instead of 0.25 s of silent shouting.
+    - sc006_s002 (Bhairava close-up) is lip-synced again from the paid result.
+  - **Known limits (LatentSync 1.6):** lips and teeth softer than filmed, Bhairava's gold teeth come out pale, some
+    vowels under-articulated. In 3 shots the mouth stays closed for 0.8-1.7 s while the voice plays (sc008_s002,
+    sc009_s006, sc011_s004). Only a new GPU pass (higher audio guidance, re-synced frame ranges; about $2) can change
+    these; it needs the owner's OK. 18 Veo clips have letterbox bars baked in (12 of them 108-131 px); a uniform 2.35:1
+    matte over the whole film would hide the change at cuts (owner's choice).
   - Still missing: sound effects (no SFX track yet; 77 distinct effects are spotted in projects/godavari10/post/
     sfx_spot_list.csv; candidate: Stable Audio 3.0 Small SFX, open weights, commercial use under $1M revenue).
 

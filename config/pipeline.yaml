@@ -86,6 +86,7 @@ lipsync:                           # used by providers.lipsync: latentsync_cloud
   steps: 20                        # LatentSync inference steps
   guidance: 1.5
   timeout_seconds: 21600           # 6 h: one shot takes ~10 min on an L4, so 3600 s fits only ~6
+  on_failure: stop                 # stop | keep_original (a shot LatentSync cannot do keeps its clip, logged)
 
 budget:
   max_usd: 50                      # hard stop for paid generation in one project (cost.jsonl ledger)

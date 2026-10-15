@@ -66,6 +66,11 @@ class CloudRunLipSync:
         self.machine = ls.get("machine_type", "g2-standard-8")
         self.service_account = ls.get("service_account") or os.environ.get("LIPSYNC_SERVICE_ACCOUNT")
         self.poll_s = float(ls.get("poll_seconds", 20))
+        # stop: a shot LatentSync cannot do stops the run (it is retried next time, e.g. after a GPU error);
+        # keep_original: that shot keeps its clip, the failure is remembered and the shot is not sent again
+        # (lipsync.retry_failed: true sends it again)
+        self.on_failure = ls.get("on_failure", "stop")
+        self.retry_failed = bool(ls.get("retry_failed", False))
         self.price = gpu_price(pricing, ls.get("runner", "cloudrun"))
         self.cache = project_root / "cache" / "lipsync"
         self.ledger = ledger
@@ -101,16 +106,27 @@ class CloudRunLipSync:
         h.update(audio.read_bytes())
         return h.hexdigest()[:16]
 
-    def apply(self, video: Path, audio: Path, out: Path) -> Path:
+    def apply(self, video: Path, audio: Path, out: Path) -> Path | None:
         return self.apply_many([(video, audio, out)])[0]
 
-    def apply_many(self, items: list[tuple[Path, Path, Path]]) -> list[Path]:
+    def failure(self, video: Path, audio: Path) -> str | None:
+        """Why LatentSync could not do this shot (remembered under on_failure: keep_original), else None."""
+        marker = self.cache / f"{self.key(video, audio)}.failed.json"
+        return json.loads(marker.read_text(encoding="utf-8")).get("error") if marker.exists() else None
+
+    def apply_many(self, items: list[tuple[Path, Path, Path]]) -> list[Path | None]:
+        """Synced clips in order; None for a shot LatentSync could not do when on_failure is keep_original."""
         keys = [self.key(v, a) for v, a, _ in items]
-        todo = {k: (v, a) for k, (v, a, _) in zip(keys, items) if not (self.cache / f"{k}.mp4").exists()}
+        known_bad = set() if self.retry_failed else {k for k in keys if (self.cache / f"{k}.failed.json").exists()}
+        todo = {k: (v, a) for k, (v, a, _) in zip(keys, items)
+                if not (self.cache / f"{k}.mp4").exists() and k not in known_bad}
         if todo:
             self._run(todo)
         outs = []
         for k, (_, _, out) in zip(keys, items):
+            if not (self.cache / f"{k}.mp4").exists():
+                outs.append(None)                      # failed and remembered (keep_original)
+                continue
             out.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(self.cache / f"{k}.mp4", out)
             outs.append(out)
@@ -155,7 +171,12 @@ class CloudRunLipSync:
                 os.replace(tmp, self.cache / f"{r['key']}.mp4")
             else:
                 failed.append(r)
-        if failed:
+        if failed and self.on_failure == "keep_original":
+            for r in failed:
+                (self.cache / f"{r['key']}.failed.json").write_text(json.dumps(
+                    {"error": r.get("error", "")[-3000:], "version": status.get("version"), "run": run}),
+                    encoding="utf-8")
+        elif failed:
             raise GoogleAPIError(f"lip-sync failed for {len(failed)} of {len(todo)} shots (LatentSync "
                                  f"{status.get('version', '?')}). First error:\n{failed[0].get('error', '')[-1200:]}")
 

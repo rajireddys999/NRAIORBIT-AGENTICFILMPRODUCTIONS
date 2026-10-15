@@ -122,8 +122,8 @@ def clarify_dialogue(mix: Path, lines: list[tuple[Path, float, float]], out: Pat
         if over < min_db and g > 0:
             boost = min(min_db - over, max_boost_db)
             x[at: at + len(v)] += ((10 ** (boost / 20) - 1) * g * v)[:, None]
-        report.append({"take": str(take), "start_s": round(at / rate, 3), "over_music_db": round(over, 1),
-                       "boost_db": round(boost, 1)})
+        report.append({"take": str(take), "start_s": round(at / rate, 3), "over_music_db": round(float(over), 1),
+                       "boost_db": round(float(boost), 1)})
     if any(r["boost_db"] for r in report):
         x *= 10 ** ((before - _integrated_lufs(x, rate)) / 20)
     out.parent.mkdir(parents=True, exist_ok=True)

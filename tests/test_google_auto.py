@@ -543,6 +543,37 @@ def test_lip_sync_redraws_only_on_screen_speakers_with_their_own_lines(setup):
     assert ffmpeg.duration(setup.root / "11_master" / "trailer.mp4") > 10
 
 
+
+def test_a_shot_lip_sync_cannot_do_keeps_its_clip_and_is_queued_for_review(setup):
+    from nraiorbit.providers.base import register
+    from nraiorbit.providers.mock import MockLipSync
+
+    @register("lipsync", "first_fails_test")
+    class FirstFails(MockLipSync):
+        def __init__(self, **kw):
+            self.seen = 0
+
+        def apply_many(self, items):
+            outs = []
+            for video, audio, out in items:
+                self.seen += 1
+                outs.append(None if self.seen == 1 else self.apply(video, audio, out))
+            return outs
+
+        def failure(self, video, audio):
+            return "Traceback ...\nRuntimeError: Face not detected"
+
+    pipeline, cfg = setup.make(only=["trailer"])
+    cfg["providers"]["lipsync"] = "first_fails_test"
+    pipeline.run(until="render")
+    timeline = json.loads((setup.root / "10_edit" / "timeline.json").read_text())
+    queue = [json.loads(line) for line in (setup.root / "reports" / "review_queue.jsonl").read_text().splitlines()]
+    flagged = [q for q in queue if "lip-sync failed" in q["reason"][0]]
+    assert len(flagged) == 1 and "Face not detected" in flagged[0]["reason"][0]
+    kept = next(s for s in timeline["shots"] if s["shot_id"] == flagged[0]["shot_id"])
+    assert not kept["clip"].endswith("_lipsync.mp4")                     # its own clip, not a broken one
+    assert any(s["clip"].endswith("_lipsync.mp4") for s in timeline["shots"])   # the others are synced
+
 def _set_tier(root, shot_id, tier):
     for path in (root / "04_shots").glob("*.json"):
         shot_list = ShotList.model_validate_json(path.read_text())

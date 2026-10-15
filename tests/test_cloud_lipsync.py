@@ -281,3 +281,22 @@ def test_vertex_endpoint_deploys_runs_and_always_shuts_down(tmp_path, monkeypatc
         sync2.apply(v2, a2, tmp_path / "o2.mp4")
     assert failing.deployed == [] and ("DELETE", "https://us-central1-aiplatform.googleapis.com/v1/"
                                        "projects/1/locations/us-central1/endpoints/5") in failing.calls
+
+
+def test_keep_original_remembers_failures_and_does_not_resend(tmp_path):
+    storage = FakeStorage()
+    v1, a1 = _clip(tmp_path, "a", "red")
+    v2, a2 = _clip(tmp_path, "b", "blue")
+    probe, _ = _provider(tmp_path, storage, None)
+    jobs = FakeJobs(storage, fail_keys={probe.key(v2, a2)})
+    sync, ledger = _provider(tmp_path, storage, jobs)
+    sync.on_failure = "keep_original"
+    outs = sync.apply_many([(v1, a1, tmp_path / "o1.mp4"), (v2, a2, tmp_path / "o2.mp4")])
+    assert outs[0] == tmp_path / "o1.mp4" and outs[0].exists() and outs[1] is None   # no error: the film goes on
+    assert "CUDA out of memory" in sync.failure(v2, a2) and sync.failure(v1, a1) is None
+    runs = len(jobs.runs)
+    assert sync.apply_many([(v2, a2, tmp_path / "o2.mp4")]) == [None] and len(jobs.runs) == runs   # not sent again
+    assert len([r for r in ledger.records() if r["provider"] == "lipsync"]) == 1
+    jobs.fail_keys.clear()
+    sync.retry_failed = True                                       # lipsync.retry_failed: try it once more
+    assert sync.apply_many([(v2, a2, tmp_path / "o2.mp4")])[0].exists() and len(jobs.runs) == runs + 1

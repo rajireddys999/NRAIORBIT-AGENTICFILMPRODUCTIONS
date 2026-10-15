@@ -468,11 +468,18 @@ class Pipeline:
                 raws = [syncer.apply(ts.clip, audio, raw) for _, ts, audio, raw in jobs]
         except (BudgetExceeded, GoogleAPIError) as stop:
             raise PipelineBlocked(str(stop)) from None
-        for (i, ts, _, _), raw in zip(jobs, raws):
+        kept = 0
+        for (i, ts, audio, _), raw in zip(jobs, raws):
+            if raw is None:                              # LatentSync could not do this shot: it keeps its clip
+                why = syncer.failure(ts.clip, audio) if hasattr(syncer, "failure") else None
+                self._report("review_queue", {"shot_id": ts.shot_id, "reason": [
+                    "lip-sync failed; the clip is not lip-synced" + (f": {why.strip().splitlines()[-1]}" if why else "")]})
+                kept += 1
+                continue
             # back to the edit's exact length, size, frame rate and codec, so scenes still join by stream copy
             synced = ffmpeg.conform_clip(raw, raw.with_name(raw.name.replace("_raw", "")), ts.duration_s, resolution, fps)
             out[i] = replace(ts, clip=synced)
-        self.log(f"  lip-sync: {len(jobs)} shots")
+        self.log(f"  lip-sync: {len(jobs) - kept} shots" + (f", {kept} kept unsynced (see review_queue)" if kept else ""))
         return out
 
     def _render_shot(self, video, shot, ctx: RenderContext, face_guard) -> Path:

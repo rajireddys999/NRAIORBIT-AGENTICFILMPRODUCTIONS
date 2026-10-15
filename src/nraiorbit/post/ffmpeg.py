@@ -99,9 +99,11 @@ def place_audio(events: list[tuple[Path, float, float]], total_s: float, out: Pa
     return out
 
 
-def mux(video: Path, audio: Path, out: Path) -> Path:
-    run(["-i", str(video), "-i", str(audio), "-map", "0:v", "-map", "1:a",
-         "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", str(out)])
+def mux(video: Path, audio: Path, out: Path, bitrate: str = "192k") -> Path:
+    """The picture (copied) with this sound. The picture sets the length: sound that comes out a little short (each
+    AAC encode loses a few milliseconds at the end) is padded with silence, never allowed to cut frames."""
+    run(["-i", str(video), "-i", str(audio), "-map", "0:v", "-map", "1:a", "-c:v", "copy",
+         "-af", "apad", "-c:a", "aac", "-b:a", bitrate, "-shortest", str(out)])
     return out
 
 

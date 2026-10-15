@@ -828,8 +828,7 @@ class Pipeline:
         self._report("mix", {"master": label, "min_voice_over_music_db": min_db, "lines": report})
         if lifted:
             tmp = work / f"remux{master.suffix}"
-            ffmpeg.run(["-i", str(master), "-i", str(wav), "-map", "0:v", "-map", "1:a", "-c:v", "copy",
-                        "-c:a", "aac", "-b:a", "256k", "-shortest", str(tmp)])
+            ffmpeg.mux(master, wav, tmp, bitrate="256k")       # every frame kept: the remux once cut the last 0.2 s
             tmp.replace(master)
         self.log(f"  dialogue clarity ({label}): {len(lifted)} of {len(report)} lines lifted"
                  + (f", at most +{max(r['boost_db'] for r in lifted):.1f} dB" if lifted else ""))

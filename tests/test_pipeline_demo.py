@@ -206,6 +206,20 @@ def test_every_cut_lands_on_the_film_frame_grid(tmp_path):
     assert assemble.fit_frames(shots[0].clip, 12, tmp_path / "same.mp4") == shots[0].clip    # a fitting clip is reused
 
 
+def test_the_picture_sets_the_length_when_the_sound_comes_out_short(tmp_path):
+    """Every AAC pass loses a few milliseconds at the end, and a remux with -shortest then cut the picture to the sound
+    (the master lost the last 0.2 s of its end card). Short sound is padded with silence; every frame stays."""
+    from nraiorbit.post import assemble
+    video = tmp_path / "v.mp4"
+    ffmpeg.run(["-f", "lavfi", "-i", "color=c=gray:s=64x36:r=24", "-frames:v", "240", *ffmpeg.VIDEO_ENCODE, str(video)])
+    t = np.arange(int(9.5 * SR)) / SR
+    film = ffmpeg.mux(video, _write_wav(tmp_path / "short.wav", 0.2 * np.sin(2 * np.pi * 300 * t)), tmp_path / "f.mp4")
+    assert ffmpeg.frame_count(film) == 240 and ffmpeg.duration(film) >= 9.99      # 9.5 s of sound under 10 s of picture
+    music = _write_wav(tmp_path / "music.wav", 0.1 * np.sin(2 * np.pi * 500 * np.arange(10 * SR) / SR))
+    master = assemble.master(film, [assemble.AudioEvent(music, 0.0, 10.0, "music")], tmp_path / "master.mp4")
+    assert ffmpeg.frame_count(master) == 240
+
+
 def _rgb(video):
     """The centre pixel of every frame, as ints."""
     raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(video), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],

@@ -107,7 +107,7 @@ def master(film_with_dialogue: Path, music_events: list[AudioEvent], out: Path,
         "[0:a]aresample=48000,aformat=channel_layouts=stereo,asplit=2[dlg][sc];"
         f"{bed}[sc]sidechaincompress=threshold=0.02:ratio=8:attack=20:release=400[ducked];"
         f"[dlg][ducked]amix=inputs=2:duration=first:normalize=0,"
-        f"loudnorm=I={lufs}:TP={true_peak}:LRA=11[aout]"
+        f"loudnorm=I={lufs}:TP={true_peak}:LRA=11,apad[aout]"        # the picture sets the length, never the sound
     )
     ffmpeg.run(["-i", str(film_with_dialogue), "-i", str(music), "-filter_complex", graph,
                 "-map", "0:v", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "-b:a", "256k", "-shortest",

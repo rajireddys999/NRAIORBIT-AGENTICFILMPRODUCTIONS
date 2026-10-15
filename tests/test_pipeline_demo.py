@@ -179,6 +179,40 @@ def test_place_audio_trims_heads_and_tails_in_whole_samples(tmp_path):
     assert np.abs(joined[start:start + 2 * SR] - expect).max() < 1e-3
 
 
+def test_every_cut_lands_on_the_film_frame_grid(tmp_path):
+    """Two scenes of three 0.52 s shots at 24 fps. Rounded one by one each shot is 12 frames, so the second scene
+    would start at frame 36 and the picture would run ever earlier than the sound (which sits at exact times). On the
+    grid every cut is at round(start * fps): 12, 25, 37, 50, 62, and the film is 75 frames."""
+    from nraiorbit.post import assemble
+    colours = ["red", "lime", "blue", "yellow", "magenta", "cyan"]
+    refs, shots, t = [], [], 0.0
+    for i, c in enumerate(colours):
+        src = tmp_path / f"src_{c}.mp4"
+        ffmpeg.run(["-f", "lavfi", "-i", f"color=c={c}:s=64x36:r=24", "-frames:v", "24", *ffmpeg.VIDEO_ENCODE, str(src)])
+        clip = ffmpeg.conform_clip(src, tmp_path / f"{c}.mp4", 0.52, (64, 36), 24)
+        assert ffmpeg.frame_count(clip) == 12
+        shots.append(assemble.TimelineShot(f"s{i}", f"sc{i // 3}", round(t, 3), 0.52, clip))
+        refs.append(_rgb(clip)[0])
+        t += 0.52
+    scenes = [assemble.render_scene(shots[:3], [], 0.0, tmp_path / "sc0.mp4", fps=24),
+              assemble.render_scene(shots[3:], [], shots[3].start_s, tmp_path / "sc1.mp4", fps=24)]
+    assemble.join_scenes(scenes, tmp_path / "film.mp4")
+    frames = _rgb(tmp_path / ".film" / "video.mp4")
+    assert len(frames) == round(t * 24) == 75
+    shot_of = [int(np.argmin([np.abs(f - r).sum() for r in refs])) for f in frames]
+    cuts = [k for k in range(1, len(shot_of)) if shot_of[k] != shot_of[k - 1]]
+    assert cuts == [round(s.start_s * 24) for s in shots[1:]] == [12, 25, 37, 50, 62]
+    assert sorted(set(shot_of)) == list(range(6))
+    assert assemble.fit_frames(shots[0].clip, 12, tmp_path / "same.mp4") == shots[0].clip    # a fitting clip is reused
+
+
+def _rgb(video):
+    """The centre pixel of every frame, as ints."""
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(video), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                         capture_output=True, check=True).stdout
+    return np.frombuffer(raw, np.uint8).reshape(-1, 36, 64, 3)[:, 18, 32].astype(int)
+
+
 def test_tighten_pauses_trims_edges_and_long_gaps(tmp_path):
     def tone(s):
         return 0.3 * np.sin(2 * np.pi * 220 * np.arange(int(s * SR)) / SR)

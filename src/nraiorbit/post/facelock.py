@@ -28,7 +28,7 @@ import math
 import os
 import subprocess
 import urllib.request
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Iterable, Iterator
 
@@ -38,8 +38,22 @@ from . import ffmpeg
 
 BLAZEFACE_URL = ("https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_full_range/float16/latest/"
                  "blaze_face_full_range.tflite")
+FACE_MESH_URL = ("https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/"
+                 "face_landmarker.task")
 ANALYSIS_VERSION = 1
+MESH_VERSION = 1
 PATCH = (32, 20)                  # mouth / eye patches compared frame to frame (width, height)
+
+# The face-mesh points kept per frame (indices into MediaPipe's 478): the face oval, the outer and the inner lip line,
+# the nose and the eye corners. Their outline holds a profile's nose and lips, which stick out past the oval.
+MESH_OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176,
+             149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109]
+MESH_LIPS = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185]
+MESH_MOUTH = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308, 415, 310, 311, 312, 13, 82, 81, 80, 191]
+MESH_NOSE = [1, 2, 4, 5, 6, 19, 94, 98, 168, 195, 197, 327]
+MESH_EYES = [33, 133, 362, 263]
+MESH_POINTS = MESH_OVAL + MESH_LIPS + MESH_MOUTH + MESH_NOSE + MESH_EYES
+_OVAL, _LIPS, _NOSE_TIP, _EYES = slice(0, 36), slice(36, 56), 76, slice(88, 92)
 
 
 # ---------------------------------------------------------------------------------------------------------- faces
@@ -76,23 +90,34 @@ class Face:
 Detector = Callable[[np.ndarray], list[Face]]
 
 
+def _vision():
+    try:
+        from mediapipe.tasks.python import BaseOptions, vision
+    except ImportError as e:  # pragma: no cover - depends on the machine
+        raise RuntimeError("lip-sync speaker lock needs MediaPipe: pip install -e '.[lipsync]' "
+                           "(or set lipsync.speaker_lock: false)") from e
+    return BaseOptions, vision
+
+
+def _model(model_dir: Path | None, name: str, url: str) -> Path:
+    """A model file, downloaded once from Google's model storage into model_dir."""
+    model_dir = Path(model_dir or os.environ.get("NRAIORBIT_MODELS") or Path.home() / ".cache" / "nraiorbit")
+    path = model_dir / name
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".part")
+        urllib.request.urlretrieve(url, tmp)
+        tmp.replace(path)
+    return path
+
+
 class BlazeFace:
     """MediaPipe's BlazeFace full-range face detector (Apache-2.0). The model file (1 MB) is downloaded once from
     Google's model storage into model_dir. Needs `pip install mediapipe` (the `lipsync` extra)."""
 
     def __init__(self, model_dir: Path | None = None, min_score: float = 0.35):
-        try:
-            from mediapipe.tasks.python import BaseOptions, vision
-        except ImportError as e:  # pragma: no cover - depends on the machine
-            raise RuntimeError("lip-sync speaker lock needs MediaPipe: pip install -e '.[lipsync]' "
-                               "(or set lipsync.speaker_lock: false)") from e
-        model_dir = Path(model_dir or os.environ.get("NRAIORBIT_MODELS") or Path.home() / ".cache" / "nraiorbit")
-        path = model_dir / "blaze_face_full_range.tflite"
-        if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(".part")
-            urllib.request.urlretrieve(BLAZEFACE_URL, tmp)
-            tmp.replace(path)
+        BaseOptions, vision = _vision()
+        path = _model(model_dir, "blaze_face_full_range.tflite", BLAZEFACE_URL)
         self._det = vision.FaceDetector.create_from_options(vision.FaceDetectorOptions(
             base_options=BaseOptions(model_asset_path=str(path)), min_detection_confidence=min_score))
 
@@ -110,6 +135,41 @@ class BlazeFace:
                                float(b.origin_y + b.height)], float(d.categories[0].score),
                               sorted(kp[:2]), kp[2], kp[3]))
         return faces
+
+
+class FaceMesh:
+    """MediaPipe's Face Landmarker (Apache-2.0): 478 points on a face. They stay on the lips and the face's outline
+    when the head is turned three-quarters, where BlazeFace's six keypoints slide onto the cheek, so they place and
+    clip the paste-back mask (lipsync.shots.<shot_id>.mesh). The model file (4 MB) is downloaded once."""
+
+    def __init__(self, model_dir: Path | None = None, min_score: float = 0.3):
+        BaseOptions, vision = _vision()
+        path = _model(model_dir, "face_landmarker.task", FACE_MESH_URL)
+        self._lm = vision.FaceLandmarker.create_from_options(vision.FaceLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=str(path)), running_mode=vision.RunningMode.IMAGE, num_faces=3,
+            min_face_detection_confidence=min_score, min_face_presence_confidence=min_score))
+
+    def __call__(self, rgb: np.ndarray, near: Face) -> np.ndarray | None:
+        """The kept mesh points (MESH_POINTS, frame pixels) of the face at `near`, looked for in a crop twice its
+        size, or None if no face there."""
+        import mediapipe as mp
+
+        h, w = rgb.shape[:2]
+        s = max(near.width, near.height)
+        cx, cy = near.centre
+        x0, y0, x1, y1 = int(max(0, cx - s)), int(max(0, cy - s)), int(min(w, cx + s)), int(min(h, cy + s))
+        if x1 - x0 < 16 or y1 - y0 < 16:
+            return None
+        found = self._lm.detect(mp.Image(image_format=mp.ImageFormat.SRGB,
+                                         data=np.ascontiguousarray(rgb[y0:y1, x0:x1])))
+        best, score = None, 0.1
+        for marks in found.face_landmarks:
+            pts = np.array([[x0 + marks[k].x * (x1 - x0), y0 + marks[k].y * (y1 - y0)] for k in MESH_POINTS],
+                           np.float32)
+            overlap = _iou([*pts.min(axis=0).tolist(), *pts.max(axis=0).tolist()], near.box)
+            if overlap > score:
+                best, score = pts, overlap
+        return best
 
 
 # ------------------------------------------------------------------------------------------------------ video io
@@ -356,6 +416,30 @@ def pick_speaker(analysis: Analysis, hint: list[float] | None = None, min_presen
 
 # ---------------------------------------------------------------------------------------- per-frame speaker face
 
+def extend_track(track: Track, tracks: list[Track], min_iou: float = 0.3) -> Track:
+    """The speaker's track carried on by other tracks of the same face. The detector sometimes splits one face in two
+    (a second box on it for a few frames, then the copy goes on alone): a track that has a face overlapping the
+    speaker's at the frame where the speaker's track starts or ends takes over beyond that frame."""
+    faces = dict(track.faces)
+    grew = True
+    while grew and faces:
+        grew = False
+        first, last = min(faces), max(faces)
+        for t in tracks:
+            if t.id == track.id:
+                continue
+            for edge, beyond in ((last, [i for i in sorted(t.faces) if i > last]),
+                                 (first, [i for i in sorted(t.faces, reverse=True) if i < first])):
+                f = t.faces.get(edge)
+                if beyond and f is not None and _iou(f.box, faces[edge].box) >= min_iou:
+                    faces.update({i: t.faces[i] for i in beyond})
+                    grew = True
+                    break
+            if grew:
+                break
+    return replace(track, faces=faces)
+
+
 def fill_gaps(track: Track, frames: int, max_gap: int = 3) -> list[Face | None]:
     """The track's face in every frame: gaps of up to max_gap frames between two detections are interpolated,
     longer gaps (and frames before the first / after the last detection) are None."""
@@ -371,6 +455,100 @@ def fill_gaps(track: Track, frames: int, max_gap: int = 3) -> list[Face | None]:
                               [lerp(fa.eyes[0], fb.eyes[0]), lerp(fa.eyes[1], fb.eyes[1])],
                               lerp(fa.nose, fb.nose), lerp(fa.mouth, fb.mouth), track=track.id)
     return out
+
+
+def meshes(video: Path, faces: list[Face | None], mesher: Callable | None,
+           cache_dir: Path | None = None) -> list[np.ndarray | None]:
+    """The speaker's mesh points in every frame where `faces` has the speaker (None elsewhere, or where the mesh
+    finds no face). Cached under the clip's content and the face boxes looked at."""
+    cache = None
+    if cache_dir is not None:
+        key = hashlib.sha1(video.read_bytes())
+        key.update(json.dumps([None if f is None else [round(v) for v in f.box] for f in faces]).encode())
+        cache = Path(cache_dir) / f"{key.hexdigest()[:16]}.mesh{MESH_VERSION}.json"
+        if cache.exists():
+            try:
+                return [None if p is None else np.array(p, np.float32)
+                        for p in json.loads(cache.read_text(encoding="utf-8"))]
+            except (ValueError, TypeError):
+                pass
+    if mesher is None:
+        return [None] * len(faces)
+    out: list[np.ndarray | None] = []
+    for i, rgb in enumerate(read_frames(video)):
+        f = faces[i] if i < len(faces) else None
+        out.append(None if f is None else mesher(rgb, f))
+    out += [None] * (len(faces) - len(out))
+    if cache is not None:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps([None if p is None else np.round(p, 1).tolist() for p in out]), encoding="utf-8")
+    return out
+
+
+def mesh_faces(faces: list[Face | None], points: list[np.ndarray | None], max_gap: int = 8,
+               window: int = 3) -> tuple[list[Face | None], list[np.ndarray | None]]:
+    """The speaker's faces with eyes, nose and mouth taken from the mesh, and the mesh points per frame (smoothed
+    over `window` frames). A frame without a mesh between two that have one (up to max_gap frames apart) gets the
+    points interpolated; elsewhere the detector's face is kept, with no outline (None)."""
+    n = len(faces)
+    pts = [points[i] if i < len(points) and faces[i] is not None else None for i in range(n)]
+    known = [i for i, p in enumerate(pts) if p is not None]
+    for a, b in zip(known, known[1:]):
+        if 1 < b - a <= max_gap + 1:
+            for i in range(a + 1, b):
+                if faces[i] is not None:
+                    t = (i - a) / (b - a)
+                    pts[i] = pts[a] * (1 - t) + pts[b] * t
+    smoothed: list[np.ndarray | None] = []
+    for i, p in enumerate(pts):
+        near = [q for q in pts[max(0, i - window // 2): i + window // 2 + 1] if q is not None]
+        smoothed.append(None if p is None else np.mean(near, axis=0))
+    out: list[Face | None] = []
+    for f, p in zip(faces, smoothed):
+        if f is None or p is None:
+            out.append(f)
+            continue
+        e = p[_EYES]
+        eyes = sorted([e[:2].mean(axis=0).tolist(), e[2:].mean(axis=0).tolist()])
+        out.append(Face([*p.min(axis=0).tolist(), *p.max(axis=0).tolist()], f.score, eyes, p[_NOSE_TIP].tolist(),
+                        p[_LIPS].mean(axis=0).tolist(), f.sharpness, f.talk, f.track))
+    return out, smoothed
+
+
+def _hull(points: np.ndarray) -> np.ndarray:
+    """Convex hull of 2-D points (Andrew's monotone chain)."""
+    p = sorted({(float(x), float(y)) for x, y in points})
+    if len(p) < 3:
+        return np.array(p, np.float32)
+
+    def chain(seq):
+        out: list[tuple[float, float]] = []
+        for q in seq:
+            while len(out) >= 2 and ((out[-1][0] - out[-2][0]) * (q[1] - out[-2][1])
+                                     - (out[-1][1] - out[-2][1]) * (q[0] - out[-2][0])) <= 0:
+                out.pop()
+            out.append(q)
+        return out[:-1]
+    return np.array(chain(p) + chain(reversed(p)), np.float32)
+
+
+def face_clip(points: np.ndarray, box: tuple[int, int, int, int], d: float, jaw: float = 0.25,
+              grow: float = 0.08) -> np.ndarray:
+    """Weights (0-1) over `box` (x0, y0, x1, y1): 1 on the speaker's face, 0 on whatever is beside or below it (the
+    water behind a cheek, a collar, a hand at the jaw line), so a smear LatentSync made there is never pasted. The face
+    is the outline of its mesh points, which holds a profile's nose and lips, with the jaw line let down by jaw x d
+    (an opening mouth drops the chin), grown by grow x d and softened."""
+    from PIL import Image, ImageDraw
+
+    x0, y0, x1, y1 = box
+    jawline = points[_OVAL].copy()
+    jawline[jawline[:, 1] > points[_LIPS, 1].mean(), 1] += jaw * d
+    hull = _hull(np.vstack([points, jawline]) - np.array([x0, y0], np.float32))
+    img = Image.new("L", (x1 - x0, y1 - y0), 0)
+    if len(hull) >= 3:
+        ImageDraw.Draw(img).polygon([(float(x), float(y)) for x, y in hull], fill=255)
+    k = max(3, int(grow * d)) | 1
+    return np.clip(_box_blur(np.asarray(img, np.float32) / 255, k) * 2, 0, 1)
 
 
 def mask_params(face: Face) -> tuple[float, float, float, float, float]:
@@ -558,18 +736,24 @@ class Plan:
     repair: list[tuple[int, int]] = field(default_factory=list)   # (a, b): frames between rebuilt from a and b
     fallback: Path | None = None   # a whole-frame result that missed the speaker in some frames: used if no crop comes
     protect: dict | None = None    # {"above": 185} / {"below": 40}: original pixels that bright (dark) stay as filmed
+    meshes: list[np.ndarray | None] | None = None   # the speaker's face-mesh points per frame: the mask is clipped
+    fill: set[int] = field(default_factory=set)      # frames no crop covers that take `fallback` (a bridged face gap)
+    fade: int = 0                  # frames over which the synced mouth fades in and out next to frames kept as filmed
 
 
 def _synced_frames(plan: Plan, frames: int) -> Iterator[np.ndarray | None]:
-    """The synced picture for every frame (None: no synced pixels there), full-frame or as crops placed on None."""
+    """The synced picture for every frame (None: no synced pixels there), full-frame or as crops placed on None;
+    frames in plan.fill get the whole-frame fallback."""
     if plan.full is not None:
         it = read_frames(plan.full)
         for _ in range(frames):
             yield next(it, None)
         return
     segs = sorted(plan.segments, key=lambda s: s[0].start)
+    whole = read_frames(plan.fallback) if plan.fill and plan.fallback is not None else None
     k, it = 0, None
     for i in range(frames):
+        behind = next(whole, None) if whole is not None else None
         while k < len(segs) and i >= segs[k][0].end:
             k, it = k + 1, None
         if k < len(segs) and segs[k][0].start <= i:
@@ -577,29 +761,41 @@ def _synced_frames(plan: Plan, frames: int) -> Iterator[np.ndarray | None]:
                 it = read_frames(segs[k][1])
             yield next(it, None)
         else:
-            yield None
+            yield behind if i in plan.fill else None
+
+
+def _polygon(points: np.ndarray, width: int, height: int) -> np.ndarray:
+    """A filled polygon as 0/1 floats over a width x height area."""
+    from PIL import Image, ImageDraw
+
+    img = Image.new("L", (width, height), 0)
+    ImageDraw.Draw(img).polygon([(float(x), float(y)) for x, y in points], fill=1)
+    return np.asarray(img, np.float32)
 
 
 def restore_detail(orig: np.ndarray, synced: np.ndarray, face: Face, strength: float = 1.0,
-                   tau: float = 6.0) -> np.ndarray:
+                   tau: float = 6.0, lips: np.ndarray | None = None) -> np.ndarray:
     """LatentSync redraws the lower face through a VAE, which smooths stubble, moustache strands and skin texture.
     Put the original's fine detail back wherever the synced picture still has the original's shape there (cheeks,
     chin, moustache sides): the detail layer (picture minus its blur) is swapped in, weighted by how alike the two
-    blurred pictures are. Never inside the lips and mouth opening, where the original's teeth would ghost.
+    blurred pictures are. Never inside the lips and mouth opening, where the original's teeth would ghost; `lips`
+    (the original's outer lip line from the face mesh, if known) is left out as well, grown by a little.
     orig / synced: float32 regions of the same frame area; face: the speaker's face in that area's coordinates."""
     k = max(3, int(face.height / 60)) | 1
     lo_o = np.stack([_box_blur(_box_blur(orig[..., c], k), k) for c in range(3)], -1)
     lo_s = np.stack([_box_blur(_box_blur(synced[..., c], k), k) for c in range(3)], -1)
     alike = np.exp(-(np.abs(lo_o - lo_s).mean(axis=2) / tau) ** 2)
     d = face.scale()
-    lips, (x0, y0, x1, y1) = ellipse_mask((face.mouth[0], face.mouth[1] + 0.05 * d, 0.5 * d, 0.3 * d,
-                                           math.atan2(face.eyes[1][1] - face.eyes[0][1],
-                                                      face.eyes[1][0] - face.eyes[0][0])),
-                                          orig.shape[1], orig.shape[0], feather=0.5)
-    weight = alike
-    if lips.size:
-        weight = alike.copy()
-        weight[y0:y1, x0:x1] *= 1 - lips
+    out, (x0, y0, x1, y1) = ellipse_mask((face.mouth[0], face.mouth[1] + 0.05 * d, 0.5 * d, 0.3 * d,
+                                          math.atan2(face.eyes[1][1] - face.eyes[0][1],
+                                                     face.eyes[1][0] - face.eyes[0][0])),
+                                         orig.shape[1], orig.shape[0], feather=0.5)
+    weight = alike.copy()
+    if out.size:
+        weight[y0:y1, x0:x1] *= 1 - out
+    if lips is not None and len(lips) >= 3:
+        grown = np.clip(_box_blur(_polygon(lips, orig.shape[1], orig.shape[0]), max(3, int(0.15 * d)) | 1) * 3, 0, 1)
+        weight *= 1 - grown
     return synced + strength * weight[..., None] * ((orig - lo_o) - (synced - lo_s))
 
 
@@ -616,14 +812,33 @@ def protect_mask(orig: np.ndarray, protect: dict) -> np.ndarray:
     return np.clip(_box_blur(hit.astype(np.float32), 7) * 2.0, 0, 1)
 
 
+def fade_gains(frames: int, keep: set[int], fade: int) -> list[float]:
+    """Per frame, how much of the synced mouth shows: 1, but ramping up over `fade` frames after a frame kept as
+    filmed and down over `fade` frames before one (a short dissolve instead of a cut between the two mouths)."""
+    if fade <= 0 or not keep:
+        return [1.0] * frames
+    kept = sorted(keep)
+    gains = []
+    for i in range(frames):
+        if i in keep:
+            gains.append(1.0)
+            continue
+        j = int(np.searchsorted(kept, i))
+        gap = min(abs(i - kept[j - 1]) if j > 0 else frames, abs(kept[j] - i) if j < len(kept) else frames)
+        gains.append(min(1.0, gap / (fade + 1)))
+    return gains
+
+
 def composite(original: Path, plan: Plan, out: Path, feather: float = 0.3, detail: float = 1.0) -> Path:
-    """The original clip with the synced pixels pasted in only inside the speaker's feathered mouth ellipse. Frames
-    in plan.keep (and frames without a speaker face or synced pixels) stay exactly as filmed. Repaired frames take
-    their synced pixels blended from the two frames around them. detail: how much of the original's fine texture
-    goes back onto the synced skin (restore_detail; 0 = off)."""
+    """The original clip with the synced pixels pasted in only inside the speaker's feathered mouth ellipse (clipped
+    to the speaker's face outline when plan.meshes is known). Frames in plan.keep (and frames without a speaker face
+    or synced pixels) stay exactly as filmed. Repaired frames take their synced pixels blended from the two frames
+    around them. detail: how much of the original's fine texture goes back onto the synced skin (restore_detail;
+    0 = off)."""
     w, h, fps = probe(original)
     n = sum(1 for _ in read_frames(original)) if plan.faces is None else len(plan.faces)
     params = smooth([mask_params(f) if f else None for f in plan.faces])
+    gains = fade_gains(n, plan.keep, plan.fade)
     ends = {i for a, b in plan.repair for i in (a, b)}
     held: dict[int, np.ndarray] = {}
     if plan.repair:                                              # the frames repairs are rebuilt from
@@ -647,24 +862,32 @@ def composite(original: Path, plan: Plan, out: Path, feather: float = 0.3, detai
                     frame = orig.copy()
                     o = orig[y0:y1, x0:x1].astype(np.float32)
                     syn = source[y0:y1, x0:x1]
+                    mesh = plan.meshes[i] if plan.meshes is not None and i < len(plan.meshes) else None
                     if detail > 0 and plan.faces[i] is not None:
                         f = plan.faces[i]
                         shift = lambda q: [q[0] - x0, q[1] - y0]  # noqa: E731
                         local = Face([f.box[0] - x0, f.box[1] - y0, f.box[2] - x0, f.box[3] - y0], f.score,
                                      [shift(f.eyes[0]), shift(f.eyes[1])], shift(f.nose), shift(f.mouth))
-                        syn = restore_detail(o, syn, local, detail)
+                        lips = None if mesh is None else mesh[_LIPS] - np.array([x0, y0], np.float32)
+                        syn = restore_detail(o, syn, local, detail, lips=lips)
+                    if mesh is not None and plan.faces[i] is not None:
+                        m = m * face_clip(mesh, (x0, y0, x1, y1), plan.faces[i].scale())
                     if plan.protect:
                         m = m * (1 - protect_mask(o, plan.protect))
+                    m = m * gains[i]
                     frame[y0:y1, x0:x1] = np.clip(o + m[..., None] * (syn - o) + 0.5, 0, 255)
             wr.write(frame)
     return out
 
 
 def _place(orig: np.ndarray, syn: np.ndarray, plan: Plan, i: int) -> np.ndarray:
-    """A synced frame at full size: as is, or its crop placed over the original at the segment's window."""
+    """A synced frame at full size: as is (a whole-frame result, or the fallback in a filled frame), or its crop
+    placed over the original at the segment's window."""
     if plan.full is not None:
         return syn
-    seg = next(s for s, _ in plan.segments if s.start <= i < s.end)
+    seg = next((s for s, _ in plan.segments if s.start <= i < s.end), None)
+    if seg is None:
+        return syn
     x, y, w, h = seg.window
     full = orig.copy()
     full[y:y + h, x:x + w] = syn[:h, :w]

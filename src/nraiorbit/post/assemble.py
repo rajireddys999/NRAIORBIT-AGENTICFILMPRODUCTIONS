@@ -32,12 +32,39 @@ class AudioEvent:
     ref_id: str = ""        # line id / cue id
 
 
-def render_scene(shots: list[TimelineShot], dialogue: list[AudioEvent], scene_start_s: float, out: Path) -> Path:
+def frame_grid(shots: list[TimelineShot], fps: int) -> list[int]:
+    """Frames per shot so that every cut sits on the film's frame grid: shot i fills frames round(start * fps) up to
+    round(end * fps). Each clip is rounded to whole frames on its own (4.8 s at 24 fps is 115 frames, not 115.2), and
+    those rounding errors add up: the dialogue sits at exact times, so by the last reel the voice was 92 ms behind the
+    lips. On the grid the picture is never more than half a frame from the sound."""
+    if not shots:
+        return []
+    edges = [s.start_s for s in shots] + [shots[-1].start_s + shots[-1].duration_s]
+    marks = [int(round(t * fps)) for t in edges]
+    return [max(1, b - a) for a, b in zip(marks, marks[1:])]
+
+
+def fit_frames(clip: Path, frames: int, out: Path) -> Path:
+    """`clip` with exactly `frames` frames: its tail trimmed or its last frame held (a frame or so at a cut). Clips
+    that already fit are used as they are."""
+    have = ffmpeg.frame_count(clip)
+    if have == frames:
+        return clip
+    hold = f"tpad=stop_mode=clone:stop={frames - have}" if frames > have else "null"
+    ffmpeg.run(["-i", str(clip), "-vf", hold, "-frames:v", str(frames), "-an", *ffmpeg.VIDEO_ENCODE, str(out)])
+    return out
+
+
+def render_scene(shots: list[TimelineShot], dialogue: list[AudioEvent], scene_start_s: float, out: Path,
+                 fps: int = 24) -> Path:
     """dialogue: every line overlapping the scene. Its audio is exactly as long as its video; a line crossing either
-    edge is cut there and carries on in the neighbouring scene (see join_scenes)."""
+    edge is cut there and carries on in the neighbouring scene (see join_scenes). Each shot's picture is fitted to
+    the film's frame grid (see frame_grid), so the lips stay on the voice however long the film runs."""
     work = out.parent / f".{out.stem}"
     work.mkdir(parents=True, exist_ok=True)
-    video = ffmpeg.concat([s.clip for s in shots], work / "video.mp4")
+    grid = frame_grid(shots, fps)
+    clips = [fit_frames(s.clip, n, work / f"fit_{i:03d}.mp4") for i, (s, n) in enumerate(zip(shots, grid))]
+    video = ffmpeg.concat(clips, work / "video.mp4")
     total = sum(s.duration_s for s in shots)
     events = [(e.path, e.start_s - scene_start_s, e.gain_db) for e in dialogue]
     audio = ffmpeg.place_audio(events, total, work / "dialogue.wav")

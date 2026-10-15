@@ -148,6 +148,12 @@ changing the GPU worker:
    The speaker's own eyes stay as filmed (LatentSync softens the whole face it redraws). The original's skin,
    stubble and moustache texture goes back onto the synced skin wherever its shape is unchanged. It never goes onto
    the lips, where the old teeth would ghost (`lipsync.detail`).
+   With `lipsync.mesh` (on by default) the ellipse is placed on the speaker's **face mesh** (MediaPipe Face
+   Landmarker, 478 points, Apache-2.0) and clipped to the face's outline. On a three-quarter face BlazeFace's six
+   keypoints slide onto the cheek, and the plain ellipse covered the cheek while the real mouth stayed unsynced.
+   The plain ellipse also reached past a turned face onto the background, where LatentSync's smears showed as pale
+   blobs on water, foliage, collars and blouses. The mesh keeps the patch on the real lips and off the background,
+   with room below the jaw for an opening mouth.
 4. **Reuse paid work safely.** A whole-frame result made earlier is reused through the same mask only if it edited
    the speaker. In each frame the change on the speaker's mouth is compared with the strongest change anywhere
    away from the speaker's face (`lock_ratio`, `lock_floor`). Calibrated on the film: it found 42 of 43, 92 of 92
@@ -158,9 +164,22 @@ Per-shot fixes from review go in `lipsync.shots.<shot_id>`:
 | Setting | Effect |
 |---|---|
 | `{sync: false}` | Keep the shot exactly as filmed |
-| `{keep_frames: [[a, b]]}` | Frames a to b stay as filmed, e.g. a hand over the mouth, or a turn to profile |
+| `{keep_frames: [[a, b]]}` | Frames a to b stay as filmed and LatentSync is not given them, e.g. a hand over the mouth or a turn to profile. In crop mode this makes new crops, so a new GPU job |
+| `{filmed_frames: [[a, b]]}` | Frames a to b are shown as filmed in the paste-back only. The paid result is reused, so this is free. Use it for a smear, melt or flash found in review |
+| `{fade_frames: 2}` | The synced mouth dissolves in and out over 2 frames next to frames kept as filmed, instead of a hard cut between two mouths |
 | `{repair_frames: [[a, b]]}` | Frames between a and b are rebuilt from those two, e.g. a 4-frame mouth smear |
+| `{protect: {above: 190}}` | Original pixels brighter than this stay as filmed (`below` for darker), e.g. backlit water beside a cheek |
+| `{bridge_gaps: 8}` | Close gaps of up to 8 frames where the detector lost the face mid-line. In crop mode the gap takes the whole-frame result |
+| `{extend_track: true}` | Another track of the same face carries the speaker's on, when the detector split one face in two. A number sets the least box overlap that counts (default 0.3) |
+| `{sync_s: 4.8}` | The shot was cut shorter in the edit after lip-sync. Its take stays at the synced length, so the paid lip-sync is reused, and the edit plays only the start. Use it to cut a shot right after its line when the filmed mouth goes on talking in silence |
+| `{mesh: false}`, `{detail: 0.5}` | Per-shot overrides of the global settings |
 | `{mode: crop}` | Never reuse a whole-frame result |
 
-`lipsync.offline: true` rebuilds from results already made and never starts a GPU job. Install the face detector
-with `pip install -e '.[lipsync]'`. The model (1 MB) is downloaded once from Google's model storage.
+`lipsync.offline: true` rebuilds from results already made and never starts a GPU job. Install the face models
+with `pip install -e '.[lipsync]'`. They are downloaded once from Google's model storage: the detector is 1 MB and
+the face mesh 4 MB.
+
+The assembly puts every cut on the film's frame grid. Each clip is a whole number of frames, while the dialogue sits at
+exact times. Rounding each clip on its own used to add up: by the last reel the voice was 92 ms behind the lips, and
+125 ms by the end. Now a shot fills frames round(start x fps) up to round(end x fps), trimming or holding its last
+frame, so picture and sound are never more than half a frame apart.

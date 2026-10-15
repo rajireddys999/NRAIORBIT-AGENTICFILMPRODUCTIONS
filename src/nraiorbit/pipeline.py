@@ -102,6 +102,7 @@ class Pipeline:
         self.pricing = load_pricing(self.p.root)
         self.ledger = SpendLedger(self.p.reports / "cost.jsonl", self.cfg.get("budget", {}).get("max_usd"))
         self.face_detector = None                      # lip-sync speaker lock; tests inject a fake
+        self.face_mesh = None                          # lipsync.shots.<id>.mesh; tests inject a fake
         self.takes = load_takes(self.p.root)
         self.log = log
         self.story_analyst = StoryAnalyst(llm, self.cfg)
@@ -371,6 +372,8 @@ class Pipeline:
         fps = self._film["fps"]
 
         uses_inbox = prov["video"] in ("veo", "shotpack")     # paid / hand-made clips live in inbox/video
+        sync_len = {sid: float(o["sync_s"]) for sid, o in ((self.cfg.get("lipsync") or {}).get("shots") or {}).items()
+                    if isinstance(o, dict) and o.get("sync_s")}
         shots_out, dialogue_out, spans, speaker_of = [], [], [], {}
         starts = scene_start_times(outline)
         film_end = sum(s.target_seconds for s in outline.scenes)
@@ -385,11 +388,15 @@ class Pipeline:
             for shot in shot_list.shots:
                 take = self.takes.get(shot.shot_id, 1)
                 paid = clips_for(self.p.root, shot.shot_id) if uses_inbox else []
+                # a lip-synced shot cut shorter in the edit keeps its take at the length it was lip-synced at
+                # (lipsync.shots.<id>.sync_s), so that lip-sync is reused; the assembly plays its first duration_s
+                made = shot if sync_len.get(shot.shot_id, 0.0) <= shot.duration_s else \
+                    shot.model_copy(update={"duration_s": sync_len[shot.shot_id]})
                 if selected(shot, sc.scene_id, only):
-                    clip = self._render_shot(video, shot, ctx, face_guard)
+                    clip = self._render_shot(video, made, ctx, face_guard)
                 elif len(paid) >= take:                    # outside --only but already generated: use it, free
                     clip = ffmpeg.conform_clip(paid[take - 1], self.p.video / shot.shot_id / f"take_{take}.mp4",
-                                               shot.duration_s, ctx.resolution, ctx.fps)
+                                               made.duration_s, ctx.resolution, ctx.fps)
                 else:
                     clip = MockVideo().render_shot(shot, self.p.video / shot.shot_id / "placeholder.mp4", ctx,
                                                    note="not generated yet")
@@ -456,13 +463,16 @@ class Pipeline:
         jobs = []                                       # (index, timeline shot, audio, raw output)
         for i, (ts, (t, shot)) in enumerate(zip(shots_out, spans)):
             spoken = {b for b in shot.block_ids if speaker_of.get(b) in shot.characters_in_frame}
-            if not ts.real or not spoken or (per_shot.get(shot.shot_id) or {}).get("sync") is False:
+            opts = per_shot.get(shot.shot_id) or {}
+            if not ts.real or not spoken or opts.get("sync") is False:
                 continue
+            # the clip's own length: longer than the shot when the edit cut it after lip-sync (sync_s, see _render)
+            length = max(ts.duration_s, float(opts.get("sync_s") or 0.0))
             events = [(e.path, e.start_s - t, 0.0) for e in dialogue
-                      if e.ref_id in spoken and e.start_s < t + ts.duration_s and e.start_s + e.duration_s > t]
+                      if e.ref_id in spoken and e.start_s < t + length and e.start_s + e.duration_s > t]
             work = self.p.video / shot.shot_id
-            audio = ffmpeg.place_audio(events, ts.duration_s, work / f"{ts.clip.stem}.lipsync.wav")
-            jobs.append((i, ts, audio, work / f"{ts.clip.stem}_lipsync_raw.mp4"))
+            audio = ffmpeg.place_audio(events, length, work / f"{ts.clip.stem}.lipsync.wav")
+            jobs.append((i, replace(ts, duration_s=length), audio, work / f"{ts.clip.stem}_lipsync_raw.mp4"))
         out = list(shots_out)
         if not jobs:
             return out
@@ -485,7 +495,7 @@ class Pipeline:
                 continue
             # back to the edit's exact length, size, frame rate and codec, so scenes still join by stream copy
             synced = ffmpeg.conform_clip(raw, raw.with_name(raw.name.replace("_raw", "")), ts.duration_s, resolution, fps)
-            out[i] = replace(ts, clip=synced)
+            out[i] = replace(out[i], clip=synced)
         self.log(f"  lip-sync: {len(jobs) - kept} shots" + (f", {kept} kept unsynced (see review_queue)" if kept else ""))
         return out
 
@@ -493,6 +503,11 @@ class Pipeline:
         if self.face_detector is None:
             self.face_detector = facelock.BlazeFace((self.cfg.get("lipsync") or {}).get("model_dir"))
         return self.face_detector
+
+    def _face_mesh(self):
+        if self.face_mesh is None:
+            self.face_mesh = facelock.FaceMesh((self.cfg.get("lipsync") or {}).get("model_dir"))
+        return self.face_mesh
 
     def _lip_sync_locked(self, syncer, out: list, jobs: list, resolution: tuple[int, int], fps: int) -> list:
         """Speaker lock (post/facelock.py). The speaker's face is found in every frame of the shot. A whole-frame
@@ -523,12 +538,23 @@ class Pipeline:
                 continue
             faces = facelock.fill_gaps(track, analysis.frames)
             keep = facelock.ranges(opts.get("keep_frames"))
+            filmed = facelock.ranges(opts.get("filmed_frames"))     # as filmed in the paste-back only: no new crops
             repair = [(int(a), int(b)) for a, b in opts.get("repair_frames") or []]
+            bridge = int(opts.get("bridge_gaps") or 3)
+            ext = opts.get("extend_track")                  # true, or the least overlap that counts as the same face
+            carried = facelock.extend_track(track, analysis.tracks, 0.3 if ext is True else float(ext)) if ext else track
+            shown = facelock.fill_gaps(carried, analysis.frames, max_gap=bridge) \
+                if bridge > 3 or carried is not track else faces
             cx, cy = track.centre()
             record.update(speaker={"track": track.id, "at": [round(cx / analysis.width, 3), round(cy / analysis.height, 3)],
                                    "frames": sum(f is not None for f in faces), "of": analysis.frames,
                                    "hint": opts.get("speaker")})
-            plan = facelock.Plan(faces, keep=keep, repair=repair, protect=opts.get("protect"))
+            plan = facelock.Plan(shown, keep=keep | filmed, repair=repair, protect=opts.get("protect"),
+                                 fade=int(opts.get("fade_frames") or 0))
+            if opts.get("mesh", ls.get("mesh", False)):     # mask on the face mesh: on the lips, clipped to the face
+                points = facelock.meshes(ts.clip, shown, self._face_mesh(), cache_dir=self.p.root / "cache" / "faces")
+                plan.faces, plan.meshes = facelock.mesh_faces(shown, points)
+                record["mesh_frames"] = sum(p is not None for p in plan.meshes)
             whole = syncer.cached(ts.clip, audio) if hasattr(syncer, "cached") and opts.get("mode") != "crop" else None
             if whole is not None:
                 full = ffmpeg.conform_clip(whole, work / f"{stem}_lipsync_full.mp4", ts.duration_s, resolution, fps)
@@ -539,6 +565,9 @@ class Pipeline:
                     plans[i] = (plan, {**record, "mode": "whole frame, speaker mask"})
                     continue
                 plan.fallback = full                    # better than nothing if the crops cannot be made
+                # frames only bridge_gaps / extend_track give a face have no crop: the whole-frame mouth goes there
+                plan.fill = {n for n in range(analysis.frames)
+                             if faces[n] is None and shown[n] is not None and n not in plan.keep}
             others: dict[int, list[list[float]]] = {}
             for t in analysis.tracks:
                 if t.id != track.id:
@@ -588,8 +617,9 @@ class Pipeline:
                     + (f" ({record['failed_segments'][-1]['why']})" if record.get("failed_segments") else "")]})
                 self._report("lipsync", {**record, "mode": "not synced"})
                 continue
+            detail = (per_shot.get(ts.shot_id) or {}).get("detail", ls.get("detail", 1.0))
             result = facelock.composite(ts.clip, plan, ts.clip.with_name(f"{ts.clip.stem}_lipsync.mp4"),
-                                        detail=float(ls.get("detail", 1.0)))
+                                        detail=float(detail))
             covered = range(len(plan.faces)) if plan.full is not None else \
                 [n for s, _ in plan.segments for n in range(s.start, s.end)]
             record["synced_frames"] = sum(1 for n in covered if n not in plan.keep and plan.faces[n] is not None)
@@ -765,7 +795,8 @@ class Pipeline:
             # every line overlapping the scene: one that runs past a cut is split there and joined seamlessly
             scene_dlg = [e for e in dialogue if e.start_s < end and e.start_s + e.duration_s > start]
             out = self.p.edit / "scenes" / f"{sc.scene_id}.mp4"
-            scene_files.append(assemble.render_scene(scene_shots, scene_dlg, starts[sc.scene_id], out))
+            scene_files.append(assemble.render_scene(scene_shots, scene_dlg, starts[sc.scene_id], out,
+                                                     fps=self._film["fps"]))
         film = assemble.join_scenes(scene_files, self.p.edit / "film_dialogue.mp4")
         audio = self.cfg["audio"]
         assemble.master(film, music, movie, audio["master_lufs"], audio["true_peak_db"])

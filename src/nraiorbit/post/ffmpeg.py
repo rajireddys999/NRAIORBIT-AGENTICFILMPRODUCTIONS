@@ -44,6 +44,17 @@ def duration(path: Path) -> float:
     return float(json.loads(proc.stdout)["format"]["duration"])
 
 
+def frame_count(path: Path) -> int:
+    """Video frames in `path`: the container's count, or the packets counted when the container has none."""
+    def probe(*args: str) -> dict:
+        proc = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", *args, "-of", "json", str(path)],
+                              capture_output=True, text=True, check=True)
+        return json.loads(proc.stdout)["streams"][0]
+    n = str(probe("-show_entries", "stream=nb_frames").get("nb_frames", ""))
+    return int(n) if n.isdigit() else int(probe("-count_packets", "-show_entries", "stream=nb_read_packets")
+                                          ["nb_read_packets"])
+
+
 def font_file() -> str | None:
     return next((f for f in FONT_CANDIDATES if Path(f).exists()), None)
 

@@ -217,3 +217,100 @@ def test_protect_keeps_a_bright_background_beside_the_mouth(tmp_path):
     assert guarded[smear].mean() > 220                                # with it, the water is as filmed
     mouth = (slice(None), slice(my - 2, my + 2), slice(mx - 6, mx + 4))
     assert guarded[mouth].mean() < 60                                 # the new mouth is still there
+
+
+def _mesh(x0, y0, x1, y1, mouth):
+    """Synthetic face-mesh points (MESH_POINTS order): the oval inside the box, the lips around `mouth`."""
+    t = np.linspace(0, 2 * np.pi, 36, endpoint=False)
+    cx, cy, a, b = (x0 + x1) / 2, (y0 + y1) / 2, (x1 - x0) / 2, (y1 - y0) / 2
+    oval = np.stack([cx + a * np.sin(t), cy - b * np.cos(t)], 1)
+    u = np.linspace(0, 2 * np.pi, 20, endpoint=False)
+    lips = np.stack([mouth[0] + 9 * np.cos(u), mouth[1] + 4 * np.sin(u)], 1)
+    inner = np.stack([mouth[0] + 6 * np.cos(u), mouth[1] + 2 * np.sin(u)], 1)
+    nose = np.tile([mouth[0], mouth[1] - 12], (12, 1)) + np.linspace(0, 1, 12)[:, None]
+    eyes = np.array([[x0 + 8, y0 + 20], [x0 + 16, y0 + 20], [x1 - 16, y0 + 20], [x1 - 8, y0 + 20]], float)
+    return np.vstack([oval, lips, inner, nose, eyes]).astype(np.float32)
+
+
+def test_mesh_clip_keeps_the_mouth_and_drops_a_smear_beside_the_face(tmp_path):
+    """A turned face whose skin is no brighter or darker than the wall behind it (so protect cannot tell them apart):
+    the face-mesh outline keeps LatentSync's smear on the wall out and its new mouth in."""
+    rng = np.random.default_rng(7)
+    x0, y0, s = TALKER
+    edge = x0 + 46                                                    # the face ends before the patch does
+    face = _face(*TALKER)
+    mx, my = int(face.mouth[0]), int(face.mouth[1])
+    base = np.clip(rng.normal(120, 6, (H, W, 3)), 0, 255).astype(np.uint8)
+    with fl.FrameWriter(tmp_path / "orig.mp4", W, H, FPS) as w:
+        for _ in range(4):
+            w.write(base)
+    syn = base.copy()
+    syn[my - 3:my + 3, mx - 8:mx + 6] = 20                           # the new mouth
+    syn[my - 6:my + 10, edge + 2:edge + 10] = 200                    # a smear on the wall beside the face
+    with fl.FrameWriter(tmp_path / "syn.mp4", W, H, FPS) as w:
+        for _ in range(4):
+            w.write(syn)
+    mesh = _mesh(x0 + 2, y0 + 2, edge, y0 + s - 2, (mx, my))
+    faces, meshes = fl.mesh_faces([face] * 4, [mesh] * 4)
+    assert abs(faces[0].mouth[0] - mx) < 1 and abs(faces[0].mouth[1] - my) < 1
+    plain = _frames(fl.composite(tmp_path / "orig.mp4", fl.Plan([face] * 4, full=tmp_path / "syn.mp4"),
+                                 tmp_path / "a.mp4", detail=0))                    # the detector's face, no mesh
+    clipped = _frames(fl.composite(tmp_path / "orig.mp4", fl.Plan(faces, full=tmp_path / "syn.mp4", meshes=meshes),
+                                   tmp_path / "b.mp4", detail=0))
+    smear = (slice(None), slice(my - 4, my + 8), slice(edge + 3, edge + 8))
+    assert plain[smear].mean() > 150                                  # without the outline the smear shows
+    assert abs(clipped[smear].mean() - 120) < 8                       # with it, the wall is as filmed
+    mouth = (slice(None), slice(my - 2, my + 2), slice(mx - 6, mx + 4))
+    assert clipped[mouth].mean() < 50                                 # the new mouth is there
+
+
+def test_mesh_faces_follow_the_lips_and_bridge_short_mesh_gaps():
+    face = _face(*TALKER)                                             # the detector's mouth...
+    lips_at = (face.mouth[0] + 15, face.mouth[1] - 5)                # ...is 15 px off the real lips
+    m = _mesh(40, 40, 104, 104, lips_at)
+    points = [m, None, m + 4, None, None, None, None, None, None, None, None, m]
+    faces, meshes = fl.mesh_faces([face] * 12, points, max_gap=3, window=1)
+    assert faces[0].mouth == pytest.approx(list(lips_at), abs=0.5)
+    assert meshes[1] is not None and np.allclose(meshes[1], m + 2)  # a one-frame gap: interpolated
+    assert meshes[5] is None and faces[5] is face                    # a long gap: the detector's face, no outline
+    assert len(fl._hull(np.array([[0, 0], [4, 0], [4, 4], [0, 4], [2, 2]]))) == 4
+
+
+def test_a_bridged_face_gap_takes_the_whole_frame_result_and_fades_into_kept_frames(tmp_path):
+    clip = _clip(tmp_path / "shot.mp4", specs=(TALKER, STILL), talking=(0,), blurred=())
+    orig = _frames(clip)
+    speaker = [_face(*TALKER)] * N
+    crops = []
+    for k, (a, b) in enumerate([(0, 10), (15, N)]):
+        path = tmp_path / f"crop{k}.mp4"
+        with fl.FrameWriter(path, 256, 192, FPS) as w:                # the synced crops: all white
+            for _ in range(b - a):
+                w.write(np.full((192, 256, 3), 255, np.uint8))
+        crops.append((fl.Segment(a, b, (0, 0, 256, 192)), path))
+    with fl.FrameWriter(tmp_path / "whole.mp4", W, H, FPS) as w:      # the whole-frame result: mid grey
+        for _ in range(N):
+            w.write(np.full((H, W, 3), 128, np.uint8))
+    cx, cy = int(TALKER[0] + 0.5 * TALKER[2]), int(TALKER[1] + 0.8 * TALKER[2])
+    mouth = (slice(None), slice(cy - 3, cy + 4), slice(cx - 3, cx + 4))
+    plan = fl.Plan(speaker, segments=crops, fallback=tmp_path / "whole.mp4", fill={10, 11, 12, 13, 14})
+    o = _frames(fl.composite(clip, plan, tmp_path / "out.mp4", detail=0))[mouth].mean(axis=(1, 2, 3))
+    assert (o[:10] > 235).all() and (o[15:] > 235).all()              # the crops
+    assert (np.abs(o[10:15] - 128) < 8).all()                         # the gap: the whole-frame mouth
+    assert fl.fade_gains(10, {0, 1, 2}, 2) == pytest.approx([1, 1, 1, 1 / 3, 2 / 3, 1, 1, 1, 1, 1])
+    faded = fl.Plan(speaker, segments=crops[1:], keep=set(range(15, 18)), fade=2)
+    f = _frames(fl.composite(clip, faded, tmp_path / "faded.mp4", detail=0))[mouth].mean(axis=(1, 2, 3))
+    b = orig[mouth].mean(axis=(1, 2, 3))
+    assert (np.abs(f[15:18] - b[15:18]) < 8).all()                    # kept as filmed
+    for i, g in ((18, 1 / 3), (19, 2 / 3), (21, 1)):                  # then the synced mouth fades in
+        assert f[i] == pytest.approx(b[i] + g * (255 - b[i]), abs=12)
+
+
+def test_extend_track_takes_over_a_split_detection_of_the_same_face():
+    a = fl.Track(0, {i: _face(40, 40, 64) for i in range(0, 10)})
+    b = fl.Track(1, {i: _face(42, 41, 64) for i in range(7, 20)})     # the same face, split off: overlaps at 7-9
+    c = fl.Track(2, {i: _face(200, 50, 56) for i in range(0, 20)})    # someone else
+    d = fl.Track(3, {i: _face(41, 40, 64) for i in range(25, 30)})    # the same place later, not touching: not taken
+    out = fl.extend_track(a, [a, b, c, d])
+    assert sorted(out.faces) == list(range(20)) and out.faces[15] is b.faces[15] and out.faces[5] is a.faces[5]
+    assert sorted(fl.extend_track(b, [a, b, c, d]).faces) == list(range(20))      # backwards as well
+    assert sorted(fl.extend_track(c, [a, b, c, d]).faces) == list(range(20))      # nothing of anyone else's

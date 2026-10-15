@@ -95,13 +95,25 @@ lipsync:                           # used by providers.lipsync: latentsync_cloud
   offline: false                   # true: use results made before only; never start a GPU job
   detail: 1.0                      # put the original's skin, stubble and moustache texture back on the synced
                                    # face where its shape is unchanged (never on the lips); 0 = off
-  model_dir: null                  # where the face detector model is kept (default ~/.cache/nraiorbit)
+  mesh: true                       # place the paste-back on the speaker's face mesh (MediaPipe Face Landmarker):
+                                   # on the real lips even when the head is turned, and clipped to the face outline,
+                                   # so a smear LatentSync made on the background beside the face never shows
+  model_dir: null                  # where the face models are kept (default ~/.cache/nraiorbit)
   shots: {}                        # per shot, from review: {sync: false} keep as filmed | {speaker: [x, y]} a point
                                    # on the speaker's face (fractions of the frame) | {keep_frames: [[a, b]]} frames
-                                   # left as filmed | {repair_frames: [[a, b]]} frames between a and b rebuilt from
-                                   # them | {mode: crop} never reuse a whole-frame result | {protect: {above: 185}}
-                                   # keep as filmed the pixels brighter (or {below: 40} darker) than this: a
-                                   # background next to the face that LatentSync smeared into
+                                   # left as filmed (LatentSync is not given them: new crops, a new GPU job) |
+                                   # {filmed_frames: [[a, b]]} frames shown as filmed in the paste-back only (the
+                                   # paid result is reused) | {fade_frames: 2} dissolve the synced mouth in and out
+                                   # next to frames kept as filmed | {repair_frames: [[a, b]]} frames between a and b
+                                   # rebuilt from them | {bridge_gaps: 8} close face gaps up to this many frames (a
+                                   # crop-mode gap takes the whole-frame mouth) | {extend_track: true} another
+                                   # track of the same face carries the speaker's on (a split detection; a number
+                                   # instead of true: the least box overlap that counts, default 0.3) |
+                                   # {mode: crop} never reuse a
+                                   # whole-frame result | {protect: {above: 185}} keep as filmed the pixels brighter
+                                   # (or {below: 40} darker) than this | {detail: 0.5} | {mesh: false} |
+                                   # {sync_s: 4.8} the shot was cut shorter in the edit after lip-sync: its take
+                                   # stays at the synced length (the lip-sync is reused), the edit plays the start
 
 budget:
   max_usd: 50                      # hard stop for paid generation in one project (cost.jsonl ledger)

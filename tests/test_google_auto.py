@@ -616,6 +616,7 @@ def test_speaker_lock_reuses_results_that_hit_the_speaker_and_crops_the_rest(set
 
     pipeline, cfg = setup.make(only=["trailer"])
     pipeline.face_detector = lambda rgb: [face(*me), face(*other)]
+    pipeline.face_mesh = lambda rgb, near: None                       # synthetic faces: no mesh
     speaker = {b.block_id: b.character_id for p in (setup.root / "03_scenes").glob("*.json")
                for b in SceneScript.model_validate_json(p.read_text()).blocks if b.kind == "dialogue"}
     pipeline.run(until="render")                                   # generate the clips once (lip-sync is off)
@@ -660,6 +661,104 @@ def test_speaker_lock_reuses_results_that_hit_the_speaker_and_crops_the_rest(set
     queue = (setup.root / "reports" / "review_queue.jsonl").read_text()
     for sid in set(spoken[1:]) - hits:                               # ...the misses use their whole-frame result
         assert records[sid]["mode"] == "whole frame, speaker mask (crops not made)" and sid in queue
+
+def test_paste_back_options_and_an_edit_trim_keep_the_paid_lip_sync(setup):
+    """filmed_frames, fade_frames and detail change only the paste-back: LatentSync is sent the very same crops, so
+    nothing is paid again. A shot cut shorter in the edit with sync_s keeps its take and its lip-sync audio at the
+    length it was synced at; the timeline plays the shorter shot."""
+    import hashlib
+
+    from nraiorbit.post import facelock as fl
+    from nraiorbit.providers.base import register
+    from nraiorbit.providers.mock import MockLipSync
+    from nraiorbit.schemas import SceneScript
+
+    me, other = (60, 40, 70), (220, 50, 60)
+
+    def face(x0, y0, s):
+        return fl.Face([x0, y0, x0 + s, y0 + s], 0.9, [[x0 + .3 * s, y0 + .35 * s], [x0 + .7 * s, y0 + .35 * s]],
+                       [x0 + .5 * s, y0 + .55 * s], [x0 + .5 * s, y0 + .75 * s])
+
+    def mesh_of(x0, y0, s):                          # MESH_POINTS: oval in the box, lips round the mouth
+        t = np.linspace(0, 2 * np.pi, 36, endpoint=False)
+        u = np.linspace(0, 2 * np.pi, 20, endpoint=False)
+        mx, my = x0 + .5 * s, y0 + .75 * s
+        return np.vstack([np.stack([x0 + s / 2 + s / 2 * np.sin(t), y0 + s / 2 - s / 2 * np.cos(t)], 1),
+                          np.stack([mx + 12 * np.cos(u), my + 5 * np.sin(u)], 1),
+                          np.stack([mx + 8 * np.cos(u), my + 2 * np.sin(u)], 1),
+                          np.tile([mx, y0 + .55 * s], (12, 1)),
+                          [[x0 + .2 * s, y0 + .35 * s], [x0 + .4 * s, y0 + .35 * s],
+                           [x0 + .6 * s, y0 + .35 * s], [x0 + .8 * s, y0 + .35 * s]]]).astype(np.float32)
+
+    sent = []
+
+    @register("lipsync", "lock_opts")
+    class LockOpts(MockLipSync):
+        def __init__(self, **kw):
+            pass
+
+        def cached(self, video, audio):            # no whole-frame results: every speaking shot goes to crops
+            return None
+
+        def apply(self, video, audio, out):         # the synced crop: all white, so synced pixels are easy to see
+            ffmpeg.run(["-i", str(video), "-vf", "drawbox=x=0:y=0:w=iw:h=ih:color=white:t=fill", "-an",
+                        *ffmpeg.VIDEO_ENCODE, str(out)])
+            return out
+
+        def apply_many(self, items):
+            sent.extend(items)
+            return [self.apply(v, a, o) for v, a, o in items]
+
+    pipeline, cfg = setup.make(only=["trailer"])
+    pipeline.face_detector = lambda rgb: [face(*me), face(*other)]
+    pipeline.face_mesh = lambda rgb, near: mesh_of(*me)                # a face mesh on the speaker
+    speaker = {b.block_id: b.character_id for p in (setup.root / "03_scenes").glob("*.json")
+               for b in SceneScript.model_validate_json(p.read_text()).blocks if b.kind == "dialogue"}
+    pipeline.run(until="render")
+    timeline = json.loads((setup.root / "10_edit" / "timeline.json").read_text())["shots"]
+    real = {s["shot_id"] for s in timeline if s["real"]}
+    order = [s["shot_id"] for s in timeline]
+    spoken = sorted((s.shot_id for s in _selected_shots(setup.root, trailer_only=False) if s.shot_id in real
+                     and any(speaker.get(b) in s.characters_in_frame for b in s.block_ids)), key=order.index)
+    assert len(spoken) >= 2
+    first, last = spoken[0], spoken[-1]                # nothing spoken comes after `last`, so a trim moves no line
+    cfg["providers"]["lipsync"] = "lock_opts"
+    cfg["lipsync"]["shots"] = {sid: {"speaker": [95 / 320, 75 / 180]} for sid in spoken}
+    pipeline.run(until="render", force=("render",))
+
+    def digest(items):
+        return {Path(v).name: hashlib.sha1(Path(v).read_bytes() + Path(a).read_bytes()).hexdigest() for v, a, _ in items}
+
+    before = digest(sent)
+    assert any(name.startswith("take_") for name in before)
+    wav = next((setup.root / "07_video" / last).glob("*.lipsync.wav"))
+    wav_bytes = wav.read_bytes()
+    shot_file = next(p for p in (setup.root / "04_shots").glob("*.json") if last in p.read_text())
+    shots = ShotList.model_validate_json(shot_file.read_text())
+    cut = next(s for s in shots.shots if s.shot_id == last)
+    synced_at = cut.duration_s
+    cut.duration_s = round(synced_at - 0.5, 3)          # the edit trims the shot...
+    shot_file.write_text(shots.model_dump_json(indent=2))
+    cfg["lipsync"]["shots"][last]["sync_s"] = synced_at   # ...and keeps the lip-sync made at its old length
+    cfg["lipsync"]["shots"][first].update(filmed_frames=[[0, 5]], fade_frames=2, detail=0)
+    sent.clear()
+    pipeline.run(until="render", force=("render",))
+
+    assert digest(sent) == before                       # the same crops and audio: a real provider's cache hits
+    records = {r["shot_id"]: r for r in map(json.loads, (setup.root / "reports" / "lipsync.jsonl").read_text().splitlines())}
+    assert records[first]["mesh_frames"] == records[first]["speaker"]["frames"]      # the mask on the face mesh
+    assert wav.read_bytes() == wav_bytes
+    timeline = {s["shot_id"]: s for s in json.loads((setup.root / "10_edit" / "timeline.json").read_text())["shots"]}
+    assert timeline[last]["duration_s"] == pytest.approx(synced_at - 0.5)
+    assert ffmpeg.frame_count(Path(timeline[last]["clip"])) == round(synced_at * 24)   # the assembly cuts it
+    synced, orig = (np.stack(list(fl.read_frames(Path(p)))).astype(float)
+                    for p in (timeline[first]["clip"], timeline[first]["clip"].replace("_lipsync", "")))
+    mouth = (slice(None), slice(88, 98), slice(85, 105))
+    s_m, o_m = synced[mouth].mean(axis=(1, 2, 3)), orig[mouth].mean(axis=(1, 2, 3))
+    assert (np.abs(s_m[:6] - o_m[:6]) < 4).all()       # frames 0-5 as filmed
+    for i, g in ((6, 1 / 3), (7, 2 / 3), (9, 1.0)):     # then the white synced mouth fades in
+        assert s_m[i] == pytest.approx(o_m[i] + g * (255 - o_m[i]), abs=12)
+
 
 def _set_tier(root, shot_id, tier):
     for path in (root / "04_shots").glob("*.json"):

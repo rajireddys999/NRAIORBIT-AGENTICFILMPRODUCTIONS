@@ -83,9 +83,14 @@ Never print, log or commit any key. No paid step without my explicit OK in this 
    `env -u CLOUDSDK_AUTH_ACCESS_TOKEN` (a preset token overrides the service account). First check
    `gcloud ai endpoints list --region us-central1`: if a lip-sync endpoint is still deployed, tell me, then undeploy
    and delete it.
-2. pip install -e ".[dev,google]", run the test suite. If a host is blocked, tell me which one and stop.
+2. pip install -e ".[dev,google,lipsync]", run the test suite. If a host is blocked, tell me which one and stop.
    Install the Telugu card font: Noto Serif/Sans Telugu Bold into /usr/local/share/fonts/noto-telugu/ (from
    fonts.gstatic.com via fonts.googleapis.com/css2?family=Noto+Serif+Telugu:wght@700).
+   The lip-sync speaker lock (MediaPipe) needs libEGL.so.1 and libGLESv2.so.2. apt over plain HTTP is blocked by
+   the proxy, so fetch the two packages over HTTPS and install them:
+   https://archive.ubuntu.com/ubuntu/pool/main/libg/libglvnd/libegl1_1.7.0-1build1_amd64.deb and
+   .../libgles2_1.7.0-1build1_amd64.deb, then `dpkg -i` both. A "dependency problems" message is fine: the
+   libraries are unpacked.
 3. Restore, never regenerate paid work:
    a) godavari5 backups (Arjun, Meera, Bhairava's photos live there): from gs://.../godavari5/backup/, for each of
       godavari5_backup, godavari5_update_v2, godavari5_update_v3 in order: cat parts > .tar, check .sha256, tar -xf.

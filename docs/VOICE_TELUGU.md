@@ -129,3 +129,38 @@ After the dialogue WAV is final, dialogue shots go through an audio-driven lip-s
 (LatentSync, MuseTalk, InfiniteTalk / Wan speech-to-video class models, or a commercial API).
 These models work at the phoneme/audio level, so Telugu works without language-specific
 training. The identity guard runs again afterwards.
+
+### 5.1 Speaker lock (`lipsync.speaker_lock`, on by default)
+
+LatentSync redraws the mouth of the **largest** face it finds in each frame. A frame-by-frame review of the
+10-minute film found it animating the wrong person in 9 of 34 shots: an out-of-focus foreground head, an
+over-the-shoulder ear, a henchman nearer the lens. The real speaker's mouth then flipped between synced and unsynced,
+and stray mouths, smears and blobs appeared on other people and backgrounds. `post/facelock.py` fixes this without
+changing the GPU worker:
+
+1. **Find the speaker.** MediaPipe BlazeFace (Apache-2.0) finds every face in every frame and links them into
+   tracks. The video model is told that only the speaker talks, so the speaker is the in-focus face whose mouth moves
+   the most. A point in the config overrides this: `lipsync.shots.<shot_id>.speaker: [x, y]`. A review sheet is
+   saved next to each clip (`<take>.speaker.jpg`, speaker boxed in green).
+2. **Show LatentSync only the speaker.** It gets a crop around the speaker, with every other face filled flat.
+   Frames where the speaker's face is not visible are left as filmed.
+3. **Change only the speaker's mouth.** The synced pixels go back inside a feathered ellipse over the mouth and jaw.
+   The speaker's own eyes stay as filmed (LatentSync softens the whole face it redraws). The original's skin,
+   stubble and moustache texture goes back onto the synced skin wherever its shape is unchanged. It never goes onto
+   the lips, where the old teeth would ghost (`lipsync.detail`).
+4. **Reuse paid work safely.** A whole-frame result made earlier is reused through the same mask only if it edited
+   the speaker. In each frame the change on the speaker's mouth is compared with the strongest change anywhere
+   away from the speaker's face (`lock_ratio`, `lock_floor`). Calibrated on the film: it found 42 of 43, 92 of 92
+   and 5 of 5 known wrong-face frames, with no false alarms on the correct shots.
+
+Per-shot fixes from review go in `lipsync.shots.<shot_id>`:
+
+| Setting | Effect |
+|---|---|
+| `{sync: false}` | Keep the shot exactly as filmed |
+| `{keep_frames: [[a, b]]}` | Frames a to b stay as filmed, e.g. a hand over the mouth, or a turn to profile |
+| `{repair_frames: [[a, b]]}` | Frames between a and b are rebuilt from those two, e.g. a 4-frame mouth smear |
+| `{mode: crop}` | Never reuse a whole-frame result |
+
+`lipsync.offline: true` rebuilds from results already made and never starts a GPU job. Install the face detector
+with `pip install -e '.[lipsync]'`. The model (1 MB) is downloaded once from Google's model storage.

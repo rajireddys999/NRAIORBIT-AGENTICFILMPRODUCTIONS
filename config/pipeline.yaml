@@ -87,6 +87,19 @@ lipsync:                           # used by providers.lipsync: latentsync_cloud
   guidance: 1.5
   timeout_seconds: 21600           # 6 h: one shot takes ~10 min on an L4, so 3600 s fits only ~6
   on_failure: stop                 # stop | keep_original (a shot LatentSync cannot do keeps its clip, logged)
+  speaker_lock: true               # LatentSync sees only the speaker (a crop, other faces blanked) and only the
+                                   # speaker's mouth and jaw change (post/facelock.py; pip install -e '.[lipsync]')
+  lock_ratio: 1.5                  # a frame changed this much more away from the speaker than on the speaker's
+  lock_floor: 10                   # mouth (and at least lock_floor, 0-255) was synced on someone else
+  max_off_speaker_frames: 3        # a paid whole-frame result is reused only if it missed the speaker in <= this
+  offline: false                   # true: use results made before only; never start a GPU job
+  detail: 1.0                      # put the original's skin, stubble and moustache texture back on the synced
+                                   # face where its shape is unchanged (never on the lips); 0 = off
+  model_dir: null                  # where the face detector model is kept (default ~/.cache/nraiorbit)
+  shots: {}                        # per shot, from review: {sync: false} keep as filmed | {speaker: [x, y]} a point
+                                   # on the speaker's face (fractions of the frame) | {keep_frames: [[a, b]]} frames
+                                   # left as filmed | {repair_frames: [[a, b]]} frames between a and b rebuilt from
+                                   # them | {mode: crop} never reuse a whole-frame result
 
 budget:
   max_usd: 50                      # hard stop for paid generation in one project (cost.jsonl ledger)

@@ -30,7 +30,7 @@ _Last updated: 2026-10-15. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
 | Images | **Gemini** keyframes and character identity packs (`nraiorbit identity build`) |
 | Voice | **Gemini Telugu TTS** (voice per character, cached), recorded-line import, Indic Parler-TTS adapter (not yet run) |
 | Music | **Lyria 3 Pro** scored to the picture, style presets (`config/music_styles.yaml`), hit aligned to the hero shot |
-| Lip-sync | **LatentSync 1.6** on a Google Cloud L4 GPU (`latentsync_cloudrun` provider; Vertex endpoint, Vertex job or Cloud Run runner), cached, endpoint always deleted after the batch |
+| Lip-sync | **LatentSync 1.6** on a Google Cloud L4 GPU (`latentsync_cloudrun` provider; Vertex endpoint, Vertex job or Cloud Run runner), cached, endpoint always deleted after the batch. **Speaker lock** (`post/facelock.py`, MediaPipe BlazeFace): LatentSync sees only the speaker; only the speaker's mouth and jaw change; the skin texture is restored; a wrong-face check guards reused results; per-shot review fixes; offline rebuilds |
 | Guards | Identity guard (face assignment, drift, swap; retake loop) and voice guard, with InsightFace/SpeechBrain adapters |
 | Post | Per-scene assembly, ducked music, −14 LUFS master, dialogue/music stems for DaVinci Resolve, te/en subtitles, trailer cutter |
 | Cost control | `nraiorbit estimate`, cost preview + confirmation before paid runs, budget cap, `reports/cost.jsonl` ledger, `--only trailer`, no double payment on re-runs |
@@ -121,9 +121,24 @@ _Last updated: 2026-10-15. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
     years ago" in the prompt; that wording was removed from all prompts and the clip retaken.
   - Cards: Telugu + English title at 1:15, INTERVAL at 4:21 and an end card (Noto Serif Telugu; install the font, see
     src/nraiorbit/post/cards.py for the paths searched).
-  - Cost so far: $88.91 on the ledger (real Vertex prices since the price-table fix). Lip-sync of all 34 on-camera
-    speaking shots is the last paid step (about $6). Media backed up to `gs://nraiorbit-agentic-film-product-media/
-    godavari10/` and `library/characters/*/refs`.
+  - First cut: $88.91 on the ledger (real Vertex prices since the price-table fix). Media backed up to
+    `gs://nraiorbit-agentic-film-product-media/godavari10/` and `library/characters/*/refs`.
+  - **Clear dialogue (2026-10-15):** every take levelled to one speaking level, then a clarity pass on the finished
+    mix lifts any line under +12 dB over the music. Before, the median line was +5.8 dB over the music; after, every
+    line is about +12 dB.
+  - **Lip-sync and its QA (2026-10-15):** all 34 on-camera speaking shots went through LatentSync on one Vertex L4
+    batch ($4.12). One shot, where Kaasi turns to profile, could not be done; with `on_failure: keep_original` it keeps
+    its clip. A frame-by-frame review of 36 before/after sheets (every finding re-checked by a second reviewer) found
+    LatentSync animating the **wrong face** in 9 multi-face shots, plus ghost blobs, smears and softness.
+    The fix is the **speaker lock** (docs/VOICE_TELUGU.md §5.1):
+    - LatentSync now sees only the speaker, and only the speaker's mouth and jaw change.
+    - All 34 speaker choices were checked by eye.
+    - 3 shots were remade with the face checked first:
+      - sc008_s006: a burned-in "24 mm" camera overlay;
+      - sc002_s011: a stranger standing where Chitti should be;
+      - sc004_s003: a raised fist over the mouth.
+    - 2 shots are kept as filmed (sc005_s003, sc006_s002), and 5 have frame-level fixes in `lipsync.shots`.
+    - Ledger after the 3 remakes: $96.02.
   - Still missing: sound effects (no SFX track yet; 77 distinct effects are spotted in projects/godavari10/post/
     sfx_spot_list.csv; candidate: Stable Audio 3.0 Small SFX, open weights, commercial use under $1M revenue).
 

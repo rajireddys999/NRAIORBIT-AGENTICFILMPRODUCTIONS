@@ -109,6 +109,11 @@ class CloudRunLipSync:
     def apply(self, video: Path, audio: Path, out: Path) -> Path | None:
         return self.apply_many([(video, audio, out)])[0]
 
+    def cached(self, video: Path, audio: Path) -> Path | None:
+        """The synced clip made before for exactly this video and audio, else None. Nothing is run or paid."""
+        path = self.cache / f"{self.key(video, audio)}.mp4"
+        return path if path.exists() else None
+
     def failure(self, video: Path, audio: Path) -> str | None:
         """Why LatentSync could not do this shot (remembered under on_failure: keep_original), else None."""
         marker = self.cache / f"{self.key(video, audio)}.failed.json"

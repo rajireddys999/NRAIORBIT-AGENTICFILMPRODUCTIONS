@@ -2,6 +2,7 @@
 
 import json
 import shutil
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -524,6 +525,7 @@ def test_lip_sync_redraws_only_on_screen_speakers_with_their_own_lines(setup):
     MockLipSync.calls.clear()
     pipeline, cfg = setup.make(only=["trailer"])
     cfg["providers"]["lipsync"] = "mock"
+    cfg["lipsync"]["speaker_lock"] = False                       # whole frames (the speaker lock has its own test)
     pipeline.run()
     timeline = json.loads((setup.root / "10_edit" / "timeline.json").read_text())
     synced = {s["shot_id"] for s in timeline["shots"] if s["clip"].endswith("_lipsync.mp4")}
@@ -565,6 +567,7 @@ def test_a_shot_lip_sync_cannot_do_keeps_its_clip_and_is_queued_for_review(setup
 
     pipeline, cfg = setup.make(only=["trailer"])
     cfg["providers"]["lipsync"] = "first_fails_test"
+    cfg["lipsync"]["speaker_lock"] = False
     pipeline.run(until="render")
     timeline = json.loads((setup.root / "10_edit" / "timeline.json").read_text())
     queue = [json.loads(line) for line in (setup.root / "reports" / "review_queue.jsonl").read_text().splitlines()]
@@ -573,6 +576,90 @@ def test_a_shot_lip_sync_cannot_do_keeps_its_clip_and_is_queued_for_review(setup
     kept = next(s for s in timeline["shots"] if s["shot_id"] == flagged[0]["shot_id"])
     assert not kept["clip"].endswith("_lipsync.mp4")                     # its own clip, not a broken one
     assert any(s["clip"].endswith("_lipsync.mp4") for s in timeline["shots"])   # the others are synced
+
+
+def test_speaker_lock_reuses_results_that_hit_the_speaker_and_crops_the_rest(setup):
+    """A paid whole-frame result is reused (through the speaker's mouth mask) only where it redrew the speaker;
+    elsewhere LatentSync gets crops around the speaker with the other face blanked. sync: false and offline hold."""
+    from nraiorbit.post import facelock as fl
+    from nraiorbit.providers.base import register
+    from nraiorbit.providers.mock import MockLipSync
+    from nraiorbit.schemas import SceneScript
+
+    me, other = (60, 40, 70), (220, 50, 60)                       # x0, y0, size of the two faces in every frame
+
+    def face(x0, y0, s):
+        return fl.Face([x0, y0, x0 + s, y0 + s], 0.9, [[x0 + .3 * s, y0 + .35 * s], [x0 + .7 * s, y0 + .35 * s]],
+                       [x0 + .5 * s, y0 + .55 * s], [x0 + .5 * s, y0 + .75 * s])
+
+    def mouth_box(x0, y0, s):
+        return f"drawbox=x={int(x0 + .3 * s)}:y={int(y0 + .62 * s)}:w={int(.4 * s)}:h={int(.3 * s)}:color=white:t=fill"
+
+    sent, hits = [], set()
+
+    @register("lipsync", "lock_test")
+    class LockTest(MockLipSync):
+        def __init__(self, **kw):
+            pass
+
+        def cached(self, video, audio):            # whole-frame results exist; crops were never made
+            if "_crop" in video.name:
+                return None
+            out = video.with_name(video.stem + "_whole.mp4")
+            box = mouth_box(*(me if video.parent.name in hits else other))
+            ffmpeg.run(["-i", str(video), "-vf", box, "-an", *ffmpeg.VIDEO_ENCODE, str(out)])
+            return out
+
+        def apply_many(self, items):
+            sent.extend(items)
+            return [self.apply(v, a, o) for v, a, o in items]
+
+    pipeline, cfg = setup.make(only=["trailer"])
+    pipeline.face_detector = lambda rgb: [face(*me), face(*other)]
+    speaker = {b.block_id: b.character_id for p in (setup.root / "03_scenes").glob("*.json")
+               for b in SceneScript.model_validate_json(p.read_text()).blocks if b.kind == "dialogue"}
+    pipeline.run(until="render")                                   # generate the clips once (lip-sync is off)
+    real = {s["shot_id"] for s in json.loads((setup.root / "10_edit" / "timeline.json").read_text())["shots"]
+            if s["real"]}
+    spoken = sorted(s.shot_id for s in _selected_shots(setup.root, trailer_only=False) if s.shot_id in real
+                    and any(speaker.get(b) in s.characters_in_frame for b in s.block_ids))
+    assert len(spoken) >= 3
+    skipped, hits = spoken[0], set(spoken[1::2])
+    cfg["providers"]["lipsync"] = "lock_test"
+    cfg["lipsync"]["shots"] = {sid: {"speaker": [95 / 320, 75 / 180]} for sid in spoken}
+    cfg["lipsync"]["shots"][skipped] = {"sync": False}
+    pipeline.run(until="render", force=("render",))
+
+    timeline = {s["shot_id"]: s for s in json.loads((setup.root / "10_edit" / "timeline.json").read_text())["shots"]}
+    records = {r["shot_id"]: r for r in map(json.loads, (setup.root / "reports" / "lipsync.jsonl").read_text().splitlines())}
+    assert skipped not in records and not timeline[skipped]["clip"].endswith("_lipsync.mp4")
+    for sid in spoken[1:]:
+        assert timeline[sid]["clip"].endswith("_lipsync.mp4")
+        assert records[sid]["mode"] == ("whole frame, speaker mask" if sid in hits else "speaker crops")
+        clip = Path(timeline[sid]["clip"])
+        assert clip.with_name(clip.stem.replace("_lipsync", "") + ".speaker.jpg").exists()   # a review sheet
+    crops = [Path(v) for v, _, _ in sent]
+    assert crops and {c.parent.name for c in crops} == set(spoken[1:]) - hits      # only the misses went to the GPU
+    for c in crops:
+        w, h, _ = fl.probe(c)
+        assert (w, h) == (256, 180)                                   # a crop around the speaker, not the frame
+        frame = next(fl.read_frames(c)).astype(float)
+        assert frame[62:105, 225:252].std(axis=(0, 1)).max() < 6     # the other face is blanked out
+    for sid in hits:                                                  # the speaker's mouth is redrawn...
+        synced, orig = (np.stack(list(fl.read_frames(Path(p)))).astype(float)
+                        for p in (timeline[sid]["clip"], timeline[sid]["clip"].replace("_lipsync", "")))
+        assert synced[:, 88:98, 85:105].mean() > orig[:, 88:98, 85:105].mean() + 60
+        assert abs(synced[:, 50:110, 225:280] - orig[:, 50:110, 225:280]).mean() < 3     # ...and nothing else
+
+    sent.clear()
+    (setup.root / "reports" / "lipsync.jsonl").unlink()
+    cfg["lipsync"]["offline"] = True                                 # offline: no new crops are made...
+    pipeline.run(until="render", force=("render",))
+    assert not sent
+    records = {r["shot_id"]: r for r in map(json.loads, (setup.root / "reports" / "lipsync.jsonl").read_text().splitlines())}
+    queue = (setup.root / "reports" / "review_queue.jsonl").read_text()
+    for sid in set(spoken[1:]) - hits:                               # ...the misses use their whole-frame result
+        assert records[sid]["mode"] == "whole frame, speaker mask (crops not made)" and sid in queue
 
 def _set_tier(root, shot_id, tier):
     for path in (root / "04_shots").glob("*.json"):

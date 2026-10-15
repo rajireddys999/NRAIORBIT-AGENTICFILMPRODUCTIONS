@@ -30,7 +30,7 @@ from .planning.score import load_styles, score_cue
 from .planning.runtime import (
     TEMPLATES, describe_template, fit_shots_to_scene, rebalance_outline, scene_start_times, validate_outline,
 )
-from .post import assemble, ffmpeg
+from .post import assemble, facelock, ffmpeg
 from .post.cards import Card, apply_cards
 from .post.speech import clarify_dialogue, level_gain_db
 from .post.subtitles import write_srt
@@ -101,6 +101,7 @@ class Pipeline:
         self.library = library or AssetRegistry.load(REPO_ROOT / "library")
         self.pricing = load_pricing(self.p.root)
         self.ledger = SpendLedger(self.p.reports / "cost.jsonl", self.cfg.get("budget", {}).get("max_usd"))
+        self.face_detector = None                      # lip-sync speaker lock; tests inject a fake
         self.takes = load_takes(self.p.root)
         self.log = log
         self.story_analyst = StoryAnalyst(llm, self.cfg)
@@ -446,12 +447,16 @@ class Pipeline:
                   resolution: tuple[int, int], fps: int) -> list:
         """Every generated shot that was filmed with a speaker in frame (the video model animates that mouth) gets the
         mouth redrawn to that speaker's own lines, as they fall inside the shot, and to silence everywhere else, so a
-        face never mouths words without a voice. Off-screen voices never drive a face; placeholders are skipped.
-        Providers with apply_many get every shot at once (one GPU job loads the model once)."""
+        face never mouths words without a voice. Off-screen voices never drive a face; placeholders are skipped, and
+        so are shots set to `lipsync.shots.<shot_id>: {sync: false}`. Providers with apply_many get every shot at
+        once (one GPU job loads the model once). With lipsync.speaker_lock (the default) LatentSync sees and changes
+        only the speaker's mouth (_lip_sync_locked)."""
+        ls = self.cfg.get("lipsync") or {}
+        per_shot = ls.get("shots") or {}
         jobs = []                                       # (index, timeline shot, audio, raw output)
         for i, (ts, (t, shot)) in enumerate(zip(shots_out, spans)):
             spoken = {b for b in shot.block_ids if speaker_of.get(b) in shot.characters_in_frame}
-            if not ts.real or not spoken:
+            if not ts.real or not spoken or (per_shot.get(shot.shot_id) or {}).get("sync") is False:
                 continue
             events = [(e.path, e.start_s - t, 0.0) for e in dialogue
                       if e.ref_id in spoken and e.start_s < t + ts.duration_s and e.start_s + e.duration_s > t]
@@ -461,6 +466,8 @@ class Pipeline:
         out = list(shots_out)
         if not jobs:
             return out
+        if ls.get("speaker_lock", True):
+            return self._lip_sync_locked(syncer, out, jobs, resolution, fps)
         try:
             if hasattr(syncer, "apply_many"):
                 raws = syncer.apply_many([(ts.clip, audio, raw) for _, ts, audio, raw in jobs])
@@ -480,6 +487,117 @@ class Pipeline:
             synced = ffmpeg.conform_clip(raw, raw.with_name(raw.name.replace("_raw", "")), ts.duration_s, resolution, fps)
             out[i] = replace(ts, clip=synced)
         self.log(f"  lip-sync: {len(jobs) - kept} shots" + (f", {kept} kept unsynced (see review_queue)" if kept else ""))
+        return out
+
+    def _face_detector(self):
+        if self.face_detector is None:
+            self.face_detector = facelock.BlazeFace((self.cfg.get("lipsync") or {}).get("model_dir"))
+        return self.face_detector
+
+    def _lip_sync_locked(self, syncer, out: list, jobs: list, resolution: tuple[int, int], fps: int) -> list:
+        """Speaker lock (post/facelock.py). The speaker's face is found in every frame of the shot. A whole-frame
+        result already paid for (the provider's cache) is reused when it really moved that face's mouth in all but
+        lipsync.max_off_speaker_frames frames; otherwise LatentSync gets crops around the speaker with every other face
+        blanked, one per run of frames where the speaker's face is visible. Either way the synced pixels go back only
+        over the speaker's mouth and jaw. lipsync.offline: use only results made before, never start a GPU job.
+        Every shot is reported to reports/lipsync.jsonl with a review sheet next to its clip (<take>.speaker.jpg)."""
+        ls = self.cfg.get("lipsync") or {}
+        per_shot = ls.get("shots") or {}
+        ratio, floor = float(ls.get("lock_ratio", 1.5)), float(ls.get("lock_floor", 10.0))
+        max_off = int(ls.get("max_off_speaker_frames", 3))
+        offline = bool(ls.get("offline", False)) and hasattr(syncer, "cached")
+        detector = self._face_detector()
+        plans: dict[int, tuple[facelock.Plan, dict]] = {}
+        crops: list[tuple[int, tuple]] = []             # (index, (segment, crop video, crop audio, raw output))
+        for i, ts, audio, raw in jobs:
+            sid, work, stem = ts.shot_id, raw.parent, ts.clip.stem
+            opts = per_shot.get(sid) or {}
+            analysis = facelock.analyse(ts.clip, detector, cache_dir=self.p.root / "cache" / "faces")
+            track = facelock.pick_speaker(analysis, hint=opts.get("speaker"))
+            facelock.review_sheet(ts.clip, analysis, track, work / f"{stem}.speaker.jpg")
+            record: dict = {"shot_id": sid, "clip": str(ts.clip)}
+            if track is None:
+                self._report("review_queue", {"shot_id": sid, "reason": [
+                    "lip-sync: the speaker's face was not found; the clip is not lip-synced"]})
+                self._report("lipsync", {**record, "mode": "not synced", "why": "no speaker face found"})
+                continue
+            faces = facelock.fill_gaps(track, analysis.frames)
+            keep = facelock.ranges(opts.get("keep_frames"))
+            repair = [(int(a), int(b)) for a, b in opts.get("repair_frames") or []]
+            cx, cy = track.centre()
+            record.update(speaker={"track": track.id, "at": [round(cx / analysis.width, 3), round(cy / analysis.height, 3)],
+                                   "frames": sum(f is not None for f in faces), "of": analysis.frames,
+                                   "hint": opts.get("speaker")})
+            plan = facelock.Plan(faces, keep=keep, repair=repair)
+            whole = syncer.cached(ts.clip, audio) if hasattr(syncer, "cached") and opts.get("mode") != "crop" else None
+            if whole is not None:
+                full = ffmpeg.conform_clip(whole, work / f"{stem}_lipsync_full.mp4", ts.duration_s, resolution, fps)
+                off = facelock.off_speaker_frames(facelock.edit_locations(ts.clip, full, faces), keep, ratio, floor)
+                record["whole_frame_missed_frames"] = off
+                if len(off) <= max_off:
+                    plan.full = full
+                    plans[i] = (plan, {**record, "mode": "whole frame, speaker mask"})
+                    continue
+                plan.fallback = full                    # better than nothing if the crops cannot be made
+            others: dict[int, list[list[float]]] = {}
+            for t in analysis.tracks:
+                if t.id != track.id:
+                    for n, f in t.faces.items():
+                        others.setdefault(n, []).append(f.box)
+            segments = facelock.plan_segments(faces, analysis.width, analysis.height, keep)
+            for k, seg in enumerate(segments):
+                video = facelock.write_crop(ts.clip, seg, others, faces, work / f"{stem}_crop{k}.mp4")
+                sound = facelock.cut_audio(audio, seg.start / fps, (seg.end - seg.start) / fps,
+                                           work / f"{stem}_crop{k}.wav")
+                crops.append((i, (seg, video, sound, work / f"{stem}_crop{k}_raw.mp4")))
+            plans[i] = (plan, {**record, "mode": "speaker crops", "segments": [asdict(s) for s in segments]})
+        todo = [(i, c) for i, c in crops if not offline or syncer.cached(c[1], c[2]) is not None]
+        try:
+            items = [(video, sound, raw) for _, (_, video, sound, raw) in todo]
+            raws = (syncer.apply_many(items) if hasattr(syncer, "apply_many")
+                    else [syncer.apply(*item) for item in items]) if items else []
+        except (BudgetExceeded, GoogleAPIError) as stop:
+            raise PipelineBlocked(str(stop)) from None
+        done = {id(c): r for (_, c), r in zip(todo, raws)}
+        for i, c in crops:
+            seg, video, sound, raw_out = c
+            plan, record = plans[i]
+            got = done.get(id(c))
+            if got is None:
+                why = ("not made yet (lipsync.offline)" if id(c) not in {id(x) for _, x in todo} else
+                       (syncer.failure(video, sound) or "failed") if hasattr(syncer, "failure") else "failed")
+                record.setdefault("failed_segments", []).append({"start": seg.start, "end": seg.end,
+                                                                 "why": why.strip().splitlines()[-1][:300]})
+                continue
+            synced = ffmpeg.conform_clip(got, raw_out.with_name(raw_out.name.replace("_raw", "")),
+                                         (seg.end - seg.start) / fps, seg.window[2:], fps)
+            plan.segments.append((seg, synced))
+        made = kept = 0
+        for i, (plan, record) in sorted(plans.items()):
+            ts = out[i]
+            if plan.full is None and not plan.segments and plan.fallback is not None:
+                plan.full = plan.fallback               # synced where it hit the speaker; the wrong faces never show
+                record["mode"] = "whole frame, speaker mask (crops not made)"
+                self._report("review_queue", {"shot_id": ts.shot_id, "reason": [
+                    f"lip-sync: speaker crops not made; the whole-frame result is used through the speaker mask, "
+                    f"unsynced in {len(record['whole_frame_missed_frames'])} frames"]})
+            if plan.full is None and not plan.segments:
+                kept += 1
+                self._report("review_queue", {"shot_id": ts.shot_id, "reason": [
+                    "lip-sync: no synced frames; the clip is not lip-synced"
+                    + (f" ({record['failed_segments'][-1]['why']})" if record.get("failed_segments") else "")]})
+                self._report("lipsync", {**record, "mode": "not synced"})
+                continue
+            result = facelock.composite(ts.clip, plan, ts.clip.with_name(f"{ts.clip.stem}_lipsync.mp4"),
+                                        detail=float(ls.get("detail", 1.0)))
+            record["synced_frames"] = (len(plan.faces) if plan.full is not None else
+                                       sum(s.end - s.start for s, _ in plan.segments)) - len(plan.keep)
+            self._report("lipsync", record)
+            out[i] = replace(ts, clip=result)
+            made += 1
+        self.log(f"  lip-sync (speaker lock): {made} shots"
+                 + (f", {kept} kept unsynced (see review_queue)" if kept else "")
+                 + (f", {sum(1 for _, c in crops if id(c) in done)} speaker crops" if crops else ""))
         return out
 
     def _render_shot(self, video, shot, ctx: RenderContext, face_guard) -> Path:

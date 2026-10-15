@@ -99,7 +99,9 @@ lipsync:                           # used by providers.lipsync: latentsync_cloud
   shots: {}                        # per shot, from review: {sync: false} keep as filmed | {speaker: [x, y]} a point
                                    # on the speaker's face (fractions of the frame) | {keep_frames: [[a, b]]} frames
                                    # left as filmed | {repair_frames: [[a, b]]} frames between a and b rebuilt from
-                                   # them | {mode: crop} never reuse a whole-frame result
+                                   # them | {mode: crop} never reuse a whole-frame result | {protect: {above: 185}}
+                                   # keep as filmed the pixels brighter (or {below: 40} darker) than this: a
+                                   # background next to the face that LatentSync smeared into
 
 budget:
   max_usd: 50                      # hard stop for paid generation in one project (cost.jsonl ledger)

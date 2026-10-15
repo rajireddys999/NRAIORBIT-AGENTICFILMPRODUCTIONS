@@ -557,6 +557,7 @@ class Plan:
     keep: set[int] = field(default_factory=set)              # frames left as filmed
     repair: list[tuple[int, int]] = field(default_factory=list)   # (a, b): frames between rebuilt from a and b
     fallback: Path | None = None   # a whole-frame result that missed the speaker in some frames: used if no crop comes
+    protect: dict | None = None    # {"above": 185} / {"below": 40}: original pixels that bright (dark) stay as filmed
 
 
 def _synced_frames(plan: Plan, frames: int) -> Iterator[np.ndarray | None]:
@@ -602,6 +603,19 @@ def restore_detail(orig: np.ndarray, synced: np.ndarray, face: Face, strength: f
     return synced + strength * weight[..., None] * ((orig - lo_o) - (synced - lo_s))
 
 
+def protect_mask(orig: np.ndarray, protect: dict) -> np.ndarray:
+    """Weights (0-1) of the pixels to keep as filmed: where the original is brighter than protect["above"] or darker
+    than protect["below"] (0-255 luma), grown and softened by a few pixels. For a background next to the face (backlit
+    water, night foliage) that LatentSync smeared into: skin is never that bright or dark there."""
+    luma = orig[..., :3].astype(np.float32) @ np.array([0.299, 0.587, 0.114], np.float32)
+    hit = np.zeros(luma.shape, bool)
+    if protect.get("above") is not None:
+        hit |= luma > float(protect["above"])
+    if protect.get("below") is not None:
+        hit |= luma < float(protect["below"])
+    return np.clip(_box_blur(hit.astype(np.float32), 7) * 2.0, 0, 1)
+
+
 def composite(original: Path, plan: Plan, out: Path, feather: float = 0.3, detail: float = 1.0) -> Path:
     """The original clip with the synced pixels pasted in only inside the speaker's feathered mouth ellipse. Frames
     in plan.keep (and frames without a speaker face or synced pixels) stay exactly as filmed. Repaired frames take
@@ -639,6 +653,8 @@ def composite(original: Path, plan: Plan, out: Path, feather: float = 0.3, detai
                         local = Face([f.box[0] - x0, f.box[1] - y0, f.box[2] - x0, f.box[3] - y0], f.score,
                                      [shift(f.eyes[0]), shift(f.eyes[1])], shift(f.nose), shift(f.mouth))
                         syn = restore_detail(o, syn, local, detail)
+                    if plan.protect:
+                        m = m * (1 - protect_mask(o, plan.protect))
                     frame[y0:y1, x0:x1] = np.clip(o + m[..., None] * (syn - o) + 0.5, 0, 255)
             wr.write(frame)
     return out

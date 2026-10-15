@@ -187,3 +187,33 @@ def test_restore_detail_brings_back_texture_but_not_the_old_mouth():
     assert texture(out, *chin) > 0.7 * texture(orig, *chin)          # ...and gets its stubble back
     mouth = (slice(my - 6, my + 6), slice(mx - 20, mx + 20))
     assert abs(out[mouth].mean() - 20.0) < 3 and texture(out, *mouth) < 0.1 * texture(orig, *mouth)   # the new mouth
+
+
+def test_protect_keeps_a_bright_background_beside_the_mouth(tmp_path):
+    """LatentSync smeared skin into the backlit water beside a turned face: protect: {above: 185} keeps the water."""
+    rng = np.random.default_rng(5)
+    face = _face(*TALKER)
+    x0, y0, s = TALKER
+    edge = x0 + 46                                                    # the turned face ends before the patch does
+    base = np.full((H, W, 3), 230, np.uint8)                          # bright backlit water...
+    base[y0:y0 + s, x0:edge] = np.clip(rng.normal(110, 12, (s, edge - x0, 3)), 0, 255).astype(np.uint8)   # ...skin
+    with fl.FrameWriter(tmp_path / "orig.mp4", W, H, FPS) as w:
+        for _ in range(4):
+            w.write(base)
+    syn = base.copy()
+    mx, my = int(face.mouth[0]), int(face.mouth[1])
+    syn[my - 3:my + 3, mx - 8:mx + 6] = 20                           # the new mouth, on skin
+    syn[my - 6:my + 8, edge:edge + 10] = 150                         # a skin-coloured smear into the water
+    with fl.FrameWriter(tmp_path / "syn.mp4", W, H, FPS) as w:
+        for _ in range(4):
+            w.write(syn)
+    faces = [face] * 4
+    plain = _frames(fl.composite(tmp_path / "orig.mp4", fl.Plan(faces, full=tmp_path / "syn.mp4"), tmp_path / "a.mp4",
+                                 detail=0))
+    guarded = _frames(fl.composite(tmp_path / "orig.mp4", fl.Plan(faces, full=tmp_path / "syn.mp4",
+                                                                  protect={"above": 185}), tmp_path / "b.mp4", detail=0))
+    smear = (slice(None), slice(my - 4, my + 6), slice(edge + 3, edge + 9))
+    assert plain[smear].mean() < 200                                  # without the guard the smear shows
+    assert guarded[smear].mean() > 220                                # with it, the water is as filmed
+    mouth = (slice(None), slice(my - 2, my + 2), slice(mx - 6, mx + 4))
+    assert guarded[mouth].mean() < 60                                 # the new mouth is still there

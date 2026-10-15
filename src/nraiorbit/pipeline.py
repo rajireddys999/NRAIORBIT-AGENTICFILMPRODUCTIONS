@@ -528,7 +528,7 @@ class Pipeline:
             record.update(speaker={"track": track.id, "at": [round(cx / analysis.width, 3), round(cy / analysis.height, 3)],
                                    "frames": sum(f is not None for f in faces), "of": analysis.frames,
                                    "hint": opts.get("speaker")})
-            plan = facelock.Plan(faces, keep=keep, repair=repair)
+            plan = facelock.Plan(faces, keep=keep, repair=repair, protect=opts.get("protect"))
             whole = syncer.cached(ts.clip, audio) if hasattr(syncer, "cached") and opts.get("mode") != "crop" else None
             if whole is not None:
                 full = ffmpeg.conform_clip(whole, work / f"{stem}_lipsync_full.mp4", ts.duration_s, resolution, fps)

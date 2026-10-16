@@ -13,7 +13,8 @@
   there, so a rebuild never starts a GPU job. Each rebuild is sent in chat as 6 parts under 30 MB plus the trailer.
 - Open choice for the owner: a targeted GPU re-run (about $2) for the closed mouths in sc008_s002, sc009_s006 and
   sc011_s004 and some under-articulated vowels. This needs a small code change (re-sync only given frame ranges with
-  higher audio guidance) and the owner's OK. Also a uniform 2.35:1 matte (18 clips have baked-in bars).
+  higher audio guidance) and the owner's OK. Also a uniform 2.35:1 matte (18 clips have baked-in bars), and three
+  free edit/sound options the QA critic left to the owner (docs/PROJECT_STATUS.md, round 3).
 - If a session finds a lip-sync endpoint still deployed with nothing running, undeploy and delete it
   (`gcloud ai endpoints list --region us-central1`).
 - Media: `gs://nraiorbit-agentic-film-product-media/godavari10/` (inbox clips, keyframes, caches, plan files, cost

@@ -154,6 +154,13 @@ _Last updated: 2026-10-15. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
     - Re-timed inside their scenes (scene lengths and music unchanged): sc001_s002, sc003_s005 and sc008_s006 end soon
       after their line; sc004_s003 starts at Arjun's voice instead of 0.25 s of silent shouting.
     - sc006_s002 (Bhairava close-up) is lip-synced again from the paid result.
+    - **Round 3 (verification, 2026-10-16):** every changed shot was compared before/after frame by frame (13 shots,
+      all better, nothing high) and the whole film re-measured (14880 frames, every cut on its frame, voice 5 ms
+      behind the lips everywhere, i.e. one eighth of a frame; trailer fine). Four more free tweaks came out of it
+      (sc001_s002 fade, sc006_s002 joins, sc011_s004 repair, sc013_s003 shorter repair so the 'm' closes). The
+      completeness critic's remaining free options need the owner: a cutaway over sc009_s006 f48-77 (her line
+      off-screen instead of a closed mouth), an audio re-time for sc011_s006 f104-109, a sound edit (exhale) for
+      sc007_s004 f152-174.
   - **Known limits (LatentSync 1.6):** lips and teeth softer than filmed, Bhairava's gold teeth come out pale, some
     vowels under-articulated. In 3 shots the mouth stays closed for 0.8-1.7 s while the voice plays (sc008_s002,
     sc009_s006, sc011_s004). Only a new GPU pass (higher audio guidance, re-synced frame ranges; about $2) can change

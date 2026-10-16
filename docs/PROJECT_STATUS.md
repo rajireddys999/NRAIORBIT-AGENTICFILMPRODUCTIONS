@@ -163,7 +163,9 @@ _Last updated: 2026-10-15. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
       sc007_s004 f152-174.
     - **Final deliverables (2026-10-16):** gs://nraiorbit-agentic-film-product-media/godavari10/final/ holds the full
       film as one file in 1080p (742 MB, the master) and 720p (165 MB) and the trailer; the owner got 7-day signed
-      download links. The working master stays under godavari10/11_master/.
+      download links. The working master stays under godavari10/11_master/. godavari10/final/source/ holds every
+      picture source of the film with a manifest: the 84 generated keyframes, frame 0 of all 133 clips, the 133 Veo
+      clips used plus the 34 lip-synced versions, and the cast reference photos (loose files and four zips).
   - **Known limits (LatentSync 1.6):** lips and teeth softer than filmed, Bhairava's gold teeth come out pale, some
     vowels under-articulated. In 3 shots the mouth stays closed for 0.8-1.7 s while the voice plays (sc008_s002,
     sc009_s006, sc011_s004). Only a new GPU pass (higher audio guidance, re-synced frame ranges; about $2) can change

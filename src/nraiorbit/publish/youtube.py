@@ -65,17 +65,33 @@ def build_metadata(bible: StoryBible, outline: Outline, *, privacy: str = "priva
     }
 
 
-def credentials(client_secrets: Path, token_cache: Path):
+def credentials(client_secrets: Path, token_cache: Path, interactive: bool = True):
+    """The stored OAuth token (refreshed when needed). With interactive=False, as on a server, a missing or dead
+    token is an error with the fix in it instead of a browser window. YOUTUBE_TOKEN_JSON (a secret) seeds the
+    token file when there is none."""
+    import os
+
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
-    from google_auth_oauthlib.flow import InstalledAppFlow
 
+    seeded = os.environ.get("YOUTUBE_TOKEN_JSON", "").strip()
+    if seeded and not token_cache.exists():
+        token_cache.parent.mkdir(parents=True, exist_ok=True)
+        token_cache.write_text(seeded, encoding="utf-8")
     creds = Credentials.from_authorized_user_file(str(token_cache), SCOPES) if token_cache.exists() else None
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
-    if not creds or not creds.valid:
-        creds = InstalledAppFlow.from_client_secrets_file(str(client_secrets), SCOPES).run_local_server(port=0)
         token_cache.write_text(creds.to_json(), encoding="utf-8")
+    if creds and creds.valid:
+        return creds
+    if not interactive:
+        raise RuntimeError(f"no valid YouTube token at {token_cache}: run `nraiorbit release youtube <slug> --auth` "
+                           "once on a computer with a browser (it stores the token), or put that token's JSON in "
+                           "the YOUTUBE_TOKEN_JSON secret")
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    creds = InstalledAppFlow.from_client_secrets_file(str(client_secrets), SCOPES).run_local_server(port=0)
+    token_cache.write_text(creds.to_json(), encoding="utf-8")
     return creds
 
 

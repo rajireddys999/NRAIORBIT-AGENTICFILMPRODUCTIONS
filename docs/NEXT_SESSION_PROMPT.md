@@ -7,6 +7,13 @@ Read docs/FRAMEWORK.md first. A new story: `nraiorbit new <slug> --story story.m
 unless `policy.gates: auto`. QA, delivery, YouTube and backup are `nraiorbit qa`, `release`, `backup`. The always-on
 runner is deploy/service (Cloud Run job + two CSV queues); reference learning is `nraiorbit learn youtube`.
 
+Guard rails added the same day (docs/FRAMEWORK.md §7): `produce` prices the paid stages first and blocks without a cap
+or over it; YouTube only on a passing film check and never through a browser (`YOUTUBE_TOKEN_JSON` secret, or
+`release youtube --auth` once on a laptop); `--offline` covers Lyria; `learn youtube` refuses a watch over `--max-usd`
+(default $1). Savings for new films: `lipsync.sync_silence: auto` and `shots.billable_grid: true` are on in the
+template. **Keep godavari10 on `sync_silence: always` and without the grid**: its paid lip-sync results and shot lists
+are keyed to the old crops; changing either re-makes crops and pays sync.so again.
+
 ## Where things stand (2026-10-17): voice E, lips by sync.so sync-3
 
 - The film is now in **voice E** (ElevenLabs Eleven v4 library voices, one per character) with every on-camera

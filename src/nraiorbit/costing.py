@@ -444,7 +444,38 @@ def preview_run(root: Path, cfg: dict, pricing: dict) -> dict:
 
         out["cues"], out["cached_cues"] = _lyria_preview(root, cfg)
         out["music_usd"] = out["cues"] * lyria_price(pricing, music_model(g))
-    out["total_usd"] = out["video_usd"] + out["keyframe_usd"] + out["tts_usd"] + out["music_usd"]
+    ls = cfg.get("lipsync") or {}
+    out["lipsync_seconds"], out["lipsync_usd"], out["cached_lipsync_shots"] = 0.0, 0.0, 0
+    if prov.get("lipsync") == "sync_so" and not ls.get("offline"):
+        rate = float(((pricing.get("sync_so") or {}).get("per_second") or {}).get(ls.get("model", "sync-3"), 0.133))
+        speaking = speaking_shots(root, only)
+        done = {sid for sid in speaking if any((root / "07_video" / sid).glob("*_lipsync.mp4"))}   # synced already
+        out["cached_lipsync_shots"] = len(done)
+        out["lipsync_seconds"] = round(sum(sec for sid, sec in speaking.items() if sid not in done), 1)
+        out["lipsync_usd"] = round(out["lipsync_seconds"] * rate, 2)
+    out["total_usd"] = out["video_usd"] + out["keyframe_usd"] + out["tts_usd"] + out["music_usd"] + out["lipsync_usd"]
+    return out
+
+
+def speaking_shots(root: Path, only: list[str] | None = None) -> dict[str, float]:
+    """shot_id -> seconds, for every selected shot filmed with a speaker in frame (an upper bound on the lip-sync
+    bill: the speaker crops are a little shorter than the shot, and cached results are free)."""
+    from .schemas import SceneScript
+    from .shotpack import selected
+
+    out: dict[str, float] = {}
+    for path in sorted((root / "04_shots").glob("*.json")):
+        shot_list = ShotList.model_validate_json(path.read_text(encoding="utf-8"))
+        script_path = root / "03_scenes" / f"{shot_list.scene_id}.json"
+        speakers: dict[str, str] = {}
+        if script_path.exists():
+            script = SceneScript.model_validate_json(script_path.read_text(encoding="utf-8"))
+            speakers = {b.block_id: b.character_id for b in script.blocks if b.kind == "dialogue" and b.character_id}
+        for shot in shot_list.shots:
+            if not selected(shot, shot_list.scene_id, only or []) or not shot.characters_in_frame:
+                continue
+            if any(speakers.get(b) in shot.characters_in_frame for b in shot.block_ids):
+                out[shot.shot_id] = float(shot.duration_s)
     return out
 
 

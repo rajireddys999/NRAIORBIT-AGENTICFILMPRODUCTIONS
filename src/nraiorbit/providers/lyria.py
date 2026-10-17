@@ -25,7 +25,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..costing import SpendLedger, lyria_price
+from ..costing import BudgetExceeded, SpendLedger, lyria_price
 from ..post import ffmpeg
 from ..planning.score import load_styles, slot_for
 from ..schemas import Cue
@@ -368,6 +368,7 @@ class LyriaMusic:
         self.inbox = InboxMusic(project_root)
         self.chars = characters(project_root)
         self.styles = load_styles(cfg)
+        self.offline = bool((cfg.get("music") or {}).get("offline"))   # cached or inbox tracks only, never a call
         self._client = client                         # made on the first paid call: cached cues need no sign-in
 
     @property
@@ -383,7 +384,12 @@ class LyriaMusic:
         if _find_audio(self.inbox.folder, cue.cue_id):  # a composer's or hand-made track wins, no call
             return self.inbox.render_cue(cue, out)
         prompt = self.prompt(cue)
-        raw = cached_raw(self.root, self.model, prompt) or self._generate(cue, prompt)
+        raw = cached_raw(self.root, self.model, prompt)
+        if raw is None:
+            if self.offline:
+                raise BudgetExceeded(f"offline: Lyria would be paid for {cue.cue_id}; run without --offline to generate "
+                                     f"it, or put a track in inbox/music/{cue.cue_id}.wav")
+            raw = self._generate(cue, prompt)
         seconds = cue_seconds(cue)
         return fit_to_cue(raw, seconds, out, start=alignment(raw, cue, seconds))   # the hit lands on its shot
 

@@ -314,3 +314,30 @@ def test_extend_track_takes_over_a_split_detection_of_the_same_face():
     assert sorted(out.faces) == list(range(20)) and out.faces[15] is b.faces[15] and out.faces[5] is a.faces[5]
     assert sorted(fl.extend_track(b, [a, b, c, d]).faces) == list(range(20))      # backwards as well
     assert sorted(fl.extend_track(c, [a, b, c, d]).faces) == list(range(20))      # nothing of anyone else's
+
+
+def test_silent_frames_are_outside_the_spoken_windows_with_a_margin():
+    # a 96-frame clip (4 s at 24 fps): a line from 1.0 s to 2.0 s, another from 2.3 s to 2.5 s
+    silent = fl.silent_frames([(1.0, 2.0), (2.3, 2.5)], 96, 24, margin=6, least=12)
+    assert min(silent) == 0 and max(silent) == 95
+    assert set(range(0, 18)) <= silent and set(range(66, 96)) <= silent         # the head and the tail
+    assert not (set(range(18, 66)) & silent)         # the lines, the margin and the short pause between them
+    assert fl.silent_frames([], 30, 24) == set(range(30))                      # no voice at all: all silent
+    assert fl.silent_frames([(0.0, 10.0)], 30, 24) == set()                    # voice throughout
+    assert fl.silent_frames([(0.0, 0.5)], 30, 24, margin=6, least=12) == set(range(18, 30))
+    assert fl.silent_frames([(0.0, 0.5)], 30, 24, margin=6, least=20) == set() # too short a tail to bother
+
+
+def test_still_frames_are_the_silent_ones_where_the_filmed_mouth_rests():
+    def face(talk):
+        f = fl.Face([0, 0, 50, 50], 0.9, [[15, 17], [35, 17]], [25, 27], [25, 37])
+        f.talk = talk
+        return f
+    # voiced frames 0-23 move a lot (median 10); silent 24-71: still 24-47 (talk 1), moving 48-59 (talk 9),
+    # unknown 60-71 (None: counts as moving)
+    faces = [face(10.0)] * 24 + [face(1.0)] * 24 + [face(9.0)] * 12 + [face(None)] * 12
+    silent = set(range(24, 72))
+    assert fl.still_frames(faces, silent, set(range(24))) == set(range(24, 48))
+    assert fl.still_frames(faces, silent, set(range(24)), least=30) == set()        # the rest is too short
+    assert fl.still_frames(faces, silent, set()) == set()                            # no voiced reference: sync all
+    assert fl.still_frames([None] * 72, silent, set(range(24))) == set()

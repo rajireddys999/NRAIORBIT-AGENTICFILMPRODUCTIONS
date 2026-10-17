@@ -101,6 +101,13 @@ lipsync:                           # used by providers.lipsync: latentsync_cloud
                                    # on the real lips even when the head is turned, and clipped to the face outline,
                                    # so a smear LatentSync made on the background beside the face never shows
   model_dir: null                  # where the face models are kept (default ~/.cache/nraiorbit)
+  sync_silence: always             # what the model gets of a speaking shot: always: the speaker's whole visible run,
+                                   # silence included (it closes a mouth the video model left moving) | auto: silent
+                                   # stretches where the filmed mouth is already still stay as filmed (nothing to fix,
+                                   # nothing to pay; the rest is synced) | never: only the lines and a margin
+  silence_margin_frames: 6         # frames of silence synced on each side of a line (the mouth opens and closes)
+  silence_fade_frames: 3           # dissolve between the synced and the filmed mouth at those edges (per-shot
+                                   # fade_frames wins)
   shots: {}                        # per shot, from review: {sync: false} keep as filmed | {speaker: [x, y]} a point
                                    # on the speaker's face (fractions of the frame) | {keep_frames: [[a, b]]} frames
                                    # left as filmed (LatentSync is not given them: new crops, a new GPU job) |
@@ -119,6 +126,11 @@ lipsync:                           # used by providers.lipsync: latentsync_cloud
                                    # {cut_in_s: 0.25} the edit cuts into the shot this much later (04_shots: the
                                    # shot shortened, the one before it lengthened by exactly as much; not a scene's
                                    # first shot): its take, lip-sync and lines keep their film times (reused)
+
+shots:
+  billable_grid: false             # true: shot lengths on the video model's billed clip lengths (Veo: 4, 6 or 8 s;
+                                   # 8 s only at 1080p), scenes on even seconds, so no generated second is paid for and
+                                   # trimmed away. Off: shots fitted proportionally (existing projects stay as planned)
 
 budget:
   max_usd: 50                      # hard stop for paid generation in one project (cost.jsonl ledger)

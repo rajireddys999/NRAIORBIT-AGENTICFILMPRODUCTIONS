@@ -685,6 +685,53 @@ def plan_segments(faces: list[Face | None], width: int, height: int, keep: set[i
     return out
 
 
+def silent_frames(windows: list[tuple[float, float]], frames: int, fps: float, margin: int = 6,
+                  least: int = 12) -> set[int]:
+    """Frames with no line to say: outside every spoken window (seconds on the clip's clock), each window grown by
+    `margin` frames on both sides so the mouth opens before the first word and closes after the last. Only
+    stretches of at least `least` frames count; a short pause between words is synced with the words."""
+    voiced = np.zeros(max(frames, 0), bool)
+    for a, b in windows:
+        lo, hi = max(0, int(math.floor(a * fps)) - margin), min(frames, int(math.ceil(b * fps)) + margin)
+        if hi > lo:
+            voiced[lo:hi] = True
+    out: set[int] = set()
+    start = None
+    for i in range(frames + 1):
+        on = i < frames and not voiced[i]
+        if on and start is None:
+            start = i
+        elif not on and start is not None:
+            if i - start >= least:
+                out.update(range(start, i))
+            start = None
+    return out
+
+
+def still_frames(faces: list[Face | None], candidates: set[int], reference: set[int], ratio: float = 0.35,
+                 least: int = 12) -> set[int]:
+    """Of `candidates`, the frames where the speaker's filmed mouth hardly moves: its motion (Face.talk) is under
+    `ratio` of the median motion over the `reference` frames (the ones with a voice), in stretches of at least
+    `least` frames. A frame whose motion is unknown counts as moving. Nothing is still when there is no reference."""
+    spoken = [faces[i].talk for i in sorted(reference) if i < len(faces) and faces[i] is not None
+              and faces[i].talk is not None]
+    if not spoken:
+        return set()
+    limit = ratio * float(np.median(spoken))
+    still = sorted(i for i in candidates if i < len(faces) and faces[i] is not None and faces[i].talk is not None
+                   and faces[i].talk <= limit)
+    out: set[int] = set()
+    run: list[int] = []
+    for i in still + [None]:
+        if run and (i is None or i != run[-1] + 1):
+            if len(run) >= least:
+                out.update(run)
+            run = []
+        if i is not None:
+            run.append(i)
+    return out
+
+
 def write_crop(original: Path, seg: Segment, blank: dict[int, list[list[float]]], speaker: list[Face | None],
                out: Path) -> Path:
     """Frames seg.start..seg.end-1 of the clip, cropped to seg.window, with every other face's box (grown by 15%)

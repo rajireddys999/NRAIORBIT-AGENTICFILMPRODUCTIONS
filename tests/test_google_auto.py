@@ -1005,3 +1005,58 @@ def test_keyframes_command_makes_first_frames_only(setup, monkeypatch, capsys):
     cli.main(["keyframes", setup.root.name, "--yes"])                        # the rest; shots with clips skipped
     made = len(setup.fake.image_calls) - images
     assert made == len(with_leads) and len(setup.fake.video_calls) == videos + 1
+
+
+def test_sync_silence_sends_the_model_only_the_frames_with_a_voice(setup):
+    """lipsync.sync_silence: `always` crops the speaker's whole visible run; `never` leaves silent stretches (past a
+    margin round each line) as filmed, so fewer seconds go to the paid model; `auto` does the same where the filmed
+    mouth is still (every frame here: the fake face never moves). The synced clip is still composited."""
+    from nraiorbit.post import facelock as fl
+    from nraiorbit.providers.base import register
+    from nraiorbit.providers.mock import MockLipSync
+
+    x0, y0, s = 60, 40, 70
+    one = fl.Face([x0, y0, x0 + s, y0 + s], 0.9, [[x0 + .3 * s, y0 + .35 * s], [x0 + .7 * s, y0 + .35 * s]],
+                  [x0 + .5 * s, y0 + .55 * s], [x0 + .5 * s, y0 + .75 * s])
+    sent = []
+
+    @register("lipsync", "silence_test")
+    class Silence(MockLipSync):
+        def __init__(self, **kw):
+            pass
+
+        def cached(self, video, audio):
+            return None
+
+        def apply_many(self, items):
+            sent.extend(items)
+            return [self.apply(v, a, o) for v, a, o in items]
+
+    def frames_sent():
+        return sum(ffmpeg.frame_count(Path(v)) for v, _, _ in sent)
+
+    def records():
+        return {r["shot_id"]: r for r in map(json.loads, (setup.root / "reports" / "lipsync.jsonl").read_text().splitlines())}
+
+    pipeline, cfg = setup.make(only=["trailer"])
+    pipeline.face_detector = lambda rgb: [one]
+    cfg["providers"]["lipsync"] = "silence_test"
+    pipeline.run(until="render")
+    always = frames_sent()
+    assert always > 0 and not any("silence_frames_as_filmed" in r for r in records().values())
+
+    for mode in ("never", "auto"):
+        sent.clear()
+        (setup.root / "reports" / "lipsync.jsonl").unlink()
+        cfg["lipsync"]["sync_silence"] = mode
+        pipeline.run(until="render", force=("render",))
+        recs = records()
+        skipped = sum(r.get("silence_frames_as_filmed", 0) for r in recs.values())
+        assert skipped > 0 and frames_sent() < always, mode
+        assert frames_sent() + skipped <= sum(r["speaker"]["of"] for r in recs.values())
+        timeline = json.loads((setup.root / "10_edit" / "timeline.json").read_text())["shots"]
+        synced = {t["shot_id"] for t in timeline if t["clip"].endswith("_lipsync.mp4")}
+        assert synced >= {sid for sid, r in recs.items() if r.get("segments")}
+        for r in recs.values():                                   # every crop sent lies inside a voiced stretch
+            for seg in r.get("segments") or []:
+                assert seg["end"] - seg["start"] >= 8

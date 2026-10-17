@@ -446,3 +446,45 @@ def test_title_card_is_cinematic_not_text_on_black(tmp_path):
     with_image = assemble.cut_segments(src, [(None, 2.0)], tmp_path / "ti.mp4", resolution=(320, 180), fps=24,
                                        audio=False, title_image=designed)
     assert ffmpeg.duration(with_image) == pytest.approx(2.0, abs=0.05)
+
+
+def test_billable_grid_puts_every_shot_on_a_veo_length(tmp_path):
+    """shots.billable_grid with Veo: even scene targets, shots of 4, 6 or 8 s adding up to them (or a shot_issues
+    row when a scene's shot count cannot meet it). Off, or without Veo, the shot lists are fitted as before."""
+    import yaml
+
+    from nraiorbit.config import deep_merge, load_pipeline_config
+    from nraiorbit.demo import DEMO_CONFIG, DEMO_PLOT, demo_llm
+    from nraiorbit.pipeline import Pipeline
+    from nraiorbit.schemas import Outline, ShotList
+
+    def plan(extra):
+        root = tmp_path / ("grid" if extra else "plain")
+        (root / "input").mkdir(parents=True)
+        (root / "input" / "story.md").write_text(DEMO_PLOT, encoding="utf-8")
+        cfg = deep_merge(DEMO_CONFIG, extra)
+        (root / "pipeline.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+        p = Pipeline(root, demo_llm(), cfg=load_pipeline_config(root), log=lambda *_: None)
+        p.run(until="shots")
+        return root
+
+    plain = plan({})
+    grid = plan({"providers": {"video": "veo"}, "shots": {"billable_grid": True}})
+    outline = Outline.model_validate_json((grid / "02_outline.json").read_text())
+    assert all(sc.target_seconds % 2 == 0 for sc in outline.scenes)
+    assert sum(sc.target_seconds for sc in outline.scenes) == \
+        sum(sc.target_seconds for sc in Outline.model_validate_json((plain / "02_outline.json").read_text()).scenes)
+    issues = [json.loads(line) for line in (grid / "reports" / "shot_issues.jsonl").read_text().splitlines()] \
+        if (grid / "reports" / "shot_issues.jsonl").exists() else []
+    fell_back = {i["scene_id"] for i in issues if "billable_grid" in i}
+    on_grid = 0
+    for sc in outline.scenes:
+        shots = ShotList.model_validate_json((grid / "04_shots" / f"{sc.scene_id}.json").read_text()).shots
+        total = sum(s.duration_s for s in shots)
+        assert total == pytest.approx(sc.target_seconds, abs=1 / 24)
+        if sc.scene_id not in fell_back:
+            assert all(s.duration_s in (4.0, 6.0, 8.0) for s in shots), sc.scene_id
+            on_grid += 1
+    assert on_grid >= 1
+    off = [s for p in sorted((plain / "04_shots").glob("*.json")) for s in ShotList.model_validate_json(p.read_text()).shots]
+    assert any(s.duration_s not in (4.0, 6.0, 8.0) for s in off)          # proportional fitting, as before

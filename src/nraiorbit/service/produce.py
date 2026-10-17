@@ -101,7 +101,16 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
         return finish("awaiting:faces")
     report["steps"]["faces"] = "approved" if (pipeline.p.reviews / "faces.approved").exists() else "not needed"
 
-    # 3. the paid stages, assembly and trailer under the cap
+    # 3. the cost gate: what the paid stages would cost against what is left of the cap, before anything is paid
+    block, preview = cost_gate(pipeline)
+    if preview:
+        report["steps"]["estimate"] = {k: preview[k] for k in ("total_usd", "video_usd", "keyframe_usd", "tts_usd",
+                                                              "music_usd", "lipsync_usd") if k in preview}
+    if block:
+        report["steps"]["render"] = block["why"]
+        return finish(block["state"])
+
+    # 4. the paid stages, assembly and trailer under the cap
     while True:
         try:
             pipeline.run()
@@ -142,14 +151,17 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
         report["steps"]["deliver"] = f"failed: {type(exc).__name__}: {str(exc)[:160]}"
         return finish("blocked:deliver")
 
-    # 6. YouTube, private unless the policy says otherwise; skipped without credentials
-    if pol["publish"] in ("private", "unlisted", "public"):
+    # 6. YouTube, private unless the policy says otherwise; only when the film check passed; never a browser
+    if pol["publish"] not in ("private", "unlisted", "public"):
+        report["steps"]["publish"] = "none"
+    elif report["steps"].get("qa_film") != "ok":
+        report["steps"]["publish"] = "held: the film check did not pass; look at reports/qa/film.json, then " \
+                                     "`nraiorbit release youtube <slug>`"
+    else:
         try:
             report["steps"]["publish"] = publish_youtube(root, pol["publish"])
         except Exception as exc:
             report["steps"]["publish"] = f"skipped: {type(exc).__name__}: {str(exc)[:160]}"
-    else:
-        report["steps"]["publish"] = "none"
 
     # 7. backup
     if bucket:
@@ -159,6 +171,34 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
         except Exception as exc:
             report["steps"]["backup"] = f"failed: {type(exc).__name__}: {str(exc)[:160]}"
     return finish("done")
+
+
+def cost_gate(pipeline: Pipeline) -> tuple[dict | None, dict | None]:
+    """(a block to report, the preview) before the paid stages. A block when the paid generators' estimate plus
+    what is spent would pass the cap, or when there is an estimate and no cap at all. Cached work costs nothing
+    and never blocks."""
+    from ..costing import preview_run
+
+    cfg, prov = pipeline.cfg, pipeline.cfg.get("providers", {})
+    voice, ls = cfg.get("voice", {}), cfg.get("lipsync") or {}
+    paid = (prov.get("video") == "veo" or prov.get("tts") in ("gemini", "elevenlabs") or prov.get("music") == "lyria"
+            or (prov.get("tts") == "inbox" and voice.get("inbox_fallback") in ("gemini", "elevenlabs"))
+            or (prov.get("lipsync") == "sync_so" and not ls.get("offline")))
+    if not paid or not (pipeline.p.root / "04_shots").exists():
+        return None, None
+    preview = preview_run(pipeline.p.root, cfg, pipeline.pricing)
+    estimate = float(preview.get("total_usd") or 0.0)
+    if estimate <= 0:
+        return None, preview
+    spent = pipeline.ledger.spent()
+    cap = (cfg.get("budget") or {}).get("max_usd")
+    if cap is None or cap <= 0:
+        return {"state": "blocked:no cap", "why": f"the paid stages would cost about ${estimate:.2f} and "
+                                                   "budget.max_usd is not set; set it (or --max-spend) first"}, preview
+    if spent + estimate > cap:
+        return {"state": "blocked:estimate", "why": f"estimate ${estimate:.2f} + spent ${spent:.2f} is over the cap "
+                                                     f"${cap:.2f}; raise the cap or reduce the plan"}, preview
+    return None, preview
 
 
 def publish_youtube(root: Path, privacy: str) -> dict:
@@ -174,7 +214,7 @@ def publish_youtube(root: Path, privacy: str) -> dict:
         raise FileNotFoundError("no YouTube credentials (YOUTUBE_CLIENT_SECRETS / YOUTUBE_TOKEN)")
     bible = StoryBible.model_validate_json((root / "01_story_bible.json").read_text(encoding="utf-8"))
     outline = Outline.model_validate_json((root / "02_outline.json").read_text(encoding="utf-8"))
-    creds = youtube.credentials(secrets, token)
+    creds = youtube.credentials(secrets, token, interactive=False)
     master = root / "11_master"
     out = {}
     meta = youtube.build_metadata(bible, outline, privacy=privacy)

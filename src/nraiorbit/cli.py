@@ -94,6 +94,7 @@ def _apply_run_options(cfg: dict, args) -> dict:
         cfg.setdefault("budget", {})["max_usd"] = args.max_spend
     if getattr(args, "offline", False):
         cfg.setdefault("lipsync", {})["offline"] = True      # paid lip-sync results only, never a new job
+        cfg.setdefault("music", {})["offline"] = True        # cached or inbox music only, never a Lyria call
     return cfg
 
 
@@ -104,7 +105,8 @@ def _preflight(root: Path, cfg: dict, assume_yes: bool) -> bool:
     prov = cfg.get("providers", {})
     lyria = prov.get("music") == "lyria"
     paid = prov.get("video") == "veo" or prov.get("tts") in ("gemini", "elevenlabs") or lyria or (
-        prov.get("tts") == "inbox" and cfg.get("voice", {}).get("inbox_fallback") in ("gemini", "elevenlabs"))
+        prov.get("tts") == "inbox" and cfg.get("voice", {}).get("inbox_fallback") in ("gemini", "elevenlabs")) or (
+        prov.get("lipsync") == "sync_so" and not (cfg.get("lipsync") or {}).get("offline"))
     if not paid or not (root / "04_shots").exists():
         return True
     pre = preview_run(root, cfg, load_pricing(root))
@@ -118,6 +120,9 @@ def _preflight(root: Path, cfg: dict, assume_yes: bool) -> bool:
           f"  Telugu voices (Gemini TTS): {pre['lines']} takes (a crowd line is one per voice) -> ${pre['tts_usd']:.2f}\n"
           + (f"  Music (Lyria): {pre['cues']} new cues -> ${pre['music_usd']:.2f}"
              f"  ({pre['cached_cues']} already generated or in inbox/music, free)\n" if lyria else "")
+          + (f"  Lip-sync (sync.so): up to {pre['lipsync_seconds']:.0f} s -> ${pre['lipsync_usd']:.2f}"
+             f"  ({pre['cached_lipsync_shots']} shots synced already; cached results are free)\n"
+             if pre.get("lipsync_usd") else "")
           + f"  Total about ${pre['total_usd']:.2f} for one attempt per shot. Spent so far ${spent:.2f}"
           + (f", budget ${budget:.2f}." if budget is not None else ", no budget cap."))
     if pre["total_usd"] == 0:
@@ -427,7 +432,8 @@ def cmd_publish(args) -> None:
     if args.dry_run:
         print(yaml.safe_dump(meta, allow_unicode=True, sort_keys=False))
         return
-    creds = youtube.credentials(Path(args.client_secrets), paths.root / ".youtube_token.json")
+    creds = youtube.credentials(Path(args.client_secrets), paths.root / ".youtube_token.json",
+                                interactive=bool(getattr(args, "auth", False)) or sys.stdin.isatty())
     captions = {lang: paths.master / f"subs_{lang}.srt" for lang in ("te", "en")
                 if (paths.master / f"subs_{lang}.srt").exists() and not args.trailer}
     thumb = paths.master / "thumbnail.png"
@@ -486,8 +492,10 @@ def cmd_produce(args) -> None:
 def cmd_learn(args) -> None:
     from .service import learn
     cfg = load_pipeline_config(_project(args.project) if args.project else None)
+    from .costing import load_pricing
     for url in args.urls:
-        path = learn.learn(url, title=args.title, what=args.learn, cfg=cfg, start_s=args.start, end_s=args.end)
+        path = learn.learn(url, title=args.title, what=args.learn, cfg=cfg, start_s=args.start, end_s=args.end,
+                           minutes=args.minutes, max_usd=args.max_usd, yes=args.yes, pricing=load_pricing(None))
         print(f"  {url} -> {path}")
 
 
@@ -642,6 +650,7 @@ def _main(argv: list[str] | None = None) -> None:
     p.add_argument("--privacy", choices=["private", "unlisted", "public"], default="private")
     p.add_argument("--trailer", action="store_true", help="upload the trailer instead of the film")
     p.add_argument("--dry-run", action="store_true", help="print the metadata without uploading")
+    p.add_argument("--auth", action="store_true", help="sign in through the browser once and store the token")
     p.set_defaults(fn=cmd_publish)
 
     p = sub.add_parser("produce", help="one story start to finish under the project's policy: plan, faces, render, "
@@ -681,6 +690,7 @@ def _main(argv: list[str] | None = None) -> None:
     y.add_argument("--privacy", choices=["private", "unlisted", "public"], default="private")
     y.add_argument("--trailer", action="store_true", help="upload the trailer instead of the film")
     y.add_argument("--dry-run", action="store_true", help="print the metadata without uploading")
+    y.add_argument("--auth", action="store_true", help="sign in through the browser once and store the token")
     p.set_defaults(fn=cmd_release)
 
     p = sub.add_parser("learn", help="watch public films with Gemini and write craft notes the agents use as examples")
@@ -692,6 +702,9 @@ def _main(argv: list[str] | None = None) -> None:
     yt.add_argument("--start", type=float, help="seconds into the video to start watching")
     yt.add_argument("--end", type=float, help="seconds into the video to stop")
     yt.add_argument("--project", help="read google.* settings from this project instead of the defaults")
+    yt.add_argument("--minutes", type=float, help="the video's length, for the cost estimate (default 150)")
+    yt.add_argument("--max-usd", type=float, default=1.0, help="stop if the estimate is above this (default $1)")
+    yt.add_argument("--yes", action="store_true", help="watch even if the estimate is above --max-usd")
     p.set_defaults(fn=cmd_learn)
 
     p = sub.add_parser("service", help="the queue runner: tick (one pass), add-story, add-reference")

@@ -29,7 +29,11 @@ lipsync:
   speaker_lock: true
   mesh: true
   offline: false
+  sync_silence: auto               # silent stretches where the filmed mouth is already still are not paid for
   shots: {}                        # per-shot settings from QA: {sync: false}, {sync_s: 4.8}, {filmed_frames: [[a, b]]}, ...
+
+shots:
+  billable_grid: true              # shot lengths on Veo's billed lengths (4, 6, 8 s): nothing generated is trimmed away
 
 budget:
   max_usd: 0                       # nothing is paid until you set the cap (or pass --max-spend)

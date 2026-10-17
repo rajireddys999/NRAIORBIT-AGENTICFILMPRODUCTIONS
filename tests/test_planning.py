@@ -97,3 +97,42 @@ def test_revisions_cannot_introduce_unknown_raga(outline, bible):
     assert any("made_up_raga" in n for n in notes)
     # timing is never editable
     assert [c.start_s for c in revised.cues] == [c.start_s for c in sheet.cues]
+
+
+# ------------------------------------------------------------------------------------- the billable grid
+
+def test_grid_fit_lands_every_shot_on_a_billed_length_and_hits_the_target():
+    from nraiorbit.planning.runtime import fit_shots_to_grid
+    shots = ShotList.model_validate({"scene_id": "sc002", "shots": SHOTS["sc002"]})     # 35 s as planned
+    n = len(shots.shots)
+    for target in range(4 * n, 8 * n + 1, 2):
+        fitted = fit_shots_to_grid(shots, target, [4, 6, 8])
+        assert fitted is not None, target
+        assert all(s.duration_s in (4.0, 6.0, 8.0) for s in fitted.shots)
+        assert sum(s.duration_s for s in fitted.shots) == target
+        assert [s.shot_id for s in fitted.shots] == [s.shot_id for s in shots.shots]
+    # proportions survive: the longest planned shot is never shorter than the shortest planned one
+    fitted = fit_shots_to_grid(shots, 6 * n, [4, 6, 8])
+    longest = max(shots.shots, key=lambda s: s.duration_s).shot_id
+    shortest = min(shots.shots, key=lambda s: s.duration_s).shot_id
+    by_id = {s.shot_id: s.duration_s for s in fitted.shots}
+    assert by_id[longest] >= by_id[shortest]
+    # out of reach: an odd target, too few or too many shots, a 1080p-only grid that does not divide; never a loop
+    assert fit_shots_to_grid(shots, 6 * n + 1, [4, 6, 8]) is None
+    assert fit_shots_to_grid(shots, 4 * n - 2, [4, 6, 8]) is None
+    assert fit_shots_to_grid(shots, 8 * n + 2, [4, 6, 8]) is None
+    assert fit_shots_to_grid(shots, 8 * n - 2, [8]) is None and fit_shots_to_grid(shots, 8 * n, [8]) is not None
+    assert fit_shots_to_grid(shots, 4 * n + 2, [4, 8]) is None          # 4s and 8s cannot make 4n+2
+    # a per-shot grid: one shot is 1080p (8 s only)
+    first = shots.shots[0].shot_id
+    fitted = fit_shots_to_grid(shots, 6 * n, lambda s: [8] if s.shot_id == first else [4, 6, 8])
+    assert fitted.shots[0].duration_s == 8.0 and sum(s.duration_s for s in fitted.shots) == 6 * n
+
+
+def test_rebalance_on_an_even_step_keeps_the_runtime_and_even_scenes(outline):
+    even = rebalance_outline(outline, 10, step=2)
+    assert sum(s.target_seconds for s in even.scenes) == 600
+    assert all(s.target_seconds % 2 == 0 for s in even.scenes)
+    plain = rebalance_outline(outline, 10)
+    assert sum(s.target_seconds for s in plain.scenes) == 600
+    assert all(abs(a.target_seconds - b.target_seconds) <= 2 for a, b in zip(even.scenes, plain.scenes))

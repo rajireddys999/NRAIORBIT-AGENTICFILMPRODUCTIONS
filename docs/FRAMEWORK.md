@@ -126,3 +126,38 @@ voices. Reference profiles are tagged with their source URL so a profile can be 
 
 Approving faces before video is bought, the voice cast, the budget cap per film, the final line of credits, and
 flipping a YouTube upload from private to public. Everything else is automated, logged and reversible.
+
+## 7. Guard rails on cost (2026-10-17)
+
+Filming is the expensive part, so the framework refuses to pay before it has looked. All of these are on by default
+unless marked; none changes what an existing project renders.
+
+- **The estimate before the paid stages.** `nraiorbit produce` prices the run first (Veo seconds at the billed clip
+  lengths, images, voice characters, Lyria cues, sync.so seconds for every shot with a speaker in frame; cached work
+  is free) and stops with `blocked:no cap` when `budget.max_usd` is 0 or unset, or `blocked:estimate` when the
+  estimate plus what is spent would pass the cap. The numbers are in `reports/produce.json` (`steps.estimate`) and
+  `nraiorbit run` prints the lip-sync line with the rest of the preview.
+- **Publish only on a passing film check.** With `policy.publish` set, YouTube happens only when `qa film` is `ok`;
+  otherwise the report says `held` and `nraiorbit release youtube <slug>` publishes after a look.
+- **`--offline` covers music too.** A Lyria cue that is not cached (or in `inbox/music`) stops the run instead of
+  paying; a lip-sync job that is not cached was already covered.
+- **YouTube without a browser.** On a server the token must exist: `<project>/.youtube_token.json`, or the
+  `YOUTUBE_TOKEN_JSON` secret that seeds it. `nraiorbit release youtube <slug> --auth` on a laptop makes it once.
+- **`learn youtube` prices the watch first** from the video length (`--minutes`, or `--start/--end`, else a feature's
+  150 min) and refuses above `--max-usd` (default $1) unless `--yes`. Every watch is written to
+  `library/references/ledger.jsonl` with its token counts (`pricing.gemini_video` holds planning numbers; check them
+  against ai.google.dev/pricing before budgeting a batch).
+- **Lip-sync only where there is voice** (`lipsync.sync_silence`; template `auto`, framework default `always`): silent
+  stretches of a speaking shot where the filmed mouth is already still are left as filmed, so they are not paid for;
+  silence where the video model left the mouth moving is still sent, so a face never mouths words without a voice.
+  `never` syncs only the lines and a margin. Measured on godavari10: 38 of the 400 seconds sent to sync.so had no
+  voice (about $5 of $53). godavari10 itself stays on `always`: its paid results are keyed to the old crops.
+- **Shots on the billable grid** (`shots.billable_grid`; template `true`, framework default `false`): with Veo, scenes
+  land on even seconds and shots on 4, 6 or 8 s (8 s only at 1080p), adding up to the scene exactly, so no generated
+  second is paid for and trimmed away; a scene whose shot count cannot meet it is fitted proportionally and noted in
+  `reports/shot_issues.jsonl`. Measured on godavari10: 82 generated seconds were trimmed (about $6.50 at its mix of
+  tiers).
+- **Not done, and why:** a cheaper image model for faceless frames. The ledger shows 95 keyframes (every one a shot
+  with a character in frame) and 39 identity images (faces); the pipeline makes no faceless images, so there is
+  nothing to move to a cheaper model.
+

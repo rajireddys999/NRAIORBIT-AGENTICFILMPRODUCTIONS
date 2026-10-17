@@ -28,7 +28,8 @@ from .llm import LLM
 from .planning.music import apply_revisions, plan_cues
 from .planning.score import load_styles, score_cue
 from .planning.runtime import (
-    TEMPLATES, describe_template, fit_shots_to_scene, rebalance_outline, scene_start_times, validate_outline,
+    TEMPLATES, describe_template, fit_shots_to_grid, fit_shots_to_scene, rebalance_outline, scene_start_times,
+    validate_outline,
 )
 from .post import assemble, facelock, ffmpeg
 from .post.cards import Card, apply_cards
@@ -213,11 +214,13 @@ class Pipeline:
                 issues += [f"{sc.scene_id}: unknown character '{c}'" for c in sc.characters if c not in known]
             return issues
 
-        outline = rebalance_outline(self.screenwriter.outline(bible, runtime, guide), runtime)
+        step = 2 if self._billable_grid() else 1          # even scene targets: sums of 4, 6 and 8 s shots
+        outline = rebalance_outline(self.screenwriter.outline(bible, runtime, guide), runtime, step=step)
         issues = check(outline)
         if issues:
             self.log(f"  outline issues, asking for a revision: {issues}")
-            outline = rebalance_outline(self.screenwriter.outline(bible, runtime, guide, issues=issues), runtime)
+            outline = rebalance_outline(self.screenwriter.outline(bible, runtime, guide, issues=issues), runtime,
+                                        step=step)
             issues = check(outline)
         for issue in issues:
             self._report("outline_issues", {"issue": issue})
@@ -303,9 +306,35 @@ class Pipeline:
             camera = self.navarasa["rasas"][sc.rasa_primary]["camera"]
             shots = self.director.shots(bible, lock, sc, script, actions, camera)
             shots = self._clean_shots(shots.model_copy(update={"scene_id": sc.scene_id}), script, lock)
-            shots = fit_shots_to_scene(shots, sc.target_seconds, fps=self._film["fps"])
+            shots = self._fit_shots(shots, sc)
             self._save(path, shots)
             self.log(f"  {sc.scene_id}: {len(shots.shots)} shots")
+
+    def _billable_grid(self) -> bool:
+        """shots.billable_grid: shot lengths on the video model's billed clip lengths (Veo 4/6/8 s), so no paid
+        second is trimmed away. Off by default: existing projects keep their shot lists as fitted."""
+        return bool((self.cfg.get("shots") or {}).get("billable_grid", False)) and \
+            self.cfg.get("providers", {}).get("video") == "veo"
+
+    def _fit_shots(self, shots: ShotList, sc) -> ShotList:
+        fps = self._film["fps"]
+        if self._billable_grid():
+            from .costing import UnknownVideoTier, veo_durations, veo_settings
+            g = self.cfg.get("google", {})
+
+            def allowed(shot):
+                try:
+                    resolution = veo_settings(g, shot)[2]
+                except UnknownVideoTier:
+                    resolution = veo_settings(g)[2]
+                return veo_durations(self.pricing, resolution)
+            fitted = fit_shots_to_grid(shots, sc.target_seconds, allowed)
+            if fitted is not None:
+                return fitted
+            self._report("shot_issues", {"scene_id": sc.scene_id, "billable_grid": (
+                f"{sc.target_seconds} s cannot be met with {len(shots.shots)} shots on the billed lengths; "
+                "fitted proportionally (some generated seconds will be trimmed)")})
+        return fit_shots_to_scene(shots, sc.target_seconds, fps=fps)
 
     def _clean_shots(self, shots: ShotList, script: SceneScript, lock: CastLock) -> ShotList:
         cast = set(lock.characters)
@@ -484,7 +513,9 @@ class Pipeline:
                       if e.ref_id in spoken and e.start_s < origin + length and e.start_s + e.duration_s > origin]
             work = self.p.video / shot.shot_id
             audio = ffmpeg.place_audio(events, length, work / f"{ts.clip.stem}.lipsync.wav")
-            jobs.append((i, replace(ts, duration_s=length), audio, work / f"{ts.clip.stem}_lipsync_raw.mp4"))
+            windows = [(e.start_s - origin, e.start_s - origin + e.duration_s) for e in dialogue
+                       if e.ref_id in spoken and e.start_s < origin + length and e.start_s + e.duration_s > origin]
+            jobs.append((i, replace(ts, duration_s=length), audio, work / f"{ts.clip.stem}_lipsync_raw.mp4", windows))
         out = list(shots_out)
         if not jobs:
             return out
@@ -492,13 +523,13 @@ class Pipeline:
             return self._lip_sync_locked(syncer, out, jobs, resolution, fps)
         try:
             if hasattr(syncer, "apply_many"):
-                raws = syncer.apply_many([(ts.clip, audio, raw) for _, ts, audio, raw in jobs])
+                raws = syncer.apply_many([(ts.clip, audio, raw) for _, ts, audio, raw, _ in jobs])
             else:
-                raws = [syncer.apply(ts.clip, audio, raw) for _, ts, audio, raw in jobs]
+                raws = [syncer.apply(ts.clip, audio, raw) for _, ts, audio, raw, _ in jobs]
         except (BudgetExceeded, GoogleAPIError) as stop:
             raise PipelineBlocked(str(stop)) from None
         kept = 0
-        for (i, ts, audio, _), raw in zip(jobs, raws):
+        for (i, ts, audio, _, _), raw in zip(jobs, raws):
             if raw is None:                              # LatentSync could not do this shot: it keeps its clip
                 why = syncer.failure(ts.clip, audio) if hasattr(syncer, "failure") else None
                 self._report("review_queue", {"shot_id": ts.shot_id, "reason": [
@@ -527,7 +558,10 @@ class Pipeline:
         lipsync.max_off_speaker_frames frames; otherwise LatentSync gets crops around the speaker with every other face
         blanked, one per run of frames where the speaker's face is visible. Either way the synced pixels go back only
         over the speaker's mouth and jaw. lipsync.offline: use only results made before, never start a GPU job.
-        Every shot is reported to reports/lipsync.jsonl with a review sheet next to its clip (<take>.speaker.jpg)."""
+        Every shot is reported to reports/lipsync.jsonl with a review sheet next to its clip (<take>.speaker.jpg).
+        lipsync.sync_silence: `always` sends the speaker's whole visible run (silence included: the model closes a
+        mouth the video model left moving); `auto` leaves silent stretches where the filmed mouth is already still
+        as filmed (nothing to fix, nothing to pay); `never` syncs only the spoken windows and a margin."""
         ls = self.cfg.get("lipsync") or {}
         per_shot = ls.get("shots") or {}
         ratio, floor = float(ls.get("lock_ratio", 1.5)), float(ls.get("lock_floor", 10.0))
@@ -536,7 +570,7 @@ class Pipeline:
         detector = self._face_detector()
         plans: dict[int, tuple[facelock.Plan, dict]] = {}
         crops: list[tuple[int, tuple]] = []             # (index, (segment, crop video, crop audio, raw output))
-        for i, ts, audio, raw in jobs:
+        for i, ts, audio, raw, windows in jobs:
             sid, work, stem = ts.shot_id, raw.parent, ts.clip.stem
             opts = per_shot.get(sid) or {}
             analysis = facelock.analyse(ts.clip, detector, cache_dir=self.p.root / "cache" / "faces")
@@ -551,6 +585,17 @@ class Pipeline:
             faces = facelock.fill_gaps(track, analysis.frames)
             keep = facelock.ranges(opts.get("keep_frames"))
             filmed = facelock.ranges(opts.get("filmed_frames"))     # as filmed in the paste-back only: no new crops
+            silence = str(opts.get("sync_silence", ls.get("sync_silence", "always")))
+            if silence in ("never", "auto"):                        # silent stretches left as filmed: fewer paid seconds
+                skip = facelock.silent_frames(windows, analysis.frames, fps,
+                                              margin=int(ls.get("silence_margin_frames", 6)))
+                if silence == "auto":
+                    skip = facelock.still_frames(faces, skip, set(range(analysis.frames)) - skip)
+                skip -= keep | filmed
+                if skip:
+                    keep = keep | skip
+                    record["silence_frames_as_filmed"] = len(skip)
+                    opts = {"fade_frames": int(ls.get("silence_fade_frames", 3)), **opts}
             repair = [(int(a), int(b)) for a, b in opts.get("repair_frames") or []]
             bridge = int(opts.get("bridge_gaps") or 3)
             ext = opts.get("extend_track")                  # true, or the least overlap that counts as the same face

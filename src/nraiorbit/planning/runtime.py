@@ -88,14 +88,16 @@ def scene_start_times(outline: Outline) -> dict[str, float]:
     return starts
 
 
-def rebalance_outline(outline: Outline, runtime_minutes: float, min_scene_s: int = 20) -> Outline:
-    """Scale scene durations so they sum to exactly runtime_minutes."""
+def rebalance_outline(outline: Outline, runtime_minutes: float, min_scene_s: int = 20, step: int = 1) -> Outline:
+    """Scale scene durations so they sum to exactly runtime_minutes. With step 2 every scene lands on an even number
+    of seconds (what shots of 4, 6 and 8 s can add up to); the drift goes to the longest scene."""
     target = int(round(runtime_minutes * 60))
     current = sum(s.target_seconds for s in outline.scenes)
     if current <= 0:
         raise ValueError("outline has no duration")
     factor = target / current
-    scenes = [s.model_copy(update={"target_seconds": max(min_scene_s, int(round(s.target_seconds * factor)))})
+    step = max(1, int(step))
+    scenes = [s.model_copy(update={"target_seconds": max(min_scene_s, int(round(s.target_seconds * factor / step)) * step)})
               for s in outline.scenes]
     drift = target - sum(s.target_seconds for s in scenes)
     longest = max(range(len(scenes)), key=lambda i: scenes[i].target_seconds)
@@ -122,6 +124,46 @@ def validate_outline(outline: Outline, runtime_minutes: float, tolerance_minutes
         if not lo <= frac <= hi:
             issues.append(f"'{landmark}' starts at {frac:.0%} of runtime, expected {lo:.0%}-{hi:.0%}")
     return issues
+
+
+def fit_shots_to_grid(shots: ShotList, target_seconds: float, allowed) -> ShotList | None:
+    """Shot durations on the lengths the video model bills (Veo: 4, 6 or 8 s; 8 s only at 1080p), adding up to the
+    scene target exactly, so no generated second is paid for and then trimmed away. `allowed` is the list of lengths,
+    or a function of the shot giving its list. Shots keep their proportions as far as the grid allows (a shot the
+    director wanted longest stays longest or equal). None when the target cannot be met on the grid: an odd target,
+    too few or too many shots for it; the caller then fits proportionally as before."""
+    if not shots.shots:
+        return shots
+    options = [sorted({int(a) for a in (allowed(s) if callable(allowed) else allowed)}) for s in shots.shots]
+    if any(not o for o in options):
+        return None
+    target = int(round(target_seconds))
+    if abs(target - target_seconds) > 1e-6:
+        return None
+    if not sum(o[0] for o in options) <= target <= sum(o[-1] for o in options):
+        return None
+    current = sum(s.duration_s for s in shots.shots)
+    factor = target / current if current > 0 else 1.0
+    want = [s.duration_s * factor for s in shots.shots]
+    pick = [min(o, key=lambda a, w=w: (abs(a - w), a)) for o, w in zip(options, want)]
+    for _ in range(4 * len(pick) + 4):                     # each pass moves one shot one size; bounded, never loops
+        remainder = target - sum(pick)
+        if remainder == 0:
+            return ShotList(scene_id=shots.scene_id,
+                            shots=[s.model_copy(update={"duration_s": float(d)}) for s, d in zip(shots.shots, pick)])
+        if remainder > 0:
+            room = [i for i, (o, d) in enumerate(zip(options, pick)) if d < o[-1]]
+            if not room:
+                return None
+            i = max(room, key=lambda i: want[i] - pick[i])        # the shot squeezed the most grows first
+            pick[i] = next(a for a in options[i] if a > pick[i])
+        else:
+            room = [i for i, (o, d) in enumerate(zip(options, pick)) if d > o[0]]
+            if not room:
+                return None
+            i = min(room, key=lambda i: want[i] - pick[i])        # the shot stretched the most shrinks first
+            pick[i] = next(a for a in reversed(options[i]) if a < pick[i])
+    return None
 
 
 def fit_shots_to_scene(shots: ShotList, target_seconds: float, fps: int = 24,

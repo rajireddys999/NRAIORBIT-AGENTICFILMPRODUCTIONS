@@ -226,6 +226,27 @@ _Last updated: 2026-10-15. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
   public films; the agents get them as examples; nothing is downloaded or copied). `projects/_template` carries the
   settled choices; `nraiorbit new` copies it. The godavari10 scratchpad scripts are retired into these modules.
 
+- **Guard rails and savings (2026-10-17, approved steps 1-7):** `produce` estimates the paid stages (now including
+  sync.so seconds) and blocks with `blocked:no cap` / `blocked:estimate` before anything is paid; publish only when
+  the film check passes; `--offline` makes Lyria cache-only; YouTube credentials are token-only on a server
+  (`YOUTUBE_TOKEN_JSON`, or `release youtube --auth` once on a laptop); `learn youtube` prices a watch from its
+  length and refuses over `--max-usd` (default $1), with a ledger under library/references. New films (the template)
+  lip-sync only where there is voice (`lipsync.sync_silence: auto`; 38 s of godavari10's 400 synced seconds, about
+  $5, had no voice) and plan shots on Veo's billed 4/6/8 s lengths (`shots.billable_grid: true`; godavari10 trimmed
+  82 generated seconds, about $6.50). Step 7 (a cheaper image model for faceless frames) was dropped: the pipeline
+  makes no faceless images (95 keyframes with a character in frame, 39 identity faces). godavari10's own settings
+  are unchanged, so its caches still hit. No paid call was made for this work (ledger still $151.57).
+
+- **Runner deployed (2026-10-17, step 8):** Cloud Run job `nraiorbit-runner` in nraiorbit-agentic-film-product
+  (us-central1; 4 vCPU, 8 GiB, 6 h per tick) as the new service account `nraiorbit-runner@…` (Vertex AI user, bucket
+  objects, secret access, logs); Cloud Scheduler `nraiorbit-runner-tick` runs it every 15 minutes; the queues are
+  gs://nraiorbit-agentic-film-product-media/queue/{stories,references}.csv (headers only so far). Secrets in Secret
+  Manager: SYNC_API_KEY, ELEVENLABS_API_KEY and GOOGLE_APPLICATION_CREDENTIALS_JSON (a key of the runner's own
+  account, for signed links), all written from the session without being printed. A first tick by hand read both
+  queues and exited clean. Not yet: the YouTube token (needs a laptop with a browser once); until then a row's
+  upload is reported as skipped and the film stays in the bucket. Monthly cost of the idle service is cents
+  (Scheduler, Secret Manager, seconds of CPU per tick); films are billed to their own cap.
+
 ### Verified vs. not verified
 
 | Verified (here, with ffmpeg and a fake Google client) | Not verified yet |

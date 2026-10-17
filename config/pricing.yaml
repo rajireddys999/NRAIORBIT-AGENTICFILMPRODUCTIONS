@@ -84,6 +84,13 @@ cloud_run_gpu:            # lip-sync worker (deploy/lipsync): Cloud Run job, 1x 
   startup_minutes: 6      # image pull + model load, once per job execution
   minutes_per_clip: 10.0  # LatentSync 1.6 on a 6-8 s 1080p shot (measured ~9.7 min on an L4, 2026-10-14)
 
+gemini_video:             # watching a public film for craft notes (nraiorbit learn youtube), Gemini 2.5 Pro
+  input_per_1m: 1.25      # planning numbers: Gemini 2.5 Pro list price per 1M input tokens up to 200k per request,
+  input_per_1m_long: 2.50 # above 200k; verify on ai.google.dev/pricing before budgeting
+  output_per_1m: 10.00
+  tokens_per_frame: 258   # what a sampled video frame costs in tokens; audio adds 32 tokens per second
+  audio_tokens_per_s: 32
+
 elevenlabs:               # Telugu voices through ElevenLabs (providers.tts: elevenlabs), per 1,000 characters
   per_1k_chars: 0.18      # list price; a Creator/Pro plan includes characters, so the ledger's figure is an upper bound
 

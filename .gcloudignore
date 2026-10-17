@@ -1,0 +1,23 @@
+# What `gcloud builds submit` uploads for the runner image (deploy/service/Dockerfile): the package, its config and
+# the library's text files. Film projects, caches, media and the git history stay out (gigabytes).
+.git
+.gitignore
+.gcloudignore
+.pytest_cache
+__pycache__/
+*.pyc
+projects/*
+!projects/_template/
+cache/
+docs/
+tests/
+deploy/lipsync/
+*.png
+*.jpg
+*.jpeg
+*.wav
+*.mp3
+*.mp4
+*.mov
+*.jsonl
+*.html

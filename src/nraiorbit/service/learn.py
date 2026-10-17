@@ -85,6 +85,24 @@ cautions as things not to copy. Answer in English, Telugu terms welcome, as JSON
 Focus: {focus}."""
 
 
+class LearnCostError(RuntimeError):
+    pass
+
+
+DEFAULT_MINUTES = 150.0          # a feature film, when nothing says how long the video is
+
+
+def estimate_usd(minutes: float, fps: float = SAMPLE_FPS, pricing: dict | None = None) -> tuple[float, int]:
+    """(dollars, input tokens) for watching `minutes` of video at `fps` sampled frames a second, with the model's
+    audio track, from pricing.gemini_video (planning numbers)."""
+    g = (pricing or {}).get("gemini_video") or {}
+    seconds = max(0.0, minutes) * 60
+    tokens = int(seconds * (fps * g.get("tokens_per_frame", 258) + g.get("audio_tokens_per_s", 32))) + 1500
+    rate = g.get("input_per_1m_long", 2.50) if tokens > 200_000 else g.get("input_per_1m", 1.25)
+    usd = tokens / 1e6 * rate + 4000 / 1e6 * g.get("output_per_1m", 10.0)
+    return round(usd, 3), tokens
+
+
 def profile_id(url: str, title: str | None) -> str:
     base = re.sub(r"[^a-z0-9]+", "_", (title or "").lower()).strip("_")
     vid = re.search(r"(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{6,})", url)
@@ -93,10 +111,20 @@ def profile_id(url: str, title: str | None) -> str:
 
 def learn(url: str, title: str | None = None, what: str = "all", cfg: dict | None = None, client=None,
           out_dir: Path | None = None, start_s: float | None = None, end_s: float | None = None,
-          fps: float = SAMPLE_FPS) -> Path:
-    """Watch `url` (a public YouTube link) and write library/references/<id>/profile.json (+ manifest.yaml)."""
+          fps: float = SAMPLE_FPS, minutes: float | None = None, max_usd: float = 1.0, yes: bool = False,
+          pricing: dict | None = None) -> Path:
+    """Watch `url` (a public YouTube link) and write library/references/<id>/profile.json (+ manifest.yaml).
+    The cost is estimated first from the length (`minutes`, else end-start, else a feature's 150 min) and the call
+    is refused above `max_usd` unless `yes`."""
     from google.genai import types
 
+    if minutes is None:
+        minutes = (end_s - start_s) / 60 if start_s is not None and end_s is not None else DEFAULT_MINUTES
+    est, tokens = estimate_usd(minutes, fps, pricing)
+    if est > max_usd and not yes:
+        raise LearnCostError(f"watching {minutes:.0f} min at {fps:g} frames/s is about ${est:.2f} ({tokens:,} tokens), "
+                             f"over the ${max_usd:.2f} limit; give --minutes or --start/--end, raise --max-usd, "
+                             "or pass --yes")
     g = (cfg or {}).get("google", {})
     client = client or google_client(g, "image")
     meta = {"fps": fps}
@@ -126,6 +154,14 @@ def learn(url: str, title: str | None = None, what: str = "all", cfg: dict | Non
                            "output": getattr(usage, "candidates_token_count", None)} if usage else None,
                 "removal": "delete this folder to forget the profile; nothing else holds the source"}
     (folder / "manifest.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    gv = (pricing or {}).get("gemini_video") or {}
+    used_in = getattr(usage, "prompt_token_count", None) or tokens
+    used_out = getattr(usage, "candidates_token_count", None) or 4000
+    usd = used_in / 1e6 * (gv.get("input_per_1m_long", 2.5) if used_in > 200_000 else gv.get("input_per_1m", 1.25)) \
+        + used_out / 1e6 * gv.get("output_per_1m", 10.0)
+    with open(folder.parent / "ledger.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps({"provider": "gemini_video", "item": pid, "usd": round(usd, 4), "tokens_in": used_in,
+                            "tokens_out": used_out, "url": url, "watched": manifest["watched"]}) + "\n")
     return folder / "profile.json"
 
 

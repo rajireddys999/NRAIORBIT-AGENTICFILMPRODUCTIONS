@@ -92,7 +92,8 @@ nraiorbit qa film rain-film                           # length, loudness, voice 
 nraiorbit release deliver rain-film --tag v1          # 720p copy, bucket upload, 7-day links
 nraiorbit release youtube rain-film --privacy private
 nraiorbit backup rain-film                            # caches, inbox, reports, master, plan files → the bucket
-nraiorbit learn youtube https://youtu.be/<id> --learn score   # craft notes from a public film, for the agents
+nraiorbit learn youtube https://youtu.be/<id> --learn score --minutes 150   # craft notes from a public film, for
+                                                      # the agents; priced first, refused over --max-usd (default $1)
 nraiorbit service tick --stories gs://<bucket>/queue/stories.csv --references gs://<bucket>/queue/references.csv
 ```
 

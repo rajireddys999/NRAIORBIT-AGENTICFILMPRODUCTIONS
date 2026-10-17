@@ -8,7 +8,9 @@ Every shot's clip and its dialogue audio are staged in the private bucket under 
 sync.so as time-limited signed links. The finished clip is downloaded, conformed to the input's frame size, frame
 rate and frame count (so the paste-back, speaker lock and per-shot settings work exactly as with the GPU worker) and
 cached in cache/lipsync/ by content, so a re-render never pays twice. Each job's cost (seconds x the model's price per
-second) is checked against the budget before it is submitted and logged to reports/cost.jsonl.
+second) is checked against the budget before it is submitted and logged to reports/cost.jsonl. A generation that was
+submitted but never brought home (a crash, a timeout, a result download the network refused) is remembered in
+cache/lipsync/<key>.pending.json and polled again by the next run instead of being paid for a second time.
 """
 
 from __future__ import annotations
@@ -161,11 +163,19 @@ class SyncSoLipSync:
         while queue or active:
             while queue and len(active) < self.concurrency:
                 key, (video, audio) = queue.pop(0)
-                active[key] = self._submit(run, key, video, audio)
+                active[key] = self._resume(key, video, audio) or self._submit(run, key, video, audio)
             SLEEP(self.poll_s)
             for key in list(active):
                 job = active[key]
-                data = self._get(f"{self.api_base}/v2/generate/{job['id']}", f"sync.so status {key}")
+                try:
+                    data = self._get(f"{self.api_base}/v2/generate/{job['id']}", f"sync.so status {key}")
+                except SyncSoError as exc:
+                    if job.get("resumed") and "HTTP 404" in str(exc):      # gone on their side: it is made again
+                        self._pending(key).unlink(missing_ok=True)
+                        queue.append((key, (job["video"], job["audio"])))
+                        del active[key]
+                        continue
+                    raise
                 status = str(data.get("status", "")).upper()
                 if status in DONE:
                     self._finish(key, job, data)
@@ -174,8 +184,22 @@ class SyncSoLipSync:
                     self._failed(key, job, data.get("error") or data.get("message") or status)
                     del active[key]
                 elif time.monotonic() - job["started"] > self.timeout_s:
-                    self._failed(key, job, f"no result after {self.timeout_s:.0f} s")
+                    # still running for all we know: the marker stays, so the next run asks for it again
+                    self._failed(key, job, f"no result after {self.timeout_s:.0f} s", keep_pending=True)
                     del active[key]
+
+    def _pending(self, key: str) -> Path:
+        return self.cache / f"{key}.pending.json"
+
+    def _resume(self, key: str, video: Path, audio: Path) -> dict | None:
+        """A generation an earlier run submitted and never brought home: polled again, not paid for again."""
+        marker = self._pending(key)
+        if not marker.exists():
+            return None
+        m = json.loads(marker.read_text(encoding="utf-8"))
+        return {"id": m["generation"], "video": video, "audio": audio, "seconds": float(m.get("seconds", 0.0)),
+                "usd": float(m.get("usd", 0.0)), "started": time.monotonic(), "run": m.get("run", "resumed"),
+                "charged": bool(m.get("charged")), "resumed": True}
 
     def _submit(self, run: str, key: str, video: Path, audio: Path) -> dict:
         seconds = ffmpeg.duration(video)
@@ -193,22 +217,34 @@ class SyncSoLipSync:
         data = self._post(f"{self.api_base}/v2/generate", body, f"sync.so generate {key}")
         if not data.get("id"):
             raise SyncSoError(f"lip-sync: sync.so answered without a generation id: {json.dumps(data)[:300]}")
+        self._pending(key).write_text(json.dumps({"generation": data["id"], "model": self.model, "usd": usd,
+                                                  "seconds": round(seconds, 3), "run": run, "charged": False,
+                                                  "video": video.name}), encoding="utf-8")
         return {"id": data["id"], "video": video, "audio": audio, "seconds": seconds, "usd": usd,
-                "started": time.monotonic(), "run": run}
+                "started": time.monotonic(), "run": run, "charged": False}
 
     def _finish(self, key: str, job: dict, data: dict) -> None:
         url = _output_url(data)
         if not url:
             self._failed(key, job, f"completed without an output url: {json.dumps(data)[:300]}")
             return
+        if not job.get("charged"):              # sync.so bills a finished generation whether or not it gets home
+            self.ledger.record("sync_so", f"{self.model} {key}", job["usd"], seconds=round(job["seconds"], 2),
+                               model=self.model, generation=job["id"], run=job["run"])
+            job["charged"] = True
+            marker = self._pending(key)
+            if marker.exists():
+                m = json.loads(marker.read_text(encoding="utf-8"))
+                marker.write_text(json.dumps({**m, "charged": True}), encoding="utf-8")
         raw = self.cache / f"{key}.download.mp4"
         self._download(url, raw)
         conform_like(raw, job["video"], self.cache / f"{key}.mp4")
         raw.unlink(missing_ok=True)
-        self.ledger.record("sync_so", f"{self.model} {key}", job["usd"], seconds=round(job["seconds"], 2),
-                           model=self.model, generation=job["id"], run=job["run"])
+        self._pending(key).unlink(missing_ok=True)
 
-    def _failed(self, key: str, job: dict, error: str) -> None:
+    def _failed(self, key: str, job: dict, error: str, keep_pending: bool = False) -> None:
+        if not keep_pending:
+            self._pending(key).unlink(missing_ok=True)
         if self.on_failure != "keep_original":
             raise SyncSoError(f"lip-sync: sync.so could not do {job['video'].name}: {error}")
         (self.cache / f"{key}.failed.json").write_text(json.dumps({"error": str(error), "generation": job["id"],

@@ -175,6 +175,15 @@ _Last updated: 2026-10-15. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
     (LatentSync about $5, or sync.so lipsync-2-pro about $25-40). ElevenLabs costs sit on the owner's Creator plan
     (included characters); the ledger carries them as estimates ($98.61 incl. the voice tests). The ElevenLabs key is
     the environment secret ELEVENLABS_API_KEY; api.elevenlabs.io is on the environment's allowed hosts.
+  - **sync.so pre-flight (2026-10-17, free):** `SYNC_API_KEY` is accepted by api.sync.so, the model ids `sync-3` and
+    `lipsync-2-pro` pass its validation, and the service account signs the staging links. The 34 speaking shots give
+    36 speaker-crop segments, 198.8 s in all: **sync-3 $26.44** (ledger $98.61 → $125.05) or **lipsync-2-pro $16.50**
+    (→ $115.11); either needs the $115 hard stop raised first. The E and F takes are backed up under
+    gs://.../godavari10/final/voice_test/takes_E and takes_F, the two switch scripts under godavari10/project/scripts/.
+    The provider remembers every submitted generation (cache/lipsync/<key>.pending.json) and polls it again on the next
+    run, so a crash, a timeout or a result download the network refuses is never paid twice. The host sync.so serves
+    results from is not known yet: if the environment's network policy refuses it, the first job's error names it,
+    the owner allows it, and the next run downloads the paid result.
   - **Known limits (LatentSync 1.6):** lips and teeth softer than filmed, Bhairava's gold teeth come out pale, some
     vowels under-articulated. In 3 shots the mouth stays closed for 0.8-1.7 s while the voice plays (sc008_s002,
     sc009_s006, sc011_s004). Only a new GPU pass (higher audio guidance, re-synced frame ranges; about $2) can change

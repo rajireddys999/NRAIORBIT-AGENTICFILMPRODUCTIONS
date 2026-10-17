@@ -58,6 +58,9 @@ class FakeSyncSo:
     def get(self, url, timeout=None):
         self.gets.append(url)
         gid = url.rsplit("/", 1)[-1]
+        if gid not in self.status_calls:
+            return FakeResponse(404, {"message": "No generation was found with that id.",
+                                      "errorCode": "generation_not_found"})
         self.status_calls[gid] += 1
         if self.status_calls[gid] < self.polls:
             return FakeResponse(200, {"id": gid, "status": "PROCESSING"})
@@ -175,3 +178,58 @@ def test_missing_key_is_a_clear_error(tmp_path, monkeypatch):
     prov = SyncSoLipSync(tmp_path, {"lipsync": {"bucket": "b"}}, {}, SpendLedger(tmp_path / "c.jsonl", None))
     with pytest.raises(SyncSoError, match="SYNC_API_KEY"):
         prov.http()
+
+
+def _marker(tmp_path, prov, v, a):
+    return tmp_path / "cache" / "lipsync" / f"{prov.key(v, a)}.pending.json"
+
+
+def test_lost_download_is_resumed_without_paying_twice(tmp_path, monkeypatch):
+    v, a = _clip(tmp_path, "h", "red")
+    api = FakeSyncSo(polls=1)
+    good = SyncSoLipSync._download                              # the fixture's stand-in download
+
+    def lost(self, url, out):
+        raise SyncSoError("lip-sync: could not download the sync.so result from cdn.example (ConnectionError)")
+    monkeypatch.setattr(SyncSoLipSync, "_download", lost)
+    prov, ledger = _provider(tmp_path, api, budget=10.0)
+    prov._served = {"h": v}
+    with pytest.raises(SyncSoError, match="download"):
+        prov.apply(v, a, tmp_path / "out.mp4")
+    assert len(ledger.records()) == 1                            # the finished generation is paid for
+    assert _marker(tmp_path, prov, v, a).exists() and prov.cached(v, a) is None
+    # the next run polls that generation again instead of submitting (and paying for) a new one
+    monkeypatch.setattr(SyncSoLipSync, "_download", good)
+    prov2, ledger2 = _provider(tmp_path, api, budget=10.0)
+    prov2._served = {"h": v}
+    out = prov2.apply(v, a, tmp_path / "out2.mp4")
+    assert out and out.exists() and len(api.posts) == 1
+    assert len(ledger2.records()) == 1 and not _marker(tmp_path, prov, v, a).exists()
+
+
+def test_timed_out_generation_is_picked_up_by_the_next_run(tmp_path):
+    v, a = _clip(tmp_path, "i", "blue")
+    api = FakeSyncSo(polls=2)
+    prov, ledger = _provider(tmp_path, api, budget=10.0, timeout_seconds=-1)
+    prov._served = {"i": v}
+    with pytest.raises(SyncSoError, match="no result after"):
+        prov.apply(v, a, tmp_path / "out.mp4")
+    assert _marker(tmp_path, prov, v, a).exists() and ledger.records() == []
+    prov2, ledger2 = _provider(tmp_path, api, budget=10.0)
+    prov2._served = {"i": v}
+    assert prov2.apply(v, a, tmp_path / "out2.mp4").exists()
+    assert len(api.posts) == 1 and len(ledger2.records()) == 1
+
+
+def test_pending_generation_that_is_gone_is_submitted_again(tmp_path):
+    v, a = _clip(tmp_path, "j", "green")
+    api = FakeSyncSo(polls=1)
+    prov, ledger = _provider(tmp_path, api, budget=10.0)
+    prov._served = {"j": v}
+    marker = _marker(tmp_path, prov, v, a)
+    marker.parent.mkdir(parents=True)
+    marker.write_text(json.dumps({"generation": "gen-old", "usd": 0.27, "seconds": 2, "run": "r0", "charged": False}))
+    out = prov.apply(v, a, tmp_path / "out.mp4")
+    assert out and out.exists()
+    assert api.gets[0].endswith("/gen-old") and len(api.posts) == 1   # asked for the old one, then made a new one
+    assert len(ledger.records()) == 1 and not marker.exists()

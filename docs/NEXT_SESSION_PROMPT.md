@@ -1,5 +1,24 @@
 # Prompt for the next session
 
+## Where things stand (2026-10-17): the voice change
+
+- The owner compared voices (docs/PROJECT_STATUS.md, "Voice test"): the whole film exists in versions **E** and **F**
+  (ElevenLabs Eleven v4, native Telugu library voices) under gs://.../godavari10/final/voice_test/. **Not chosen yet.**
+- The chosen voice needs the 34 on-camera speaking shots lip-synced again. Pre-flight done, nothing paid: the
+  `SYNC_API_KEY` secret works, `sync-3` and `lipsync-2-pro` are valid model ids, the service account signs links.
+  Exact cost (36 speaker crops, 198.8 s): **sync-3 $26.44 → ledger $125.05**, **lipsync-2-pro $16.50 → $115.11**.
+  The ledger stands at $98.61 with a $115 hard stop, so the owner must say both the voice (E or F) and the new cap
+  (for example "raise the hard stop to $150") before the run.
+- The run, once approved (scripts in gs://.../godavari10/project/scripts/, written for the session scratchpad):
+  `install_takes.py E|F` (the version's takes become 05_dialogue/<line>/take_1.wav; Gemini takes kept as
+  take_1.gemini.wav), `configure_sync3.py apply` (providers.lipsync → sync_so, lipsync.model, offline off, the
+  LatentSync frame-level settings dropped, `sync: false` / `sync_s` / `cut_in_s` kept; backup in
+  pipeline.latentsync.yaml), then `nraiorbit run godavari10 --force render --yes --max-spend <new cap>` through
+  genv.sh (the Google key). sync.so jobs run one at a time; a stopped run resumes without paying twice
+  (cache/lipsync/<key>.pending.json). If the result download is refused by the network policy, the error names the
+  host to allow. Then: frame-level QA of the 34 shots (new per-shot settings as needed), rebuild film and trailer,
+  final deliverables, bucket backup, docs.
+
 ## Where things stand (2026-10-15): the 10-minute film
 
 - **godavari10**, the whole Godavari Simham story as a 10-minute short (Plan A, owner-approved, $200 incl. GST):

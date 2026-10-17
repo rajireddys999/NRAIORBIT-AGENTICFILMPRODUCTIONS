@@ -7,11 +7,16 @@
 - The chosen voice needs the 34 on-camera speaking shots lip-synced again. Pre-flight done, nothing paid: the
   `SYNC_API_KEY` secret works, `sync-3` and `lipsync-2-pro` are valid model ids, the service account signs links.
   Exact cost (36 speaker crops, 198.8 s): **sync-3 $26.44 → ledger $125.05**, **lipsync-2-pro $16.50 → $115.11**.
-  The ledger stands at $98.61 with a $115 hard stop, so the owner must say both the voice (E or F) and the new cap
-  (for example "raise the hard stop to $150") before the run.
+  The owner chose voice E, sync-3 and a $150 cap (then $155 after the Gemini-voice mistake below).
+- **Lesson (2026-10-17, cost $26.44):** `nraiorbit run --force render` wipes 05_dialogue and 07_video (stage
+  outputs) and regenerates every line from inbox/dialogue or the TTS cache. Takes copied into 05_dialogue are lost
+  that way: the first sync-3 pass was made on the Gemini voices without anyone noticing until the timeline's line
+  lengths were checked. Custom voices belong in **inbox/dialogue/<line_id>.wav** (providers.tts: inbox), where a
+  forced render reads them. That Gemini-voice film with sync-3 lips is kept as
+  gs://.../godavari10/final/voice_test/Godavari_Simham_geminiVoice_sync3lips_1080p.mp4 (+ trailer).
 - The run, once approved (scripts in gs://.../godavari10/project/scripts/, written for the session scratchpad):
-  `install_takes.py E|F` (the version's takes become 05_dialogue/<line>/take_1.wav; Gemini takes kept as
-  take_1.gemini.wav), `configure_sync3.py apply` (providers.lipsync → sync_so, lipsync.model, offline off, the
+  `install_takes.py E|F` (the version's takes go to inbox/dialogue/<line>.wav, the earlier inbox takes to
+  inbox/dialogue_before_<ver>/, and 05_dialogue/<line>/take_1.wav is refreshed), `configure_sync3.py apply` (providers.lipsync → sync_so, lipsync.model, offline off, the
   LatentSync frame-level settings dropped, `sync: false` / `sync_s` / `cut_in_s` kept; backup in
   pipeline.latentsync.yaml), then `nraiorbit run godavari10 --force render --yes --max-spend <new cap>` through
   genv.sh (the Google key). sync.so jobs run one at a time; a stopped run resumes without paying twice

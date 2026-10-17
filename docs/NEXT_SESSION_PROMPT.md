@@ -1,28 +1,26 @@
 # Prompt for the next session
 
-## Where things stand (2026-10-17): the voice change
+## Where things stand (2026-10-17): voice E, lips by sync.so sync-3
 
-- The owner compared voices (docs/PROJECT_STATUS.md, "Voice test"): the whole film exists in versions **E** and **F**
-  (ElevenLabs Eleven v4, native Telugu library voices) under gs://.../godavari10/final/voice_test/. **Not chosen yet.**
-- The chosen voice needs the 34 on-camera speaking shots lip-synced again. Pre-flight done, nothing paid: the
-  `SYNC_API_KEY` secret works, `sync-3` and `lipsync-2-pro` are valid model ids, the service account signs links.
-  Exact cost (36 speaker crops, 198.8 s): **sync-3 $26.44 → ledger $125.05**, **lipsync-2-pro $16.50 → $115.11**.
-  The owner chose voice E, sync-3 and a $150 cap (then $155 after the Gemini-voice mistake below).
-- **Lesson (2026-10-17, cost $26.44):** `nraiorbit run --force render` wipes 05_dialogue and 07_video (stage
-  outputs) and regenerates every line from inbox/dialogue or the TTS cache. Takes copied into 05_dialogue are lost
-  that way: the first sync-3 pass was made on the Gemini voices without anyone noticing until the timeline's line
-  lengths were checked. Custom voices belong in **inbox/dialogue/<line_id>.wav** (providers.tts: inbox), where a
-  forced render reads them. That Gemini-voice film with sync-3 lips is kept as
-  gs://.../godavari10/final/voice_test/Godavari_Simham_geminiVoice_sync3lips_1080p.mp4 (+ trailer).
-- The run, once approved (scripts in gs://.../godavari10/project/scripts/, written for the session scratchpad):
-  `install_takes.py E|F` (the version's takes go to inbox/dialogue/<line>.wav, the earlier inbox takes to
-  inbox/dialogue_before_<ver>/, and 05_dialogue/<line>/take_1.wav is refreshed), `configure_sync3.py apply` (providers.lipsync → sync_so, lipsync.model, offline off, the
-  LatentSync frame-level settings dropped, `sync: false` / `sync_s` / `cut_in_s` kept; backup in
-  pipeline.latentsync.yaml), then `nraiorbit run godavari10 --force render --yes --max-spend <new cap>` through
-  genv.sh (the Google key). sync.so jobs run one at a time; a stopped run resumes without paying twice
-  (cache/lipsync/<key>.pending.json). If the result download is refused by the network policy, the error names the
-  host to allow. Then: frame-level QA of the 34 shots (new per-shot settings as needed), rebuild film and trailer,
-  final deliverables, bucket backup, docs.
+- The film is now in **voice E** (ElevenLabs Eleven v4 library voices, one per character) with every on-camera
+  speaking shot lip-synced by **sync.so sync-3** through the speaker crops (docs/PROJECT_STATUS.md, "Voice E
+  lip-sync"). **Ledger $151.49** (hard stop $155). Deliverables: gs://.../godavari10/final/ (1080p master, 720p,
+  trailer, dated 2026-10-17). Earlier versions kept under final/ and final/voice_test/.
+- **Lesson (cost $26.44):** `nraiorbit run --force render` wipes 05_dialogue and 07_video and regenerates every line
+  from **inbox/dialogue/<line_id>.wav** or the TTS cache. Custom voices belong in inbox/dialogue, never only in
+  05_dialogue. The first sync-3 pass was made on the Gemini voices that way; that film is kept as
+  final/voice_test/Godavari_Simham_geminiVoice_sync3lips_1080p.mp4.
+- sync.so facts: pay per second of output ($0.133 sync-3); the account's credits run out silently and the API
+  answers HTTP 402; the provider remembers every submitted generation (cache/lipsync/<key>.pending.json) and a
+  re-run without `--force` resumes from the cache without paying twice. A re-made speaker crop is byte-identical,
+  so the cache keys survive a re-render. The result download host is api.sync.so (no extra allow-list entry).
+- Voice E takes: inbox/dialogue (54 lines; the crowd chant stays the pipeline's 6-voice Gemini mix), backups in
+  final/voice_test/takes_E (and takes_F), scripts in godavari10/project/scripts/.
+- Per-shot settings now (projects/godavari10/pipeline.yaml → lipsync.shots): the two never-sync shots, the edit
+  decisions (sync_s, cut_in_s) and two composite-only tweaks from the sync-3 QA (sc013_s009 filmed_frames 71-101 +
+  fades, sc009_s004 fades). The LatentSync-era settings are gone; the LatentSync config is pipeline.latentsync.yaml.
+- Still open for the owner: the uniform 2.35:1 matte (18 clips with baked-in bars), sound effects (77 spotted), a
+  native Telugu review, the InsightFace licence before monetised release.
 
 ## Where things stand (2026-10-15): the 10-minute film
 

@@ -184,6 +184,30 @@ _Last updated: 2026-10-15. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
     run, so a crash, a timeout or a result download the network refuses is never paid twice. The host sync.so serves
     results from is not known yet: if the environment's network policy refuses it, the first job's error names it,
     the owner allows it, and the next run downloads the paid result.
+  - **Voice E lip-sync with sync.so sync-3 (2026-10-17):** the owner chose voice E (ElevenLabs Eleven v4: Sai Datta,
+    Bharadwaj, Seeta, Madhavi, Srinivas and the rest, one library voice per character) and sync-3. The E takes went
+    into **inbox/dialogue/<line_id>.wav** (time-matched where the voice test had fitted them, so the QA'd cut keeps its
+    timing), the earlier inbox takes to inbox/dialogue_before_E/. All 34 on-camera speaking shots were lip-synced with
+    sync-3 through speaker crops (36 segments, 198.8 s, $26.44), including the Kaasi profile shot LatentSync could not
+    do; nothing left unsynced.
+    - **A costly mistake first ($26.44):** the first sync-3 pass ran with `--force render`, which wipes 05_dialogue and
+      regenerates every line from inbox/dialogue or the TTS cache. The E takes had been copied into 05_dialogue, so
+      the pass was made on the old Gemini voices. Caught by checking the timeline's line lengths. That film (Gemini
+      voices, sync-3 lips) is kept as gs://.../godavari10/final/voice_test/Godavari_Simham_geminiVoice_sync3lips_1080p.mp4.
+      The redo was approved with the hard stop raised to $155. **Ledger: $151.49** (sync.so $52.88 in all; two
+      sync.so credit top-ups by the owner were needed, the API answers 402 when credits run out and the run resumes
+      without paying twice).
+    - **QA (frame level, every shot):** frame strips of the Veo crop against the sync-3 result with the line's
+      loudness, mouth aperture from the face mesh in speech and in silence, a block scan for changes outside the
+      speaker's face (none over the codec noise in any shot), the speaker-lock review sheets (the right face in all
+      34), and the film-level checks (14880 frames, every sampled cut on its frame, the voice 5 ms behind the
+      lip-sync track in all 34 shots as before, -14.6 LUFS, true peak -0.2 dBTP). sync-3 articulates clearly better
+      than LatentSync (teeth, mouth shapes on the words) and **closes the mouth in silence**, which fixes the old
+      closed-mouth-during-speech shots (sc008_s002, sc009_s006, sc011_s004) and Bhairava's silent shouting tails.
+      The one weak spot is the profile shot sc013_s009 (frames 71-101 barely move): shown as filmed there with
+      fades (`filmed_frames`, composite only); `fade_frames` at the segment joins of sc009_s004 and sc013_s009.
+      All the LatentSync-era frame settings were dropped (they were tuned to its output). Several E lines are shorter
+      than the Gemini ones, so some shots show 1-3.5 s of the actor after the line; sync-3 keeps those mouths still.
   - **Known limits (LatentSync 1.6):** lips and teeth softer than filmed, Bhairava's gold teeth come out pale, some
     vowels under-articulated. In 3 shots the mouth stays closed for 0.8-1.7 s while the voice plays (sc008_s002,
     sc009_s006, sc011_s004). Only a new GPU pass (higher audio guidance, re-synced frame ranges; about $2) can change

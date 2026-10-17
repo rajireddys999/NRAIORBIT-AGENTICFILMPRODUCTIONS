@@ -48,6 +48,7 @@ providers:
   video: mock                      # e.g. comfyui_wan_i2v, api_kling, api_veo
   tts: mock                        # e.g. indic_parler, indicf5, sarvam, rvc_convert
   lipsync: none                    # latentsync_cloudrun: LatentSync on your Cloud Run L4 GPU (deploy/lipsync/setup.sh)
+                                   # sync_so: sync.so's API (sync-3 / lipsync-2-pro; key in SYNC_API_KEY; lipsync.model)
   music: mock                      # mock | inbox (inbox/music/<cue_id>.wav) | lyria (Google Lyria 3, paid: google.music_*)
   sfx: none                        # e.g. library_then_generate
   face_embedder: none              # e.g. insightface (check licence), rekognition
@@ -79,7 +80,8 @@ google:                            # used by the veo / gemini / lyria providers 
   music_response_modalities: [AUDIO, TEXT]   # Lyria 3 on Vertex refuses [AUDIO] alone (400 INVALID_ARGUMENT); it returns
                                              # a text description plus audio/mpeg (verified 2026-10-14)
 
-lipsync:                           # used by providers.lipsync: latentsync_cloudrun
+lipsync:                           # used by providers.lipsync: latentsync_cloudrun (and sync_so: model, sync_mode,
+                                   # concurrency, poll_seconds, url_ttl_minutes, api_key_env; bucket is shared)
   job: nraiorbit-lipsync
   region: us-central1
   bucket: null                     # default <GOOGLE_CLOUD_PROJECT>-media (private; staging deleted after 7 days)

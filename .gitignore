@@ -7,8 +7,10 @@ venv/
 build/
 dist/
 
-# generated per-film outputs
-projects/
+# generated per-film outputs (the template stays in git)
+projects/*
+!projects/_template/
+!projects/_template/**
 
 # secrets
 client_secret*.json

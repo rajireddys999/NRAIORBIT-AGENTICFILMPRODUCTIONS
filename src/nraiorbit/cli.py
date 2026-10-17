@@ -34,7 +34,7 @@ from .library.registry import AssetRegistry
 from .pipeline import STAGES, GatePending, Pipeline, PipelineBlocked, ProjectPaths
 from .providers.google_ai import GoogleAPIError, GoogleSetupError
 
-PROJECTS = Path("projects")
+PROJECTS = Path(__import__("os").environ.get("NRAIORBIT_PROJECTS", "projects"))   # the runner mounts its own
 
 
 def _project(slug: str) -> Path:
@@ -52,9 +52,13 @@ def cmd_new(args) -> None:
     text = Path(args.story).read_text(encoding="utf-8") if args.story else args.prompt
     if not text:
         sys.exit("give --story FILE or --prompt TEXT")
+    template = PROJECTS / "_template"
+    if template.exists() and not args.bare:                 # the choices the last film settled on, as data
+        shutil.copytree(template, root, dirs_exist_ok=True)
     paths.story_input.parent.mkdir(parents=True, exist_ok=True)
     paths.story_input.write_text(text, encoding="utf-8")
-    print(f"created {root}. Override settings in {root / 'pipeline.yaml'} if needed, then: nraiorbit run {args.slug}")
+    print(f"created {root} from {'the template' if template.exists() and not args.bare else 'scratch'}. "
+          f"Set budget.max_usd and voice.cast in {root / 'pipeline.yaml'}, then: nraiorbit produce {args.slug}")
 
 
 def _run(pipeline: Pipeline, slug: str, until=None, force=()) -> None:
@@ -88,6 +92,8 @@ def _apply_run_options(cfg: dict, args) -> dict:
         cfg.setdefault("render", {})["only"] = args.only
     if getattr(args, "max_spend", None) is not None:
         cfg.setdefault("budget", {})["max_usd"] = args.max_spend
+    if getattr(args, "offline", False):
+        cfg.setdefault("lipsync", {})["offline"] = True      # paid lip-sync results only, never a new job
     return cfg
 
 
@@ -97,8 +103,8 @@ def _preflight(root: Path, cfg: dict, assume_yes: bool) -> bool:
 
     prov = cfg.get("providers", {})
     lyria = prov.get("music") == "lyria"
-    paid = prov.get("video") == "veo" or prov.get("tts") == "gemini" or lyria or (
-        prov.get("tts") == "inbox" and cfg.get("voice", {}).get("inbox_fallback") == "gemini")
+    paid = prov.get("video") == "veo" or prov.get("tts") in ("gemini", "elevenlabs") or lyria or (
+        prov.get("tts") == "inbox" and cfg.get("voice", {}).get("inbox_fallback") in ("gemini", "elevenlabs"))
     if not paid or not (root / "04_shots").exists():
         return True
     pre = preview_run(root, cfg, load_pricing(root))
@@ -429,6 +435,103 @@ def cmd_publish(args) -> None:
     print(f"uploaded as {args.privacy}: https://www.youtube.com/watch?v={video_id}")
 
 
+def _bucket(root: Path, args) -> str:
+    from .release import gcs
+    return getattr(args, "bucket", None) or gcs.default_bucket(load_pipeline_config(root))
+
+
+def cmd_qa(args) -> None:
+    root = _project(args.slug)
+    if args.action == "lipsync":
+        from .qa import lipsync
+        rows = lipsync.review(root, shots=args.shots or None, strips=not args.no_strips)
+        flagged = [r for r in rows if r.get("flags")]
+        print(f"{len(rows)} shots measured, {len(flagged)} worth a look; sheets in {root / 'reports' / 'qa' / 'lipsync'}")
+    else:
+        from .qa import film
+        report = film.check(root, master=Path(args.master) if args.master else None)
+        out = root / "reports" / "qa" / "film.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(__import__("json").dumps(report, indent=1), encoding="utf-8")
+        print("ok" if report.get("ok") else "LOOK: the film check found something; see " + str(out))
+
+
+def cmd_release(args) -> None:
+    if args.action == "youtube":
+        cmd_publish(args)
+        return
+    from .release import deliver
+    root = _project(args.slug)
+    records = deliver.deliver(root, bucket=None if args.no_upload else _bucket(root, args), date=args.date,
+                              tag=args.tag, days=args.days, parts=args.parts, upload=not args.no_upload)
+    print(f"{len(records)} files" + ("" if args.no_upload else f", links valid {args.days} days"))
+
+
+def cmd_produce(args) -> None:
+    from .llm import ClaudeClient
+    from .service import produce
+
+    root = _project(args.slug)
+    cfg = _apply_run_options(load_pipeline_config(root), args)
+    llm = ClaudeClient(model=cfg["llm"]["model"], max_tokens=cfg["llm"]["max_tokens"],
+                       usage_log=root / "reports" / "llm_usage.jsonl")
+    report = produce.produce(Pipeline(root, llm, cfg=cfg), bucket=args.bucket, publish=args.publish,
+                             gates=args.gates, keyframes=cmd_keyframes)
+    print(f"\n{args.slug}: {report['state']}  (ledger ${report['ledger_usd']:.2f}; report in reports/produce.json)")
+    if report["state"].startswith("awaiting:"):
+        gate = report["state"].split(":", 1)[1]
+        print(f"review it, then: nraiorbit approve {args.slug} {gate}  and  nraiorbit produce {args.slug}")
+
+
+def cmd_learn(args) -> None:
+    from .service import learn
+    cfg = load_pipeline_config(_project(args.project) if args.project else None)
+    for url in args.urls:
+        path = learn.learn(url, title=args.title, what=args.learn, cfg=cfg, start_s=args.start, end_s=args.end)
+        print(f"  {url} -> {path}")
+
+
+def cmd_service(args) -> None:
+    from .service import learn, produce, queue
+    if args.action == "tick":
+        from .llm import ClaudeClient
+
+        def produce_fn(root: Path, bucket):
+            cfg = load_pipeline_config(root)
+            llm = ClaudeClient(model=cfg["llm"]["model"], max_tokens=cfg["llm"]["max_tokens"],
+                               usage_log=root / "reports" / "llm_usage.jsonl")
+            return produce.produce(Pipeline(root, llm, cfg=cfg), bucket=bucket, keyframes=cmd_keyframes)
+
+        def learn_fn(url, title, what):
+            return learn.learn(url, title=title, what=what, cfg=load_pipeline_config(None))
+
+        out = queue.tick(args.stories, args.references, PROJECTS, bucket=args.bucket, produce_fn=produce_fn,
+                         learn_fn=learn_fn, template=PROJECTS / "_template")
+        print(out)
+        return
+    if args.action == "add-story":
+        rows = queue.load(args.stories, queue.STORY_COLUMNS)
+        rows.append({"slug": args.slug, "story_uri": args.story_uri, "budget_usd": args.budget or "",
+                     "gates": args.gates or "", "publish": args.publish or "", "state": "new", "note": "",
+                     "updated": queue.now()})
+        queue.save(args.stories, rows, queue.STORY_COLUMNS)
+        print(f"queued story {args.slug} in {args.stories}")
+        return
+    rows = queue.load(args.references, queue.REFERENCE_COLUMNS)
+    rows.append({"url": args.url, "title": args.title or "", "learn": args.learn or "all", "state": "new",
+                 "profile_uri": "", "note": "", "updated": queue.now()})
+    queue.save(args.references, rows, queue.REFERENCE_COLUMNS)
+    print(f"queued reference {args.url} in {args.references}")
+
+
+def cmd_backup(args) -> None:
+    from .ops import backup
+    root = _project(args.slug)
+    fn = backup.restore if args.cmd == "restore" else backup.backup
+    n = fn(root, _bucket(root, args), sets=args.sets or None)
+    print(f"{args.cmd}: {n} sets")
+
+
 def main(argv: list[str] | None = None) -> None:
     try:
         _main(argv)
@@ -444,10 +547,11 @@ def _main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="nraiorbit", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("new")
+    p = sub.add_parser("new", help="a project from projects/_template and a story")
     p.add_argument("slug")
     p.add_argument("--story")
     p.add_argument("--prompt")
+    p.add_argument("--bare", action="store_true", help="only the story; no template")
     p.set_defaults(fn=cmd_new)
 
     for name, fn in (("run", cmd_run), ("demo", cmd_demo)):
@@ -460,6 +564,7 @@ def _main(argv: list[str] | None = None) -> None:
                            help="generate only these scene ids, shot ids and/or 'trailer'; other shots reuse paid clips")
             p.add_argument("--max-spend", type=float, help="budget cap in USD for paid generation (overrides config)")
             p.add_argument("--yes", action="store_true", help="skip the spend confirmation")
+            p.add_argument("--offline", action="store_true", help="lip-sync from paid results only; never a new job")
         p.set_defaults(fn=fn)
 
     p = sub.add_parser("retake", help="new attempt for chosen shots (paid), or --use N to pick an earlier one (free)")
@@ -511,7 +616,7 @@ def _main(argv: list[str] | None = None) -> None:
 
     p = sub.add_parser("approve")
     p.add_argument("slug")
-    p.add_argument("gate", choices=["story", "cast", "pacing", "final_cut", "trailer"])
+    p.add_argument("gate", choices=["story", "cast", "faces", "pacing", "final_cut", "trailer"])
     p.set_defaults(fn=cmd_approve)
 
     p = sub.add_parser("status")
@@ -538,6 +643,84 @@ def _main(argv: list[str] | None = None) -> None:
     p.add_argument("--trailer", action="store_true", help="upload the trailer instead of the film")
     p.add_argument("--dry-run", action="store_true", help="print the metadata without uploading")
     p.set_defaults(fn=cmd_publish)
+
+    p = sub.add_parser("produce", help="one story start to finish under the project's policy: plan, faces, render, "
+                                       "QA, deliver, YouTube, backup")
+    p.add_argument("slug")
+    p.add_argument("--max-spend", type=float, help="budget cap in USD (overrides config)")
+    p.add_argument("--gates", choices=["ask", "auto"], help="stop at review gates (ask) or approve them (auto)")
+    p.add_argument("--publish", choices=["none", "private", "unlisted", "public"], help="YouTube privacy, or none")
+    p.add_argument("--bucket", help="deliver and back up to this bucket (default from the config)")
+    p.add_argument("--offline", action="store_true", help="lip-sync from paid results only")
+    p.set_defaults(fn=cmd_produce)
+
+    p = sub.add_parser("qa", help="quality checks after a render: lipsync (every speaking shot) or film (the master)")
+    qa_sub = p.add_subparsers(dest="action", required=True)
+    q = qa_sub.add_parser("lipsync")
+    q.add_argument("slug")
+    q.add_argument("--shots", nargs="*", help="only these shot ids")
+    q.add_argument("--no-strips", action="store_true", help="skip the frame strips (faster)")
+    q = qa_sub.add_parser("film")
+    q.add_argument("slug")
+    q.add_argument("--master", help="another file than 11_master/movie.mp4")
+    p.set_defaults(fn=cmd_qa)
+
+    p = sub.add_parser("release", help="deliver (720p copy, bucket upload, signed links) or youtube (upload)")
+    rel_sub = p.add_subparsers(dest="action", required=True)
+    d = rel_sub.add_parser("deliver")
+    d.add_argument("slug")
+    d.add_argument("--bucket")
+    d.add_argument("--date", help="date in the file names (default today)")
+    d.add_argument("--tag", default="", help="a word in the file names, e.g. voiceE")
+    d.add_argument("--days", type=int, default=7, help="how long the download links live")
+    d.add_argument("--parts", type=int, default=0, help="also cut the film into this many 720p parts")
+    d.add_argument("--no-upload", action="store_true", help="make the files only")
+    y = rel_sub.add_parser("youtube")
+    y.add_argument("slug")
+    y.add_argument("--client-secrets", default="client_secret.json")
+    y.add_argument("--privacy", choices=["private", "unlisted", "public"], default="private")
+    y.add_argument("--trailer", action="store_true", help="upload the trailer instead of the film")
+    y.add_argument("--dry-run", action="store_true", help="print the metadata without uploading")
+    p.set_defaults(fn=cmd_release)
+
+    p = sub.add_parser("learn", help="watch public films with Gemini and write craft notes the agents use as examples")
+    learn_sub = p.add_subparsers(dest="action", required=True)
+    yt = learn_sub.add_parser("youtube")
+    yt.add_argument("urls", nargs="+")
+    yt.add_argument("--title")
+    yt.add_argument("--learn", default="all", choices=["all", "score", "emotion", "action", "characters", "trailer"])
+    yt.add_argument("--start", type=float, help="seconds into the video to start watching")
+    yt.add_argument("--end", type=float, help="seconds into the video to stop")
+    yt.add_argument("--project", help="read google.* settings from this project instead of the defaults")
+    p.set_defaults(fn=cmd_learn)
+
+    p = sub.add_parser("service", help="the queue runner: tick (one pass), add-story, add-reference")
+    svc = p.add_subparsers(dest="action", required=True)
+    t = svc.add_parser("tick")
+    t.add_argument("--stories", required=True, help="queue CSV, local path or gs://bucket/queue/stories.csv")
+    t.add_argument("--references", required=True, help="queue CSV for reference films")
+    t.add_argument("--bucket", help="restore and back up projects here")
+    a = svc.add_parser("add-story")
+    a.add_argument("slug")
+    a.add_argument("story_uri", help="gs://… or a local path to the story text")
+    a.add_argument("--stories", required=True)
+    a.add_argument("--budget", type=float)
+    a.add_argument("--gates", choices=["ask", "auto"])
+    a.add_argument("--publish", choices=["none", "private", "unlisted", "public"])
+    r = svc.add_parser("add-reference")
+    r.add_argument("url")
+    r.add_argument("--references", required=True)
+    r.add_argument("--title")
+    r.add_argument("--learn", choices=["all", "score", "emotion", "action", "characters", "trailer"])
+    p.set_defaults(fn=cmd_service)
+
+    for name in ("backup", "restore"):
+        where = "to" if name == "backup" else "from"
+        p = sub.add_parser(name, help=f"{name} a project's media, caches, reports and plan files {where} the bucket")
+        p.add_argument("slug")
+        p.add_argument("--bucket")
+        p.add_argument("--sets", nargs="*", help="inbox cache keyframes music reports master scenes shots post files")
+        p.set_defaults(fn=cmd_backup)
 
     args = ap.parse_args(argv)
     args.fn(args)

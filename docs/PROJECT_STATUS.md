@@ -217,6 +217,15 @@ _Last updated: 2026-10-15. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
   - Still missing: sound effects (no SFX track yet; 77 distinct effects are spotted in projects/godavari10/post/
     sfx_spot_list.csv; candidate: Stable Audio 3.0 Small SFX, open weights, commercial use under $1M revenue).
 
+- **Framework split (2026-10-17):** the code is now a framework and every film is data (docs/FRAMEWORK.md).
+  New in the package: `providers/elevenlabs.py` (voice.cast per character, delivery tags, cached, ledgered),
+  `qa/` (lip-sync strips and metrics, blob scan, the film check), `release/` (720p, bucket, signed links; YouTube
+  through `release youtube`), `ops/backup.py`, `service/produce.py` (`nraiorbit produce`: plan → faces → render →
+  QA → deliver → publish → backup under a `policy`), `service/queue.py` and `deploy/service/` (a Cloud Run job that
+  works two CSV queues in the bucket), `service/learn.py` (`nraiorbit learn youtube`: Gemini writes craft notes from
+  public films; the agents get them as examples; nothing is downloaded or copied). `projects/_template` carries the
+  settled choices; `nraiorbit new` copies it. The godavari10 scratchpad scripts are retired into these modules.
+
 ### Verified vs. not verified
 
 | Verified (here, with ffmpeg and a fake Google client) | Not verified yet |

@@ -1,5 +1,12 @@
 # Prompt for the next session
 
+## The code is a framework now (2026-10-17)
+
+Read docs/FRAMEWORK.md first. A new story: `nraiorbit new <slug> --story story.md` (from projects/_template), set
+`budget.max_usd` and `voice.cast`, then `nraiorbit produce <slug>`; it stops at the review gates (story, cast, faces)
+unless `policy.gates: auto`. QA, delivery, YouTube and backup are `nraiorbit qa`, `release`, `backup`. The always-on
+runner is deploy/service (Cloud Run job + two CSV queues); reference learning is `nraiorbit learn youtube`.
+
 ## Where things stand (2026-10-17): voice E, lips by sync.so sync-3
 
 - The film is now in **voice E** (ElevenLabs Eleven v4 library voices, one per character) with every on-camera

@@ -736,6 +736,10 @@ class Pipeline:
             return {"voices": voices}
         if name == "gemini":
             return {"voices": voices, "cfg": self.cfg, "pricing": self.pricing, "ledger": self.ledger}
+        if name == "elevenlabs":                        # chants (voice.crowd) go to voice.crowd_provider
+            crowd_name = self.cfg.get("voice", {}).get("crowd_provider")
+            crowd = get_provider("tts", crowd_name, **self._provider_kwargs("tts", crowd_name, lock)) if crowd_name else None
+            return {"voices": voices, "cfg": self.cfg, "pricing": self.pricing, "ledger": self.ledger, "crowd": crowd}
         if name == "inbox":
             fallback = self.cfg.get("voice", {}).get("inbox_fallback", "mock")
             fallback = "mock" if fallback == "inbox" else fallback

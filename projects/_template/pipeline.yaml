@@ -1,0 +1,46 @@
+# Choices for this film. Anything not set here comes from config/pipeline.yaml.
+# The values below are the ones Godavari Simham settled on (docs/PROJECT_STATUS.md); change what this story needs.
+
+film:
+  runtime_minutes: 10              # the agents plan to this length (the defaults say 105: a feature)
+  runtime_tolerance_minutes: 0.5
+  trailer_seconds: 45
+
+providers:
+  video: veo                       # Veo 3.1 on Vertex AI; tiers per shot kind under google.video_tiers
+  tts: inbox                       # inbox/dialogue/<line_id>.wav first, then voice.inbox_fallback
+  music: lyria
+  lipsync: sync_so                 # sync.so sync-3 through the speaker lock (needs SYNC_API_KEY)
+
+voice:
+  inbox_fallback: elevenlabs       # ElevenLabs Eleven v4 with the cast below (needs ELEVENLABS_API_KEY)
+  crowd_provider: gemini           # chanted lines (voice.crowd) are several Gemini voices
+  cast: {}                         # character_id: ElevenLabs voice id, e.g. {arjun: f4UZfBDD7d4QR1DcXAMf}
+  elevenlabs: {model: eleven_v4, language_code: te, stability: 0.35, similarity_boost: 0.8, style: 0.6}
+
+google:
+  vertex: true
+  veo_mode: keyframe               # animate an approved first frame; faces are checked before video is paid
+
+lipsync:
+  model: sync-3
+  concurrency: 1
+  on_failure: keep_original
+  speaker_lock: true
+  mesh: true
+  offline: false
+  shots: {}                        # per-shot settings from QA: {sync: false}, {sync_s: 4.8}, {filmed_frames: [[a, b]]}, ...
+
+budget:
+  max_usd: 0                       # nothing is paid until you set the cap (or pass --max-spend)
+
+review_gates:
+  story: {auto_approve: false}
+  cast: {auto_approve: false}
+  pacing: {auto_approve: true}
+  trailer: {auto_approve: true}
+
+policy:                            # for `nraiorbit produce` and the service runner
+  gates: ask                       # ask: stop at every gate above | auto: approve them all (faces are still checked)
+  publish: private                 # none | private | unlisted | public (YouTube)
+  deliver_days: 7

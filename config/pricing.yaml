@@ -84,6 +84,9 @@ cloud_run_gpu:            # lip-sync worker (deploy/lipsync): Cloud Run job, 1x 
   startup_minutes: 6      # image pull + model load, once per job execution
   minutes_per_clip: 10.0  # LatentSync 1.6 on a 6-8 s 1080p shot (measured ~9.7 min on an L4, 2026-10-14)
 
+elevenlabs:               # Telugu voices through ElevenLabs (providers.tts: elevenlabs), per 1,000 characters
+  per_1k_chars: 0.18      # list price; a Creator/Pro plan includes characters, so the ledger's figure is an upper bound
+
 sync_so:                  # lip-sync through sync.so's API (providers.lipsync: sync_so), per second of output at 25 fps
   per_second:             # sync.so/pricing, 2026-10-16 (base rates; subscription tiers discount 5-20 %)
     sync-3: 0.133         # 4K native, opens silent lips, obstruction handling

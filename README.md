@@ -23,6 +23,7 @@ An agentic pipeline that turns a **story plot prompt** into a **Telugu feature f
 
 | Doc | Contents |
 |---|---|
+| [docs/FRAMEWORK.md](docs/FRAMEWORK.md) | **How the code is organised:** framework vs project vs library, one story to YouTube, the always-on runner |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System overview, stages S0–S16, lockfile, retake loop, storage layout |
 | [docs/AGENTS.md](docs/AGENTS.md) | The decision-making agents, specialist models, critique loops, feedback flywheel |
 | [docs/CHARACTER_IDENTITY.md](docs/CHARACTER_IDENTITY.md) | Identity packs, conditioning, the identity guard and its thresholds |
@@ -76,6 +77,23 @@ nraiorbit run my-film --force shots      # redo shot planning and everything aft
 nraiorbit library validate
 nraiorbit library search action --tags fight --rasa veera --intensity 8
 nraiorbit publish my-film --dry-run      # show YouTube metadata; uploads default to private
+```
+
+## One story to YouTube, with the tools the last film settled on
+
+```bash
+nraiorbit new rain-film --story stories/rain.md       # copies projects/_template: Veo 3.1, Gemini images, ElevenLabs
+                                                      # voices, Lyria, sync.so sync-3; set budget.max_usd and voice.cast
+nraiorbit produce rain-film --max-spend 150           # plan → faces → render → QA → deliver → (YouTube) → backup,
+                                                      # stopping at each review gate; --gates auto approves them
+nraiorbit approve rain-film faces && nraiorbit produce rain-film
+nraiorbit qa lipsync rain-film                        # frame strips and metrics for every speaking shot
+nraiorbit qa film rain-film                           # length, loudness, voice placement, cuts on the frame grid
+nraiorbit release deliver rain-film --tag v1          # 720p copy, bucket upload, 7-day links
+nraiorbit release youtube rain-film --privacy private
+nraiorbit backup rain-film                            # caches, inbox, reports, master, plan files → the bucket
+nraiorbit learn youtube https://youtu.be/<id> --learn score   # craft notes from a public film, for the agents
+nraiorbit service tick --stories gs://<bucket>/queue/stories.csv --references gs://<bucket>/queue/references.csv
 ```
 
 Out of the box, all generators are **mock** providers. A real run with Claude

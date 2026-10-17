@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from nraiorbit.agents.base import Agent, reference_examples
 from nraiorbit.service import learn, queue
@@ -39,7 +40,8 @@ def test_tick_makes_the_project_runs_produce_and_moves_states(tmp_path):
         return {"state": "awaiting:story", "steps": {}}
 
     out = queue.tick(st, rf, projects, bucket=None, produce_fn=produce_fn,
-                     learn_fn=lambda url, title, what: tmp_path / "profile.json", template=template, log=lambda *_: None)
+                     learn_fn=lambda url, title, what, minutes: tmp_path / "profile.json", template=template,
+                     log=lambda *_: None)
     assert out == {"reference": {"url": "https://www.youtube.com/watch?v=abc123xyz", "state": "done"},
                    "story": {"slug": "rain", "state": "awaiting:story"}}
     rows = queue.load(st, queue.STORY_COLUMNS)
@@ -57,6 +59,45 @@ def test_tick_makes_the_project_runs_produce_and_moves_states(tmp_path):
                learn_fn=None, log=lambda *_: None)
     assert (projects / "rain" / "reviews" / "story.approved").exists()
     assert queue.load(st, queue.STORY_COLUMNS)[0]["state"] == "done" and seen == ["rain"]
+
+
+def test_story_overrides_row_sync_reference_minutes_and_library_sync(tmp_path, monkeypatch):
+    st, rf = _queues(tmp_path)
+    (tmp_path / "rain.overrides.yaml").write_text("film: {runtime_minutes: 5}\nvoice: {cast: {hero: v1}}\n")
+    refs = queue.load(rf, queue.REFERENCE_COLUMNS)
+    refs[0]["minutes"] = "12"
+    queue.save(rf, refs, queue.REFERENCE_COLUMNS)
+    projects = tmp_path / "projects"
+    (projects / "_template").mkdir(parents=True)
+    (projects / "_template" / "pipeline.yaml").write_text("film: {runtime_minutes: 10}\nbudget: {max_usd: 0}\n")
+    seen, calls = {}, []
+    from nraiorbit.ops import backup
+    monkeypatch.setattr(backup, "sync_library", lambda bucket, direction, log=print: calls.append((bucket, direction)))
+    monkeypatch.setattr(backup, "restore", lambda root, bucket, log=print: calls.append(("restore", root.name)))
+    monkeypatch.setattr(backup, "backup", lambda root, bucket, log=print: calls.append(("backup", root.name)))
+
+    def produce_fn(root, bucket):
+        seen["cfg"] = yaml.safe_load((root / "pipeline.yaml").read_text())
+        return {"state": "awaiting:story", "steps": {}}
+
+    def learn_fn(url, title, what, minutes):
+        seen["minutes"] = minutes
+        return tmp_path / "p.json"
+    queue.tick(st, rf, projects, bucket="b", produce_fn=produce_fn, learn_fn=learn_fn, log=lambda *_: None)
+    cfg = seen["cfg"]
+    assert cfg["film"]["runtime_minutes"] == 5 and cfg["voice"]["cast"] == {"hero": "v1"}     # the overrides
+    assert cfg["budget"]["max_usd"] == 40.0 and cfg["policy"] == {"gates": "ask", "publish": "private"}
+    assert seen["minutes"] == "12"
+    assert calls[0] == ("b", "restore") and calls[-1] == ("b", "backup")       # the library round trip
+    # the owner raises the cap and changes publish in the sheet: the next tick writes both into the project
+    rows = queue.load(st, queue.STORY_COLUMNS)
+    rows[0].update(state="approved", budget_usd="60", publish="unlisted")
+    queue.save(st, rows, queue.STORY_COLUMNS)
+    queue.tick(st, rf, projects, bucket=None, produce_fn=produce_fn, learn_fn=None, log=lambda *_: None)
+    assert seen["cfg"]["budget"]["max_usd"] == 60.0 and seen["cfg"]["policy"]["publish"] == "unlisted"
+    assert seen["cfg"]["film"]["runtime_minutes"] == 5                      # overrides survive
+    assert queue.overrides_uri("gs://b/stories/rain.md") == "gs://b/stories/rain.overrides.yaml"
+    assert queue.overrides_uri("rain") == "rain.overrides.yaml"
 
 
 def test_tick_records_failures_as_blocked(tmp_path):

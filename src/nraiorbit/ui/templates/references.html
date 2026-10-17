@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="card">
+  <h1>Reference films</h1>
+  <p class="muted small">Gemini watches a public YouTube link and writes craft notes (score, emotional beats, action, characters, trailer). Nothing is downloaded or copied. Each watch is priced first from its length and refused over $1 unless the length is given; a feature film at one frame every four seconds is about $2.</p>
+  <form method="post" action="/references" class="grid g2">
+    <div><label>YouTube link</label><input name="url" required placeholder="https://www.youtube.com/watch?v=..."></div>
+    <div><label>Title (optional)</label><input name="title"></div>
+    <div><label>Learn</label><select name="learn">{% for w in ['all','score','emotion','action','characters','trailer'] %}<option>{{ w }}</option>{% endfor %}</select></div>
+    <div><label>Length in minutes (for the cost guard)</label><input name="minutes" type="number" step="1" min="1" placeholder="150"></div>
+    <div><p><button>Queue the reference</button></p></div>
+  </form>
+</div>
+<div class="card">
+  <table><tr><th>Link</th><th>Title</th><th>Learn</th><th>Min</th><th>State</th><th>Note</th><th></th></tr>
+  {% for r in refs %}<tr>
+    <td><a href="{{ r.url }}" target="_blank" rel="noopener">{{ r.url|short(48) }}</a></td><td>{{ r.title }}</td><td>{{ r.learn }}</td><td>{{ r.minutes }}</td>
+    <td><span class="badge {{ r.state.split(':')[0] }}">{{ r.state }}</span></td><td class="small">{{ r.note|short(120) }}</td>
+    <td>{% if r.state.startswith('blocked') %}<form class="inline" method="post" action="/references/retry"><input type="hidden" name="url" value="{{ r.url }}"><button class="quiet">Retry</button></form>{% endif %}</td>
+  </tr>{% else %}<tr><td colspan="7" class="muted">No references yet.</td></tr>{% endfor %}
+  </table>
+</div>
+{% endblock %}

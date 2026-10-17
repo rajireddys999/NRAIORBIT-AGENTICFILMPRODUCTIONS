@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block head %}<meta http-equiv="refresh" content="90">{% endblock %}
+{% block body %}
+<div class="grid g2">
+  <div class="card">
+    <h2>Runner</h2>
+    {% if runner.project and runner.job %}
+      <p class="small muted">Cloud Run job <span class="mono">{{ runner.job }}</span> in {{ runner.project }}, scheduled every 15 minutes. One tick does one unit of work per queue and exits.</p>
+      {% if runner.error %}<p class="small muted">Executions unavailable: {{ runner.error }}</p>{% endif %}
+      {% if runner.executions %}
+      <table><tr><th>Execution</th><th>Started</th><th>State</th></tr>
+      {% for e in runner.executions %}<tr><td class="mono">{{ e.name }}</td><td class="small">{{ e.created }}</td><td><span class="badge {{ e.state }}">{{ e.state }}</span></td></tr>{% endfor %}
+      </table>{% endif %}
+      <form method="post" action="/tick" style="margin-top:10px"><input type="hidden" name="next" value="/"><button>Run a tick now</button></form>
+    {% else %}<p class="muted small">No runner configured: this control room reads a local folder.</p>{% endif %}
+  </div>
+  <div class="card">
+    <h2>References</h2>
+    <p class="small muted">Craft notes Gemini wrote from public films; the agents read them as examples.</p>
+    {% set done = refs|selectattr('state','equalto','done')|list %}
+    <p>{{ refs|length }} queued, {{ done|length }} learned. <a href="/references">Open the list</a></p>
+  </div>
+</div>
+
+<div class="card">
+  <div class="actions" style="justify-content:space-between"><h2 style="margin:0">Films</h2><a class="btn" href="/new">New film</a></div>
+  {% if not films %}<p class="muted">Nothing yet. Start with <a href="/new">a story</a>.</p>{% endif %}
+  {% for f in films %}
+  <div class="card" style="margin:12px 0 0">
+    <div class="actions" style="justify-content:space-between">
+      <div><a href="/film/{{ f.slug }}"><b class="te">{{ f.title_te or f.title }}</b></a> <span class="muted">{{ f.title }} · {{ f.slug }}{% if f.runtime %} · {{ f.runtime }} min{% endif %}</span></div>
+      <div><span class="badge {{ f.state.split(':')[0] }}">{{ f.state }}</span>
+        {% if f.has_film %}<span class="badge done">film</span>{% endif %}{% if f.has_trailer %}<span class="badge done">trailer</span>{% endif %}</div>
+    </div>
+    {% if f.logline %}<p class="small" style="margin:6px 0">{{ f.logline }}</p>{% endif %}
+    <div class="grid g2">
+      <div>
+        {% set m = f.money %}
+        <div class="small muted">Spent {{ m.spent|money }}{% if m.cap %} of {{ m.cap|money }} cap{% else %} · <b style="color:var(--bad)">no cap set</b>{% endif %}
+          {% if m.estimate %} · next paid step about {{ m.estimate.total_usd|money }}{% endif %}</div>
+        {% if m.cap %}<div class="bar {% if m.spent > m.cap %}over{% endif %}"><span style="width:{{ [100, (100 * m.spent / m.cap)|round]|min }}%"></span></div>{% endif %}
+      </div>
+      <div class="actions">
+        {% for g in f.gates %}
+          {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/approve"><input type="hidden" name="gate" value="{{ g }}"><button>Approve {{ g }}</button></form>
+          {% else %}<span class="badge awaiting">awaiting {{ g }}</span>{% endif %}
+        {% endfor %}
+        {% if f.state.startswith('blocked') and f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/retry"><button class="quiet">Retry</button></form>{% endif %}
+        <a class="btn quiet" href="/film/{{ f.slug }}">Open</a>
+        {% if f.note %}<span class="small muted">{{ f.note|short(120) }}</span>{% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}

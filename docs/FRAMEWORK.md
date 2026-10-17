@@ -161,3 +161,21 @@ unless marked; none changes what an existing project renders.
   with a character in frame) and 39 identity images (faces); the pipeline makes no faceless images, so there is
   nothing to move to a cheaper model.
 
+## 8. The control room (2026-10-17)
+
+`nraiorbit ui` is one private web page over the bucket and the two queue sheets (deploy/ui/README.md): a story form
+(slug, runtime, cap, gates, YouTube setting), a board of films with their state, pending gates, spend against cap and
+the next estimate, a page per film with every stage's output (story bible, outline, scenes with every line in Telugu
+and English and its delivery, cast with identity images, shot lists with first frames, render progress, QA, the film
+and trailer playing in the page, delivery links, the YouTube result, the run report, the runner's log), and the
+reference queue. Approve, retry, cap and "run a tick now" are the only buttons that change anything, and they write
+only the queue sheet; the runner does the work under the row's cap. There is no database, so the page cannot
+disagree with the runner. On Cloud Run it sits behind Identity-Aware Proxy with an allow-list of e-mail addresses,
+and the app checks the address again. Locally: `nraiorbit ui --root projects --no-auth`.
+
+What the runner learned at the same time: the shared library (identity packs, reference profiles) is restored from
+the bucket before every tick and backed up after it, so a fresh container never pays again for images it has; the
+gates' review marks are backed up with the project; the sheet's cap, gates and publish setting are written into the
+project on every tick, so a change in the control room reaches the run; a story may bring
+`<story>.overrides.yaml` (runtime, voice cast); a reference row carries the video's minutes for the cost guard.
+

@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block title %}{{ f.title }} · {{ settings.title }}{% endblock %}
+{% block head %}{% if f.state in ['new','approved','retry','producing'] %}<meta http-equiv="refresh" content="60">{% endif %}{% endblock %}
+{% block body %}
+{% set m = f.money %}
+<div class="card">
+  <div class="actions" style="justify-content:space-between">
+    <div><h1 style="margin:0"><span class="te">{{ f.title_te or f.title }}</span> <span class="muted" style="font-size:16px">{{ f.title }} · {{ f.slug }}{% if f.runtime %} · {{ f.runtime }} min{% endif %}</span></h1></div>
+    <div><span class="badge {{ f.state.split(':')[0] }}">{{ f.state }}</span></div>
+  </div>
+  {% if f.bible.logline %}<p>{{ f.bible.logline }}</p>{% endif %}
+  <div class="toc">
+    {% for key, label in stages %}<a href="#{{ key }}">{{ label }}</a>{% endfor %}<a href="#money">Costs</a><a href="#report">Report</a><a href="#log">Log</a>
+  </div>
+</div>
+
+<div class="grid g2">
+  <div class="card">
+    <h2>What needs you</h2>
+    {% if f.gates %}
+      {% for g in f.gates %}
+        <p>Waiting at the <b>{{ g }}</b> gate.
+        {% if g == 'faces' %}Look at the <a href="#faces">first frames</a>; video is bought only after this.{% elif g == 'story' %}Read the <a href="#story">story bible</a> and <a href="#outline">outline</a>.{% elif g == 'cast' %}Check the <a href="#cast">cast</a>.{% else %}See <a href="#assemble">film & trailer</a>.{% endif %}</p>
+        {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/approve"><input type="hidden" name="gate" value="{{ g }}"><button>Approve {{ g }} and continue</button></form>
+        {% else %}<p class="small muted">This film is not in the queue; approve it from Claude Code (<span class="mono">nraiorbit approve {{ f.slug }} {{ g }}</span>).</p>{% endif %}
+      {% endfor %}
+    {% elif f.state.startswith('blocked') %}
+      <p>Blocked: <b>{{ f.state[8:] }}</b>. {{ f.row.note if f.row else '' }}</p>
+      {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/retry"><button>Fix is in place, retry</button></form>{% endif %}
+    {% elif f.state == 'done' %}<p>Done. The deliverables are under <a href="#deliver">Delivery</a>.</p>
+    {% elif f.state in ['new','approved','retry','producing'] %}<p>The runner is on it (state <b>{{ f.state }}</b>). This page refreshes by itself.</p>
+    {% else %}<p class="muted">Nothing is waiting on you.</p>{% endif %}
+    <div class="actions" style="margin-top:8px">
+      {% if settings.project and settings.job %}<form class="inline" method="post" action="/tick"><input type="hidden" name="next" value="/film/{{ f.slug }}"><button class="quiet">Run a tick now</button></form>{% endif %}
+    </div>
+  </div>
+  <div class="card" id="money">
+    <h2>Money</h2>
+    <p>Spent <b>{{ m.spent|money }}</b>{% if m.cap %} of the <b>{{ m.cap|money }}</b> cap ({{ m.left|money }} left){% else %} · <b style="color:var(--bad)">no cap: nothing paid until one is set</b>{% endif %}</p>
+    {% if m.cap %}<div class="bar {% if m.spent > m.cap %}over{% endif %}"><span style="width:{{ [100, (100 * m.spent / m.cap)|round]|min }}%"></span></div>{% endif %}
+    {% if m.estimate %}<p class="small">Next paid run, one attempt per shot: about <b>{{ m.estimate.total_usd|money }}</b>
+      ({% for k, v in m.estimate.items() if k != 'total_usd' and v %}{{ k.replace('_usd','') }} {{ v|money }}{% if not loop.last %}, {% endif %}{% endfor %}). Cached work is free.</p>{% endif %}
+    {% if m.by_provider %}<table>{% for p, v in m.by_provider %}<tr><td>{{ p }}</td><td style="text-align:right">{{ v|money }}</td></tr>{% endfor %}</table>{% endif %}
+    {% if f.row %}
+    <form method="post" action="/film/{{ f.slug }}/row" class="actions" style="margin-top:10px">
+      <input name="budget" type="number" min="1" step="1" value="{{ f.row.budget_usd }}" style="width:110px" title="cap"> <span class="small muted">cap</span>
+      <select name="gates"><option value="">gates: {{ f.row.gates or f.policy.gates or 'ask' }}</option><option value="ask">ask</option><option value="auto">auto</option></select>
+      <select name="publish"><option value="">YouTube: {{ f.row.publish or f.policy.publish or 'none' }}</option>{% for p in ['none','private','unlisted','public'] %}<option value="{{ p }}">{{ p }}</option>{% endfor %}</select>
+      <button class="quiet">Save</button>
+    </form>{% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <h2>Stages</h2>
+  <div class="stages">
+    {% for key, label in stages %}{% set s = f.stages[key] %}
+    <a class="stage" href="#{{ key }}"><b>{{ label }}</b><span class="badge {{ s.status }}">{{ s.status }}</span><div class="small muted" style="margin-top:4px">{{ s.text }}</div></a>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="card" id="story">
+  <h2>Story bible</h2>
+  {% if f.bible %}
+    <p><b>{{ f.bible.title_te }}</b> · {{ f.bible.title_en }} · {{ f.bible.genres|join(', ') }} · {{ f.bible.tone }} · {{ f.bible.structure_template }}</p>
+    <p>{{ f.bible.logline }}</p>
+    <p class="small"><b>World:</b> {{ f.bible.world }} <b>Era and region:</b> {{ f.bible.era_and_region }} <b>Themes:</b> {{ f.bible.themes|join(', ') }}</p>
+    {% for act in f.bible.acts %}<details><summary>{{ act.name }} · {{ act.target_minutes }} min · {{ act.purpose }}</summary>
+      <ol>{% for b in act.beats %}<li>{{ b.description if b.description is defined else b }}</li>{% endfor %}</ol></details>{% endfor %}
+  {% else %}<p class="muted">Not written yet.</p>{% endif %}
+  {% if f.story_text %}<details><summary>Your story as given</summary><pre>{{ f.story_text }}</pre></details>{% endif %}
+</div>
+
+<div class="card" id="outline">
+  <h2>Outline</h2>
+  {% if f.outline %}<table><tr><th>Scene</th><th>Heading</th><th>Synopsis</th><th>Rasa</th><th>Int.</th><th>Set piece</th><th>Sec</th></tr>
+  {% for o in f.outline %}<tr><td class="mono">{{ o.scene_id }}</td><td>{{ o.heading }}</td><td class="small">{{ o.synopsis }}</td><td>{{ o.rasa_primary }}{% if o.rasa_secondary %}/{{ o.rasa_secondary }}{% endif %}</td><td>{{ o.intensity }}</td><td>{{ o.set_piece }}</td><td>{{ o.target_seconds }}</td></tr>{% endfor %}</table>
+  {% else %}<p class="muted">Not written yet.</p>{% endif %}
+</div>
+
+<div class="card" id="scenes">
+  <h2>Scenes & dialogue</h2>
+  {% for sc in f.scenes %}
+  <details {% if loop.index <= 2 %}open{% endif %}><summary>{{ sc.scene_id }} · {{ sc.heading }} · {{ sc.rasa_primary }} {{ sc.intensity }}</summary>
+    <p class="small muted">{{ sc.synopsis }}</p>
+    {% for b in sc.blocks %}
+      {% if b.kind == 'dialogue' %}<div class="block"><span class="who">{{ b.speaker }}</span>
+        {% if b.delivery %}<span class="badge">{{ b.delivery.rasa }} {{ b.delivery.intensity }} · {{ b.delivery.volume }} · {{ b.delivery.pace }}</span>{% endif %}
+        <div class="te">{{ b.text_te }}</div><div class="en">{{ b.text_en }}{% if b.delivery and b.delivery.notes %} · <i>{{ b.delivery.notes }}</i>{% endif %}</div></div>
+      {% else %}<div class="block action">{{ b.text_en or b.text_te }}</div>{% endif %}
+    {% endfor %}
+  </details>
+  {% else %}<p class="muted">Not written yet.</p>{% endfor %}
+</div>
+
+<div class="card" id="cast">
+  <h2>Cast</h2>
+  <div class="grid g4">
+  {% for c in f.cast %}
+    <div class="stage">
+      {% if c.images %}<img class="face" src="{{ c.images[0] }}" alt="{{ c.name }}" loading="lazy">{% endif %}
+      <b>{{ c.name_te or c.name }}</b><div class="small">{{ c.name }} · {{ c.role }}</div>
+      {% if c.physical %}<div class="small muted">{{ c.physical.gender }}, {{ c.physical.age }}, {{ c.physical.build }}; {{ c.physical.face }}</div>{% endif %}
+      {% if c.voice %}<div class="small muted">voice: {{ c.voice.pitch }}{% if c.voice_asset %} · {{ c.voice_asset }}{% endif %}</div>{% endif %}
+      {% if c.arc %}<details><summary class="small">arc</summary><div class="small">{{ c.personality }} — {{ c.arc }}</div></details>{% endif %}
+    </div>
+  {% else %}<p class="muted">Not cast yet.</p>{% endfor %}
+  </div>
+</div>
+
+<div class="card" id="shots">
+  <h2>Shot lists</h2>
+  {% for sl in f.shots %}
+  <details><summary>{{ sl.scene_id }} · {{ sl.shots|length }} shots</summary>
+  <table><tr><th></th><th>Shot</th><th>Size · move</th><th>Who</th><th>Sec</th><th>Rasa</th><th>What we see</th><th>State</th></tr>
+  {% for sh in sl.shots %}<tr>
+    <td style="width:120px">{% if sh.keyframe %}<img class="thumb" src="{{ sh.keyframe }}" loading="lazy">{% endif %}</td>
+    <td class="mono">{{ sh.shot_id }}</td><td class="small">{{ sh.size }} · {{ sh.camera_move }}</td><td class="small">{{ sh.characters_in_frame|join(', ') }}</td>
+    <td>{{ sh.duration_s }}</td><td class="small">{{ sh.rasa }} {{ sh.intensity }}</td><td class="small">{{ sh.image_prompt|short(160) }}</td>
+    <td>{% if sh.synced %}<span class="badge done">lips</span>{% elif sh.filmed %}<span class="badge done">filmed</span>{% elif sh.keyframe %}<span class="badge partial">frame</span>{% else %}<span class="badge todo">planned</span>{% endif %}</td>
+  </tr>{% endfor %}</table></details>
+  {% else %}<p class="muted">Not planned yet.</p>{% endfor %}
+</div>
+
+<div class="card" id="faces">
+  <h2>First frames</h2>
+  <p class="small muted">One still per shot with a lead, made before any video is bought. Faces that are wrong here would be wrong in the film.</p>
+  <div class="grid g4">
+  {% for k in f.keyframes %}<div><img class="thumb" src="{{ k.url }}" alt="{{ k.shot_id }}" loading="lazy"><div class="small mono">{{ k.shot_id }}</div><div class="small muted">{{ k.characters|join(', ') }}{% if k.filmed %} · filmed{% endif %}</div></div>
+  {% else %}<p class="muted">None yet.</p>{% endfor %}
+  </div>
+</div>
+
+<div class="card" id="render">
+  <h2>Picture, voices, music, lips</h2>
+  <p>{{ f.stages.render.text or 'Nothing rendered yet.' }}</p>
+  {% if f.review_queue %}<details><summary>Review queue ({{ f.review_queue|length }} notes from the run)</summary>
+    <table>{% for r in f.review_queue %}<tr><td class="mono">{{ r.shot_id }}</td><td class="small">{{ r.reason|join('; ') if r.reason is iterable and r.reason is not string else r.reason }}</td></tr>{% endfor %}</table></details>{% endif %}
+</div>
+
+<div class="card" id="assemble">
+  <h2>Film & trailer</h2>
+  <div class="grid g2">
+    {% if f.media['movie.mp4'] %}<div><h3>Film</h3><video controls preload="metadata" src="{{ f.media['movie.mp4'] }}"></video></div>{% endif %}
+    {% if f.media['trailer.mp4'] %}<div><h3>Trailer</h3><video controls preload="metadata" src="{{ f.media['trailer.mp4'] }}"></video></div>{% endif %}
+  </div>
+  {% if not f.media %}<p class="muted">Not assembled yet.</p>{% endif %}
+</div>
+
+<div class="card" id="qa">
+  <h2>QA</h2>
+  {% if f.qa_film %}<p>Film check: <span class="badge {{ 'ok' if f.qa_film.ok else 'partial' }}">{{ 'ok' if f.qa_film.ok else 'needs a look' }}</span></p>
+    <details><summary>Measurements</summary><pre class="mono">{{ f.qa_film|tojson(indent=1) }}</pre></details>{% endif %}
+  {% if f.qa_md %}<details><summary>Lip-sync review</summary><pre>{{ f.qa_md }}</pre></details>{% endif %}
+  {% if f.strips %}<div class="grid g2">{% for s in f.strips %}<div><img src="{{ s.url }}" style="width:100%;border-radius:8px" loading="lazy"><div class="small mono">{{ s.shot_id }}</div></div>{% endfor %}</div>{% endif %}
+  {% if not f.qa_film and not f.qa_md and not f.strips %}<p class="muted">No QA report yet.</p>{% endif %}
+</div>
+
+<div class="card" id="deliver">
+  <h2>Delivery</h2>
+  {% if f.delivery %}<table>{% for d in f.delivery %}<tr><td>{% if d.url %}<a href="{{ d.url }}">{{ d.name }}</a>{% else %}{{ d.name }}{% endif %}</td><td>{{ d.mb }} MB</td></tr>{% endfor %}</table>
+  <p class="small muted">Links are time-limited; open this page again for fresh ones.</p>{% else %}<p class="muted">Not delivered yet.</p>{% endif %}
+</div>
+
+<div class="card" id="publish">
+  <h2>YouTube</h2>
+  {% set pub = f.steps.publish %}
+  {% if pub is mapping %}{% for k, v in pub.items() %}<p>{{ k }}: {% if v is mapping and v.id %}<a href="https://youtu.be/{{ v.id }}" target="_blank" rel="noopener">youtu.be/{{ v.id }}</a>{% elif v is string and v|length < 20 %}<a href="https://youtu.be/{{ v }}" target="_blank" rel="noopener">youtu.be/{{ v }}</a>{% else %}{{ v }}{% endif %}</p>{% endfor %}
+  {% elif pub %}<p>{{ pub }}</p>{% else %}<p class="muted">Not published. Policy: {{ f.row.publish if f.row and f.row.publish else f.policy.publish or 'none' }}.</p>{% endif %}
+</div>
+
+<div class="card" id="report">
+  <h2>Last run report</h2>
+  {% if f.produce %}<p class="small muted">{{ f.produce.started }} → {{ f.produce.finished }} · state {{ f.produce.state }} · ledger {{ f.produce.ledger_usd|money }}</p>
+  <table>{% for k, v in f.steps.items() %}<tr><td>{{ k }}</td><td class="small">{% if v is mapping %}<pre class="mono" style="margin:0">{{ v|tojson(indent=1) }}</pre>{% else %}{{ v }}{% endif %}</td></tr>{% endfor %}</table>
+  {% else %}<p class="muted">The runner has not reported on this film yet.</p>{% endif %}
+</div>
+
+<div class="card" id="log">
+  <h2>Runner log</h2>
+  {% if latest %}<p class="small muted">Latest execution <span class="mono">{{ latest }}</span></p>{% endif %}
+  {% if log_lines %}<pre class="mono">{{ log_lines|join('\n') }}</pre>{% else %}<p class="muted">No log to show.</p>{% endif %}
+</div>
+{% endblock %}

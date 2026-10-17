@@ -247,6 +247,17 @@ _Last updated: 2026-10-15. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
   upload is reported as skipped and the film stays in the bucket. Monthly cost of the idle service is cents
   (Scheduler, Secret Manager, seconds of CPU per tick); films are billed to their own cap.
 
+- **Control room live (2026-10-17):** https://nraiorbit-ui-578796959774.us-central1.run.app — Cloud Run service
+  `nraiorbit-ui` (scales to zero) behind Identity-Aware Proxy; only rrshiva361@gmail.com is allowed through, and the
+  app checks the same address again. It is `nraiorbit ui` (src/nraiorbit/ui, deploy/ui): story form, film board,
+  a page per film with every stage's output and the godavari10 film playing from the bucket, approve / retry / cap /
+  tick buttons that write only the queue sheet, the reference queue, the runner's executions and log. Runner fixes
+  that came with it: the library (identity packs, reference profiles) and the gates' review marks are now backed up
+  and restored around every tick (a fresh container no longer pays for identity images again), the sheet's cap,
+  gates and publish reach the project on every tick, `<story>.overrides.yaml` sets runtime and cast, and a
+  reference row carries its minutes for the cost guard. Still needed for a film queued from the page to plan itself:
+  an Anthropic API key as the secret ANTHROPIC_API_KEY attached to the runner job.
+
 ### Verified vs. not verified
 
 | Verified (here, with ffmpeg and a fake Google client) | Not verified yet |

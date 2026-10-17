@@ -22,10 +22,13 @@ FOLDERS = {                    # set name -> folder under the project; synced bo
     "scenes": "03_scenes",
     "shots": "04_shots",
     "post": "post",
+    "reviews": "reviews",      # the gates' .pending / .approved marks: state, not media
 }
 FILES = ["pipeline.yaml", "pricing.yaml", "cast.lock.yaml", "takes.yaml", "reuse.yaml", "01_story_bible.json",
          "02_outline.json", "input/story.md"]
-DEFAULT_SETS = ["inbox", "cache", "keyframes", "music", "reports", "master", "scenes", "shots", "post", "files"]
+DEFAULT_SETS = ["inbox", "cache", "keyframes", "music", "reports", "master", "scenes", "shots", "post", "reviews",
+                "files"]
+LIBRARY_SETS = ("characters", "references")     # library/<set> <-> gs://bucket/library/<set>, shared by every film
 
 
 def pairs(project_root: Path, bucket: str, sets=None) -> list[tuple[str, Path, str]]:
@@ -72,3 +75,30 @@ def restore(project_root: Path, bucket: str | None = None, sets=None, log=print)
         except gcs.BucketError as e:
             log(f"    skipped ({str(e).splitlines()[-1][:120]})")
     return done
+
+
+def sync_library(bucket: str, direction: str = "backup", sets=LIBRARY_SETS, log=print) -> int:
+    """The shared library (identity packs under characters/, craft notes under references/) to or from the bucket.
+    A runner with an empty disk restores it before a tick so it never pays again for images it already has."""
+    from ..config import REPO_ROOT
+    from ..release import gcs
+
+    n = 0
+    for name in sets:
+        local, remote = REPO_ROOT / "library" / name, f"gs://{bucket}/library/{name}"
+        if direction == "backup":
+            if not local.exists() or not any(local.rglob("*")):
+                continue
+            gcs.rsync(local, remote)
+        else:
+            local.mkdir(parents=True, exist_ok=True)
+            try:
+                gcs.rsync(remote, local)
+            except gcs.BucketError as exc:                # nothing there yet is not an error
+                if "not found" not in str(exc).lower() and "no url" not in str(exc).lower():
+                    raise
+                continue
+        n += 1
+        log(f"  library/{name} {'->' if direction == 'backup' else '<-'} {remote}")
+    return n
+

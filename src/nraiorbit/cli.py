@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -510,8 +511,10 @@ def cmd_service(args) -> None:
                                usage_log=root / "reports" / "llm_usage.jsonl")
             return produce.produce(Pipeline(root, llm, cfg=cfg), bucket=bucket, keyframes=cmd_keyframes)
 
-        def learn_fn(url, title, what):
-            return learn.learn(url, title=title, what=what, cfg=load_pipeline_config(None))
+        def learn_fn(url, title, what, minutes=None):
+            from .costing import load_pricing
+            return learn.learn(url, title=title, what=what, cfg=load_pipeline_config(None),
+                               minutes=float(minutes) if minutes else None, pricing=load_pricing(None))
 
         out = queue.tick(args.stories, args.references, PROJECTS, bucket=args.bucket, produce_fn=produce_fn,
                          learn_fn=learn_fn, template=PROJECTS / "_template")
@@ -526,10 +529,30 @@ def cmd_service(args) -> None:
         print(f"queued story {args.slug} in {args.stories}")
         return
     rows = queue.load(args.references, queue.REFERENCE_COLUMNS)
-    rows.append({"url": args.url, "title": args.title or "", "learn": args.learn or "all", "state": "new",
-                 "profile_uri": "", "note": "", "updated": queue.now()})
+    rows.append({"url": args.url, "title": args.title or "", "learn": args.learn or "all",
+                 "minutes": args.minutes or "", "state": "new", "profile_uri": "", "note": "", "updated": queue.now()})
     queue.save(args.references, rows, queue.REFERENCE_COLUMNS)
     print(f"queued reference {args.url} in {args.references}")
+
+
+def cmd_ui(args) -> None:
+    """The control room: a private web page over the bucket (or a local projects folder) and the queue sheets."""
+    import uvicorn
+
+    from .ui.app import Settings, create_app
+    from .ui.store import Store
+    root = args.root or os.environ.get("UI_ROOT") or (
+        f"gs://{os.environ['GOOGLE_CLOUD_PROJECT']}-media" if os.environ.get("GOOGLE_CLOUD_PROJECT") else str(PROJECTS))
+    emails = {e.strip().lower() for e in (args.allow or os.environ.get("UI_ALLOWED_EMAILS", "")).split(",") if e.strip()}
+    auth = not args.no_auth and os.environ.get("UI_AUTH", "on").lower() not in ("off", "0", "false")
+    if auth and not emails:
+        sys.exit("ui: give --allow <email>[,<email>] (or UI_ALLOWED_EMAILS), or --no-auth on a laptop")
+    settings = Settings(allowed_emails=emails, auth=auth, project=os.environ.get("GOOGLE_CLOUD_PROJECT"),
+                        region=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"),
+                        job=os.environ.get("UI_JOB", "nraiorbit-runner") if os.environ.get("GOOGLE_CLOUD_PROJECT") else None)
+    print(f"control room on http://{args.host}:{args.port} over {root}"
+          + ("" if auth else "  (no sign-in: local use only)"))
+    uvicorn.run(create_app(Store(root), settings), host=args.host, port=int(args.port), log_level="warning")
 
 
 def cmd_backup(args) -> None:
@@ -725,7 +748,16 @@ def _main(argv: list[str] | None = None) -> None:
     r.add_argument("--references", required=True)
     r.add_argument("--title")
     r.add_argument("--learn", choices=["all", "score", "emotion", "action", "characters", "trailer"])
+    r.add_argument("--minutes", type=float, help="the video's length, for the cost guard (else 150 is assumed)")
     p.set_defaults(fn=cmd_service)
+
+    u = sub.add_parser("ui", help="the control room: a private web page over the bucket and the queue sheets")
+    u.add_argument("--root", help="gs://bucket or a local projects folder (default: the project's media bucket)")
+    u.add_argument("--host", default="0.0.0.0")
+    u.add_argument("--port", default=os.environ.get("PORT", "8080"))
+    u.add_argument("--allow", help="e-mail addresses allowed in, comma separated (behind IAP on Cloud Run)")
+    u.add_argument("--no-auth", action="store_true", help="no sign-in check: a laptop, never the internet")
+    u.set_defaults(fn=cmd_ui)
 
     for name in ("backup", "restore"):
         where = "to" if name == "backup" else "from"

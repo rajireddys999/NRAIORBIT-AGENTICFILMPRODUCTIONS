@@ -14,6 +14,11 @@ or over it; YouTube only on a passing film check and never through a browser (`Y
 template. **Keep godavari10 on `sync_silence: always` and without the grid**: its paid lip-sync results and shot lists
 are keyed to the old crops; changing either re-makes crops and pays sync.so again.
 
+The control room (docs/FRAMEWORK.md §8, deploy/ui/) is live behind Google sign-in for the owner's account; its link is
+in docs/PROJECT_STATUS.md. It is a viewer over the bucket plus the queue buttons. Films queued there need an Anthropic
+API key in the runner (secret ANTHROPIC_API_KEY attached to the job) for the planning agents; until then plan in
+Claude Code, back up, and queue the row, and the runner carries on from the first frames.
+
 ## Where things stand (2026-10-17): voice E, lips by sync.so sync-3
 
 - The film is now in **voice E** (ElevenLabs Eleven v4 library voices, one per character) with every on-camera

@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="card">
+  <h1>New film</h1>
+  <p class="muted small">The story goes to the bucket and a row to the queue. The runner plans the story bible, outline, scenes, cast and shots with Claude, then stops at each review gate for you. Nothing is paid without the cap below, and the paid steps are priced before they start.</p>
+  <form method="post" action="/new">
+    <div class="grid g2">
+      <div>
+        <label>Slug (the folder name: lowercase, digits, dashes)</label><input name="slug" required pattern="[a-z0-9][a-z0-9-]{1,40}" placeholder="rain-ferry">
+        <label>Runtime (minutes)</label><input name="runtime" type="number" min="1" max="60" value="10">
+        <label>Budget cap for this film (USD, the hard stop)</label><input name="budget" type="number" min="1" step="1" value="150" required>
+      </div>
+      <div>
+        <label>Review gates</label>
+        <select name="gates"><option value="ask">ask: stop at story, cast and first frames for my approval</option><option value="auto">auto: approve them as they come</option></select>
+        <label>YouTube</label>
+        <select name="publish"><option value="private">private upload when the film check passes</option><option value="unlisted">unlisted</option><option value="public">public</option><option value="none">none: deliver to the bucket only</option></select>
+        <label><input type="checkbox" name="start" value="1" checked style="width:auto"> start a tick right away (else within 15 minutes)</label>
+      </div>
+    </div>
+    <label>Story (Telugu or English; a page or two is plenty: who, where, what is at stake, how it ends)</label>
+    <textarea name="story" required placeholder="గోదావరి ఒడ్డున ఒక పడవ నడిపే యువకుడు..."></textarea>
+    <p><button>Queue this film</button></p>
+  </form>
+</div>
+{% endblock %}

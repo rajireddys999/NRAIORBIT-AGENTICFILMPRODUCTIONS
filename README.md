@@ -95,6 +95,7 @@ nraiorbit backup rain-film                            # caches, inbox, reports, 
 nraiorbit learn youtube https://youtu.be/<id> --learn score --minutes 150   # craft notes from a public film, for
                                                       # the agents; priced first, refused over --max-usd (default $1)
 nraiorbit service tick --stories gs://<bucket>/queue/stories.csv --references gs://<bucket>/queue/references.csv
+nraiorbit ui --root projects --no-auth               # the control room on a laptop; on Cloud Run: deploy/ui/setup.sh
 ```
 
 Out of the box, all generators are **mock** providers. A real run with Claude

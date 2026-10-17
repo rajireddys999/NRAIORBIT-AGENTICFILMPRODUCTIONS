@@ -166,6 +166,15 @@ _Last updated: 2026-10-15. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
       download links. The working master stays under godavari10/11_master/. godavari10/final/source/ holds every
       picture source of the film with a manifest: the 84 generated keyframes, frame 0 of all 133 clips, the 133 Veo
       clips used plus the 34 lip-synced versions, and the cast reference photos (loose files and four zips).
+  - **Voice test (2026-10-17):** the owner compared the trailer's 5 lines in Gemini 2.5 Flash (current), Gemini 2.5 Pro
+    TTS, Chirp 3 HD Telugu, ElevenLabs v3 (stock voices) and ElevenLabs Eleven v4 with native Telugu library voices
+    (E: Sai Datta/Seeta cast, F: Srinivas/Vijaya cast). Then the whole film was re-voiced in E and F (55 lines each,
+    one library voice per character, picture, music and lip-sync untouched; takes time-matched to the old lines where
+    within 12-18 %): gs://.../godavari10/final/voice_test/ (1080p + 720p per version, lines_E.csv / lines_F.csv list
+    voice and timing per line). Not yet chosen; the chosen voice still needs the 34 speaking shots re-lip-synced
+    (LatentSync about $5, or sync.so lipsync-2-pro about $25-40). ElevenLabs costs sit on the owner's Creator plan
+    (included characters); the ledger carries them as estimates ($98.61 incl. the voice tests). The ElevenLabs key is
+    the environment secret ELEVENLABS_API_KEY; api.elevenlabs.io is on the environment's allowed hosts.
   - **Known limits (LatentSync 1.6):** lips and teeth softer than filmed, Bhairava's gold teeth come out pale, some
     vowels under-articulated. In 3 shots the mouth stays closed for 0.8-1.7 s while the voice plays (sc008_s002,
     sc009_s006, sc011_s004). Only a new GPU pass (higher audio guidance, re-synced frame ranges; about $2) can change

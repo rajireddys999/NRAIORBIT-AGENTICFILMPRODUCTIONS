@@ -4,7 +4,9 @@
 
 - The film is now in **voice E** (ElevenLabs Eleven v4 library voices, one per character) with every on-camera
   speaking shot lip-synced by **sync.so sync-3** through the speaker crops (docs/PROJECT_STATUS.md, "Voice E
-  lip-sync"). **Ledger $151.49** (hard stop $155). Deliverables: gs://.../godavari10/final/ (1080p master, 720p,
+  lip-sync"). **Ledger $151.57** (hard stop $155; the last $0.08 is a new Lyria piece under the re-cut trailer:
+  the trailer stage is not covered by `lipsync.offline`, so a rebuild that changes the trailer's length pays for
+  its music once). Deliverables: gs://.../godavari10/final/ (1080p master, 720p,
   trailer, dated 2026-10-17). Earlier versions kept under final/ and final/voice_test/.
 - **Lesson (cost $26.44):** `nraiorbit run --force render` wipes 05_dialogue and 07_video and regenerates every line
   from **inbox/dialogue/<line_id>.wav** or the TTS cache. Custom voices belong in inbox/dialogue, never only in

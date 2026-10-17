@@ -194,7 +194,8 @@ _Last updated: 2026-10-15. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
       regenerates every line from inbox/dialogue or the TTS cache. The E takes had been copied into 05_dialogue, so
       the pass was made on the old Gemini voices. Caught by checking the timeline's line lengths. That film (Gemini
       voices, sync-3 lips) is kept as gs://.../godavari10/final/voice_test/Godavari_Simham_geminiVoice_sync3lips_1080p.mp4.
-      The redo was approved with the hard stop raised to $155. **Ledger: $151.49** (sync.so $52.88 in all; two
+      The redo was approved with the hard stop raised to $155. **Ledger: $151.57** (sync.so $52.88 in all, plus
+      $0.08 for a new Lyria piece under the trailer, which changed length with the E lines; two
       sync.so credit top-ups by the owner were needed, the API answers 402 when credits run out and the run resumes
       without paying twice).
     - **QA (frame level, every shot):** frame strips of the Veo crop against the sync-3 result with the line's

@@ -110,3 +110,38 @@ def test_backup_pairs_and_commands(tmp_path, monkeypatch):
     monkeypatch.setattr(gcs.shutil, "which", lambda name: "/usr/bin/gcloud")
     assert backup.backup(root, "my-media", ["inbox", "files"], log=lambda *_: None) == 2   # the missing files are skipped
     assert calls[0][:4] == ["gcloud", "storage", "rsync", "-r"] and calls[1][:3] == ["gcloud", "storage", "cp"]
+
+
+def test_library_sync_restores_what_exists_and_skips_what_does_not(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from nraiorbit.ops import backup
+    from nraiorbit.release import gcs
+    monkeypatch.setattr(backup, "REPO_ROOT", tmp_path, raising=False)
+    import nraiorbit.config as config
+    monkeypatch.setattr(config, "REPO_ROOT", tmp_path)
+    calls = []
+
+    def run(cmd, capture_output=True, text=True, env=None):
+        calls.append(cmd)
+        if "gs://b/library/references" in cmd[-2]:          # restore of a folder nobody wrote yet
+            return SimpleNamespace(returncode=1, stderr="ERROR: (gcloud.storage.rsync) Did not find existing "
+                                                        "container at: gs://b/library/references")
+        return SimpleNamespace(returncode=0, stderr="")
+    monkeypatch.setattr(gcs, "RUN", run)
+    monkeypatch.setattr(gcs, "which", lambda *_: "/usr/bin/gcloud", raising=False)
+    import shutil
+    monkeypatch.setattr(shutil, "which", lambda *_: "/usr/bin/gcloud")
+    assert backup.sync_library("b", "restore", log=lambda *_: None) == 1       # characters came, references skipped
+    assert (tmp_path / "library" / "characters").is_dir()
+    (tmp_path / "library" / "characters" / "x.png").write_bytes(b"x")
+    assert backup.sync_library("b", "backup", log=lambda *_: None) == 1       # only folders with content go up
+    assert any("gs://b/library/characters" in c[-1] for c in calls)
+
+    def boom(cmd, capture_output=True, text=True, env=None):
+        return SimpleNamespace(returncode=1, stderr="ERROR: permission denied")
+    monkeypatch.setattr(gcs, "RUN", boom)
+    import pytest as _pytest
+    with _pytest.raises(gcs.BucketError):
+        backup.sync_library("b", "restore", log=lambda *_: None)
+

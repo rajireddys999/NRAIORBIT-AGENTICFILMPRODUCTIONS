@@ -95,7 +95,8 @@ def sync_library(bucket: str, direction: str = "backup", sets=LIBRARY_SETS, log=
             try:
                 gcs.rsync(remote, local)
             except gcs.BucketError as exc:                # nothing there yet is not an error
-                if "not found" not in str(exc).lower() and "no url" not in str(exc).lower():
+                text = str(exc).lower()
+                if not any(w in text for w in ("not found", "did not find", "no url", "no such")):
                     raise
                 continue
         n += 1

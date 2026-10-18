@@ -131,7 +131,8 @@ def test_only_the_allowed_account_gets_in(root):
     assert r.status_code == 403 and "No signed-in account" in r.text               # a form post is refused outright
     r = anon.get("/", headers={IAP: "other@example.com"})
     assert r.status_code == 403 and "other@example.com" in r.text and "owner@example.com" in r.text
-    assert anon.get("/", headers={IAP: "bad"}).status_code == 403                 # an assertion that does not verify
+    r = anon.get("/", headers={IAP: "bad"}, follow_redirects=False)              # an assertion that does not verify
+    assert r.status_code == 303 and r.headers["location"] == "/login"
     # the plain e-mail header alone is never enough: without IAP in front anyone could send it
     r = anon.get("/", headers={"X-Goog-Authenticated-User-Email": "accounts.google.com:owner@example.com"},
                  follow_redirects=False)

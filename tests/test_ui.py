@@ -116,8 +116,10 @@ def test_only_the_allowed_account_gets_in(root):
     app = create_app(Store(str(root)), Settings(allowed_emails={"owner@example.com"}, auth=True))
     anon = TestClient(app)
     assert anon.get("/healthz").text == "ok"                                    # the platform's probe
-    assert anon.get("/").status_code == 403
-    assert anon.get("/", headers={"X-Goog-Authenticated-User-Email": "accounts.google.com:other@example.com"}).status_code == 403
+    r = anon.get("/")
+    assert r.status_code == 403 and "No signed-in account" in r.text
+    r = anon.get("/", headers={"X-Goog-Authenticated-User-Email": "accounts.google.com:other@example.com"})
+    assert r.status_code == 403 and "other@example.com" in r.text and "owner@example.com" in r.text
     assert anon.get("/", headers={"X-Goog-Authenticated-User-Email": "accounts.google.com:Owner@Example.com"}).status_code == 200
     local = TestClient(create_app(Store(str(root)), Settings(auth=False)))
     assert local.get("/").status_code == 200                                    # a laptop, no sign-in

@@ -35,9 +35,34 @@ class Settings:
     title: str = "NRAIORBIT control room"
 
 
+IAP_CERTS = "https://www.gstatic.com/iap/verify/public_key-jwk"
+
+
 def user_email(request: Request) -> str | None:
+    """Who Identity-Aware Proxy signed in: its e-mail header, else the e-mail inside its signed assertion."""
     raw = request.headers.get("x-goog-authenticated-user-email", "")
-    return raw.split(":", 1)[-1].strip().lower() or None if raw else None
+    if raw:
+        return raw.split(":", 1)[-1].strip().lower() or None
+    assertion = request.headers.get("x-goog-iap-jwt-assertion", "")
+    if assertion:
+        try:
+            from google.auth.transport import requests as g_requests
+            from google.oauth2 import id_token
+            claims = id_token.verify_token(assertion, g_requests.Request(), certs_url=IAP_CERTS)
+            return (claims.get("email") or "").strip().lower() or None
+        except Exception:
+            return None
+    return None
+
+
+def denied_page(seen: str | None, allowed: set[str]) -> str:
+    who = f"You are signed in as <b>{seen}</b>." if seen else "No signed-in account reached this page."
+    return ("<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<title>Private</title><body style='font:16px system-ui;max-width:40em;margin:3em auto;padding:0 1em'>"
+            f"<h1>This control room is private</h1><p>{who}</p><p>Only these accounts may use it: "
+            f"<b>{', '.join(sorted(allowed)) or 'none configured'}</b>.</p>"
+            "<p>Sign out of Google in this browser, or open the link in a private window and sign in with the right "
+            "account.</p></body>")
 
 
 def load_rows(store: Store, rel: str, columns: list[str]) -> list[dict]:
@@ -67,7 +92,8 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
             return "local"
         email = user_email(request)
         if not email or email not in settings.allowed_emails:
-            raise HTTPException(status_code=403, detail="This page is private.")
+            print(f"control room: denied {email or '(no account)'} on {request.url.path}", flush=True)
+            raise HTTPException(status_code=403, detail=denied_page(email, settings.allowed_emails))
         return email
 
     def page(name: str, request: Request, email: str, **kw):
@@ -250,9 +276,14 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
 
     @app.exception_handler(HTTPException)
     async def on_error(request: Request, exc: HTTPException):
-        html = templates.get_template("message.html").render(
-            {"request": request, "settings": settings, "status": exc.status_code, "detail": exc.detail,
-             "email": None, "root": store.root, "msg": None})
+        if exc.status_code == 403:                        # the denial page stands on its own, template or not
+            return HTMLResponse(str(exc.detail), status_code=403)
+        try:
+            html = templates.get_template("message.html").render(
+                {"request": request, "settings": settings, "status": exc.status_code, "detail": exc.detail,
+                 "email": None, "root": store.root, "msg": None})
+        except Exception:
+            html = f"<!doctype html><meta charset='utf-8'><h1>{exc.status_code}</h1><p>{exc.detail}</p>"
         return HTMLResponse(html, status_code=exc.status_code)
 
     return app

@@ -21,3 +21,4 @@ deploy/lipsync/
 *.mov
 *.jsonl
 *.html
+!src/nraiorbit/ui/templates/*.html

@@ -24,7 +24,8 @@ google = ["google-genai>=2.30",                      # Veo, Gemini image, Gemini
 lipsync = ["mediapipe>=0.10.14"]                    # lip-sync speaker lock: BlazeFace face detector (Apache-2.0)
 guards = ["insightface>=0.7", "onnxruntime-gpu>=1.17", "opencv-python>=4.9", "speechbrain>=1.0", "torchaudio>=2.2"]
 ui = ["fastapi>=0.110", "uvicorn>=0.29", "jinja2>=3.1", "python-multipart>=0.0.9",   # the control room (nraiorbit ui)
-      "google-cloud-run>=0.10", "google-cloud-logging>=3.10", "google-cloud-storage>=2.16"]
+      "google-cloud-run>=0.10", "google-cloud-logging>=3.10", "google-cloud-storage>=2.16",
+      "cryptography>=42"]                                                             # IAP's ES256 assertions
 
 [project.scripts]
 nraiorbit = "nraiorbit.cli:main"

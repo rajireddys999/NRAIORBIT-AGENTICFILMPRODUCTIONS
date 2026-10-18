@@ -17,8 +17,17 @@ from nraiorbit.service import queue
 fastapi = pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
+from nraiorbit.ui import app as app_mod  # noqa: E402
 from nraiorbit.ui import runner as runner_mod  # noqa: E402
 from nraiorbit.ui.app import Settings, create_app  # noqa: E402
+
+IAP = "X-Goog-IAP-JWT-Assertion"          # tests stand in for IAP: the assertion is the e-mail, verified by a stub
+
+
+@pytest.fixture(autouse=True)
+def fake_iap(monkeypatch):
+    monkeypatch.setattr(app_mod, "verify_assertion",
+                        lambda token: {"iss": "https://cloud.google.com/iap", "email": token} if token != "bad" else None)
 from nraiorbit.ui.store import Store  # noqa: E402
 
 
@@ -103,7 +112,7 @@ def client(root, monkeypatch):
     monkeypatch.setattr(runner_mod, "run", lambda p, r, j: started.append(j) or "nraiorbit-runner-new")
     app = create_app(Store(str(root)), Settings(allowed_emails={"owner@example.com"}, auth=True, project="p",
                                                  region="us-central1", job="nraiorbit-runner"))
-    c = TestClient(app, headers={"X-Goog-Authenticated-User-Email": "accounts.google.com:owner@example.com"})
+    c = TestClient(app, headers={IAP: "owner@example.com"})
     c.started = started
     return c
 
@@ -118,9 +127,12 @@ def test_only_the_allowed_account_gets_in(root):
     assert anon.get("/healthz").text == "ok"                                    # the platform's probe
     r = anon.get("/")
     assert r.status_code == 403 and "No signed-in account" in r.text
-    r = anon.get("/", headers={"X-Goog-Authenticated-User-Email": "accounts.google.com:other@example.com"})
+    r = anon.get("/", headers={IAP: "other@example.com"})
     assert r.status_code == 403 and "other@example.com" in r.text and "owner@example.com" in r.text
-    assert anon.get("/", headers={"X-Goog-Authenticated-User-Email": "accounts.google.com:Owner@Example.com"}).status_code == 200
+    assert anon.get("/", headers={IAP: "bad"}).status_code == 403                 # an assertion that does not verify
+    # the plain e-mail header alone is never enough: without IAP in front anyone could send it
+    assert anon.get("/", headers={"X-Goog-Authenticated-User-Email": "accounts.google.com:owner@example.com"}).status_code == 403
+    assert anon.get("/", headers={IAP: "Owner@Example.com"}).status_code == 200
     local = TestClient(create_app(Store(str(root)), Settings(auth=False)))
     assert local.get("/").status_code == 200                                    # a laptop, no sign-in
 

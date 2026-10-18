@@ -38,25 +38,30 @@ class Settings:
 IAP_CERTS = "https://www.gstatic.com/iap/verify/public_key-jwk"
 
 
+def verify_assertion(token: str) -> dict | None:
+    """The claims of Identity-Aware Proxy's signed assertion, or None when it does not verify."""
+    try:
+        from google.auth.transport import requests as g_requests
+        from google.oauth2 import id_token
+        claims = id_token.verify_token(token, g_requests.Request(), certs_url=IAP_CERTS)
+        return claims if claims.get("iss") == "https://cloud.google.com/iap" else None
+    except Exception:
+        return None
+
+
 def user_email(request: Request) -> str | None:
-    """Who Identity-Aware Proxy signed in: its e-mail header, else the e-mail inside its signed assertion."""
-    raw = request.headers.get("x-goog-authenticated-user-email", "")
-    if raw:
-        return raw.split(":", 1)[-1].strip().lower() or None
+    """Who Identity-Aware Proxy signed in, read from its signed assertion only. The plain e-mail header is never
+    trusted: if the service were ever opened to the internet without IAP, anyone could send that header."""
     assertion = request.headers.get("x-goog-iap-jwt-assertion", "")
-    if assertion:
-        try:
-            from google.auth.transport import requests as g_requests
-            from google.oauth2 import id_token
-            claims = id_token.verify_token(assertion, g_requests.Request(), certs_url=IAP_CERTS)
-            return (claims.get("email") or "").strip().lower() or None
-        except Exception:
-            return None
-    return None
+    if not assertion:
+        return None
+    claims = verify_assertion(assertion)
+    return ((claims or {}).get("email") or "").strip().lower() or None
 
 
 def denied_page(seen: str | None, allowed: set[str]) -> str:
-    who = f"You are signed in as <b>{seen}</b>." if seen else "No signed-in account reached this page."
+    who = (f"You are signed in as <b>{seen}</b>." if seen else
+           "No signed-in account reached this page (the request did not come through Identity-Aware Proxy).")
     return ("<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<title>Private</title><body style='font:16px system-ui;max-width:40em;margin:3em auto;padding:0 1em'>"
             f"<h1>This control room is private</h1><p>{who}</p><p>Only these accounts may use it: "

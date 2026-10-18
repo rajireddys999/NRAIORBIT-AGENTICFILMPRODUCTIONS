@@ -33,6 +33,46 @@ class Settings:
     region: str = "us-central1"
     job: str | None = "nraiorbit-runner"
     title: str = "NRAIORBIT control room"
+    google_client_id: str | None = None      # "Sign in with Google" (an OAuth web client's public id; no secret)
+    session_secret: str | None = None        # signs the session cookie; random per deployment when unset
+    session_days: int = 7
+
+
+SESSION_COOKIE = "nraiorbit_session"
+
+
+def verify_google_token(token: str, client_id: str) -> dict | None:
+    """The claims of a Google ID token issued to our client id, or None when it does not verify."""
+    try:
+        from google.auth.transport import requests as g_requests
+        from google.oauth2 import id_token
+        claims = id_token.verify_oauth2_token(token, g_requests.Request(), client_id)
+        ok = claims.get("iss") in ("accounts.google.com", "https://accounts.google.com") and claims.get("email_verified")
+        return claims if ok else None
+    except Exception:
+        return None
+
+
+def sign_session(secret: str, email: str, days: int) -> str:
+    import hashlib
+    import hmac
+    import time
+    exp = int(time.time()) + days * 86400
+    body = f"{email}|{exp}"
+    return body + "|" + hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
+
+
+def read_session(secret: str, cookie: str | None) -> str | None:
+    import hashlib
+    import hmac
+    import time
+    if not cookie or cookie.count("|") != 2:
+        return None
+    email, exp, mac = cookie.split("|")
+    body = f"{email}|{exp}"
+    if not hmac.compare_digest(mac, hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()):
+        return None
+    return email if exp.isdigit() and int(exp) > time.time() else None
 
 
 IAP_CERTS = "https://www.gstatic.com/iap/verify/public_key-jwk"
@@ -86,20 +126,29 @@ def save_rows(store: Store, rel: str, rows: list[dict], columns: list[str]) -> N
 
 
 def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
+    import secrets as _secrets
     settings = settings or Settings(auth=False)
+    if not settings.session_secret:
+        settings.session_secret = _secrets.token_hex(32)
     app = FastAPI(title=settings.title, docs_url=None, redoc_url=None, openapi_url=None)
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.filters["money"] = lambda v: "" if v is None else f"${float(v):,.2f}"
     templates.env.filters["short"] = lambda v, n=90: (v if len(v) <= n else v[:n - 1] + "…") if isinstance(v, str) else v
 
     def guard(request: Request) -> str:
+        """Who may act: the session cookie set by "Sign in with Google", or Identity-Aware Proxy's assertion when the
+        service sits behind IAP. Anyone else is sent to the sign-in page (or told no, on a form post)."""
         if not settings.auth:
             return "local"
-        email = user_email(request)
-        if not email or email not in settings.allowed_emails:
-            print(f"control room: denied {email or '(no account)'} on {request.url.path}", flush=True)
+        email = read_session(settings.session_secret, request.cookies.get(SESSION_COOKIE)) or user_email(request)
+        if email and email in settings.allowed_emails:
+            return email
+        if email:
+            print(f"control room: denied {email} on {request.url.path}", flush=True)
             raise HTTPException(status_code=403, detail=denied_page(email, settings.allowed_emails))
-        return email
+        if request.method == "GET":
+            raise HTTPException(status_code=303, headers={"Location": "/login"}, detail="sign in first")
+        raise HTTPException(status_code=403, detail=denied_page(None, settings.allowed_emails))
 
     def page(name: str, request: Request, email: str, **kw):
         ctx = {"request": request, "settings": settings, "email": email, "root": store.root, "is_gs": store.is_gs,
@@ -118,10 +167,45 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
             panel["error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
         return panel
 
-    # ------------------------------------------------------------------ pages
+    # ------------------------------------------------------------------ sign-in
     @app.get("/healthz", response_class=PlainTextResponse)
     def healthz():
         return "ok"
+
+    @app.get("/login", response_class=HTMLResponse)
+    def login(request: Request):
+        if not settings.auth:
+            return RedirectResponse("/", status_code=303)
+        return templates.TemplateResponse(request, "login.html", {
+            "request": request, "settings": settings, "email": None, "root": store.root,
+            "msg": request.query_params.get("msg"), "client_id": settings.google_client_id,
+            "origin": str(request.base_url).rstrip("/")})
+
+    @app.post("/auth/callback")
+    def auth_callback(request: Request, credential: str = Form(...), g_csrf_token: str = Form("")):
+        if not settings.google_client_id:
+            raise HTTPException(503, "sign-in is not configured: no Google client id")
+        if not g_csrf_token or g_csrf_token != request.cookies.get("g_csrf_token"):
+            raise HTTPException(400, "sign-in request did not come from this page (csrf)")
+        claims = verify_google_token(credential, settings.google_client_id)
+        email = ((claims or {}).get("email") or "").strip().lower()
+        if not claims or not email:
+            raise HTTPException(401, "Google did not vouch for this sign-in")
+        if email not in settings.allowed_emails:
+            print(f"control room: denied {email} at sign-in", flush=True)
+            raise HTTPException(status_code=403, detail=denied_page(email, settings.allowed_emails))
+        resp = RedirectResponse("/", status_code=303)
+        resp.set_cookie(SESSION_COOKIE, sign_session(settings.session_secret, email, settings.session_days),
+                        max_age=settings.session_days * 86400, httponly=True, secure=request.url.scheme == "https",
+                        samesite="lax", path="/")
+        print(f"control room: {email} signed in", flush=True)
+        return resp
+
+    @app.get("/logout")
+    def logout():
+        resp = RedirectResponse("/login?msg=signed+out", status_code=303)
+        resp.delete_cookie(SESSION_COOKIE, path="/")
+        return resp
 
     @app.get("/", response_class=HTMLResponse)
     def home(request: Request, email: str = Depends(guard)):
@@ -281,6 +365,8 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
 
     @app.exception_handler(HTTPException)
     async def on_error(request: Request, exc: HTTPException):
+        if exc.status_code == 303 and exc.headers and exc.headers.get("Location"):
+            return RedirectResponse(exc.headers["Location"], status_code=303)
         if exc.status_code == 403:                        # the denial page stands on its own, template or not
             return HTMLResponse(str(exc.detail), status_code=403)
         try:

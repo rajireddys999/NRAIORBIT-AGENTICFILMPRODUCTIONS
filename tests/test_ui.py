@@ -125,13 +125,17 @@ def test_only_the_allowed_account_gets_in(root):
     app = create_app(Store(str(root)), Settings(allowed_emails={"owner@example.com"}, auth=True))
     anon = TestClient(app)
     assert anon.get("/healthz").text == "ok"                                    # the platform's probe
-    r = anon.get("/")
-    assert r.status_code == 403 and "No signed-in account" in r.text
+    r = anon.get("/", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/login"            # a browser is sent to sign in
+    r = anon.post("/film/demo/retry")
+    assert r.status_code == 403 and "No signed-in account" in r.text               # a form post is refused outright
     r = anon.get("/", headers={IAP: "other@example.com"})
     assert r.status_code == 403 and "other@example.com" in r.text and "owner@example.com" in r.text
     assert anon.get("/", headers={IAP: "bad"}).status_code == 403                 # an assertion that does not verify
     # the plain e-mail header alone is never enough: without IAP in front anyone could send it
-    assert anon.get("/", headers={"X-Goog-Authenticated-User-Email": "accounts.google.com:owner@example.com"}).status_code == 403
+    r = anon.get("/", headers={"X-Goog-Authenticated-User-Email": "accounts.google.com:owner@example.com"},
+                 follow_redirects=False)
+    assert r.status_code == 303
     assert anon.get("/", headers={IAP: "Owner@Example.com"}).status_code == 200
     local = TestClient(create_app(Store(str(root)), Settings(auth=False)))
     assert local.get("/").status_code == 200                                    # a laptop, no sign-in
@@ -211,3 +215,39 @@ def test_reference_queue(client, root):
         csv_text([{**ref, "state": "blocked:LearnCostError"}], queue.REFERENCE_COLUMNS))
     client.post("/references/retry", data={"url": ref["url"]})
     assert rows(root, queue.REFERENCE_COLUMNS, "references.csv")[0]["state"] == "retry"
+
+
+def test_sign_in_with_google_sets_a_session_and_keeps_strangers_out(root, monkeypatch):
+    tokens = {"good": {"iss": "https://accounts.google.com", "email": "Owner@Example.com", "email_verified": True},
+              "stranger": {"iss": "https://accounts.google.com", "email": "other@example.com", "email_verified": True}}
+    seen = []
+    monkeypatch.setattr(app_mod, "verify_google_token", lambda tok, cid: seen.append(cid) or tokens.get(tok))
+    app = create_app(Store(str(root)), Settings(allowed_emails={"owner@example.com"}, auth=True,
+                                                 google_client_id="123-abc.apps.googleusercontent.com",
+                                                 session_secret="s3cret"))
+    c = TestClient(app)
+    r = c.get("/", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/login"              # a browser is sent to sign in
+    page = c.get("/login").text
+    assert "123-abc.apps.googleusercontent.com" in page and "/auth/callback" in page
+    # the Google button posts the credential with its csrf token (cookie + field)
+    c.cookies.set("g_csrf_token", "xyz")
+    r = c.post("/auth/callback", data={"credential": "good", "g_csrf_token": "xyz"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/" and seen == ["123-abc.apps.googleusercontent.com"]
+    assert c.cookies.get(app_mod.SESSION_COOKIE)
+    assert c.get("/").status_code == 200 and "owner@example.com" in c.get("/").text
+    assert c.post("/film/demo/retry", follow_redirects=False).status_code == 303   # actions work on the session
+    c.get("/logout")
+    assert c.get("/", follow_redirects=False).status_code == 303
+    # a stranger with a valid Google account is refused by name; a missing csrf token is refused; a bad token too
+    c.cookies.set("g_csrf_token", "xyz")
+    r = c.post("/auth/callback", data={"credential": "stranger", "g_csrf_token": "xyz"})
+    assert r.status_code == 403 and "other@example.com" in r.text
+    assert c.post("/auth/callback", data={"credential": "good", "g_csrf_token": "nope"}).status_code == 400
+    assert c.post("/auth/callback", data={"credential": "forged", "g_csrf_token": "xyz"}).status_code == 401
+    # a tampered cookie is worthless
+    c.cookies.set(app_mod.SESSION_COOKIE, "owner@example.com|9999999999|deadbeef")
+    assert c.get("/", follow_redirects=False).status_code == 303
+    assert app_mod.read_session("s3cret", app_mod.sign_session("s3cret", "a@b.c", 1)) == "a@b.c"
+    assert app_mod.read_session("other", app_mod.sign_session("s3cret", "a@b.c", 1)) is None
+

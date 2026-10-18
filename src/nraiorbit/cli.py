@@ -549,7 +549,11 @@ def cmd_ui(args) -> None:
         sys.exit("ui: give --allow <email>[,<email>] (or UI_ALLOWED_EMAILS), or --no-auth on a laptop")
     settings = Settings(allowed_emails=emails, auth=auth, project=os.environ.get("GOOGLE_CLOUD_PROJECT"),
                         region=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"),
-                        job=os.environ.get("UI_JOB", "nraiorbit-runner") if os.environ.get("GOOGLE_CLOUD_PROJECT") else None)
+                        job=os.environ.get("UI_JOB", "nraiorbit-runner") if os.environ.get("GOOGLE_CLOUD_PROJECT") else None,
+                        google_client_id=os.environ.get("UI_GOOGLE_CLIENT_ID") or None,
+                        session_secret=os.environ.get("UI_SESSION_SECRET") or None)
+    if auth and not settings.google_client_id:
+        print("ui: no UI_GOOGLE_CLIENT_ID; sign-in works only behind Identity-Aware Proxy until it is set")
     print(f"control room on http://{args.host}:{args.port} over {root}"
           + ("" if auth else "  (no sign-in: local use only)"))
     uvicorn.run(create_app(Store(root), settings), host=args.host, port=int(args.port), log_level="warning")

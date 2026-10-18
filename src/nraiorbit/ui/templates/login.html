@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Sign in · {{ settings.title }}{% endblock %}
+{% block head %}{% if client_id %}<script src="https://accounts.google.com/gsi/client" async defer></script>{% endif %}{% endblock %}
+{% block body %}
+<div class="card" style="max-width:520px;margin:40px auto;text-align:center">
+  <h1>Sign in</h1>
+  <p class="muted">This control room is private. Sign in with the studio's Google account.</p>
+  {% if client_id %}
+    <div id="g_id_onload" data-client_id="{{ client_id }}" data-login_uri="{{ origin }}/auth/callback" data-ux_mode="redirect" data-auto_prompt="false"></div>
+    <div class="g_id_signin" data-type="standard" data-size="large" data-theme="outline" data-text="signin_with" data-shape="pill" style="display:flex;justify-content:center"></div>
+    <p class="small muted" style="margin-top:16px">Allowed: {{ settings.allowed_emails|sort|join(', ') }}</p>
+  {% else %}
+    <p><b>Sign-in is not configured yet.</b> The service needs the Google OAuth client id (UI_GOOGLE_CLIENT_ID) for this origin: <span class="mono">{{ origin }}</span>.</p>
+  {% endif %}
+</div>
+{% endblock %}

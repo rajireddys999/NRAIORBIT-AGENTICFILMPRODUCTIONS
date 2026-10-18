@@ -9,10 +9,16 @@ It writes only `queue/stories.csv`, `queue/references.csv` and `stories/<slug>.*
 under the row's cap. There is no database: the page can never disagree with what the runner sees.
 
 - Locally: `nraiorbit ui --root projects --no-auth` (reads the projects folder; no sign-in, so never on the internet).
-- On Cloud Run: `PROJECT=… BUCKET=… ALLOW=you@gmail.com deploy/ui/setup.sh`. The service scales to zero and sits
-  behind Identity-Aware Proxy: Google signs the visitor in and lets only the addresses in ALLOW through; the app
-  checks the same address again (`UI_ALLOWED_EMAILS`) as a second lock. It runs as the runner's service account with
-  the runner's key secret, so signed links, bucket reads and "run a tick now" work the same way they do in the job.
+- On Cloud Run: `PROJECT=… BUCKET=… ALLOW=you@gmail.com CLIENT_ID=… deploy/ui/setup.sh`. The service scales to zero.
+  Sign-in is Google's own "Sign in with Google" button inside the page: the visitor's Google ID token is verified
+  against the OAuth web client id in `UI_GOOGLE_CLIENT_ID`, the address must be in `UI_ALLOWED_EMAILS`, and a signed
+  session cookie (`UI_SESSION_SECRET`, a Secret Manager secret) keeps them in for a week. Nothing else is ever
+  trusted; without a session every page redirects to `/login` and every button answers 403. The client id is public
+  and needs no secret: make it once under Google Auth Platform → Clients → Web application, with the service URL as
+  an authorized JavaScript origin. (Identity-Aware Proxy also works in front, and the app accepts its signed
+  assertion too, but IAP needs a custom OAuth client that only the console can make in a project without an
+  organization, so the in-page sign-in is the default.) It runs as the runner's service account with the runner's
+  key secret, so signed links, bucket reads and "run a tick now" work the same way they do in the job.
 
 **A project without an organization** (any project owned by a plain Google account) has no Google-managed OAuth
 client, so the first visit answers `Empty Google Account OAuth client ID(s)/secret(s)` until a custom client exists.

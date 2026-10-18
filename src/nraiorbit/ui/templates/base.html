@@ -54,7 +54,7 @@ footer { color:var(--muted); font-size:12.5px; text-align:center; padding:20px }
 <header>
   <span class="brand">🎬 {{ settings.title }}</span>
   <nav><a href="/">Films</a><a href="/new">New film</a><a href="/references">References</a></nav>
-  <span class="who">{% if email and email != 'local' %}{{ email }}{% else %}local, no sign-in{% endif %}</span>
+  <span class="who">{% if email and email != 'local' %}{{ email }} · <a href="/logout">sign out</a>{% elif email == 'local' %}local, no sign-in{% endif %}</span>
 </header>
 <main>
 {% if msg %}<div class="msg">{{ msg }}</div>{% endif %}

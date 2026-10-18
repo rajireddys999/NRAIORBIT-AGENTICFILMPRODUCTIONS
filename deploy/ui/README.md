@@ -22,4 +22,4 @@ Security → Identity-Aware Proxy → Applications → the `nraiorbit-ui` row �
 credentials → save. The script's IAP bindings stay valid; nothing else changes.
 
 Deployed 2026-10-17: service `nraiorbit-ui` in `nraiorbit-agentic-film-product` (us-central1), allow-list
-rrshiva361@gmail.com. The link is in docs/PROJECT_STATUS.md.
+nraiorbit.cinematic.universe@gmail.com. The link is in docs/PROJECT_STATUS.md.

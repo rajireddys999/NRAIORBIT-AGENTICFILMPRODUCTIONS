@@ -248,7 +248,7 @@ _Last updated: 2026-10-15. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
   (Scheduler, Secret Manager, seconds of CPU per tick); films are billed to their own cap.
 
 - **Control room live (2026-10-17):** https://nraiorbit-ui-578796959774.us-central1.run.app — Cloud Run service
-  `nraiorbit-ui` (scales to zero) behind Identity-Aware Proxy; only rrshiva361@gmail.com is allowed through, and the
+  `nraiorbit-ui` (scales to zero) behind Identity-Aware Proxy; only nraiorbit.cinematic.universe@gmail.com is allowed through, and the
   app checks the same address again. It is `nraiorbit ui` (src/nraiorbit/ui, deploy/ui): story form, film board,
   a page per film with every stage's output and the godavari10 film playing from the bucket, approve / retry / cap /
   tick buttons that write only the queue sheet, the reference queue, the runner's executions and log. Runner fixes

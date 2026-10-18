@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # The control room on Cloud Run behind IAP, open to the e-mail addresses in ALLOW only.
+# A project without an organization also needs a custom OAuth client made once in the console (README.md).
 # Usage: PROJECT=… REGION=us-central1 BUCKET=… ALLOW=you@gmail.com deploy/ui/setup.sh
 set -euo pipefail
 : "${PROJECT:?}" "${REGION:=us-central1}" "${BUCKET:?}" "${ALLOW:?}"

@@ -14,5 +14,12 @@ under the row's cap. There is no database: the page can never disagree with what
   checks the same address again (`UI_ALLOWED_EMAILS`) as a second lock. It runs as the runner's service account with
   the runner's key secret, so signed links, bucket reads and "run a tick now" work the same way they do in the job.
 
+**A project without an organization** (any project owned by a plain Google account) has no Google-managed OAuth
+client, so the first visit answers `Empty Google Account OAuth client ID(s)/secret(s)` until a custom client exists.
+That is a one-time console step (the API routes for it were shut down in March 2026): configure the OAuth consent
+screen under Google Auth Platform (External; add the allowed addresses as test users or publish the app), then
+Security → Identity-Aware Proxy → Applications → the `nraiorbit-ui` row → settings → Custom OAuth → auto-generate
+credentials → save. The script's IAP bindings stay valid; nothing else changes.
+
 Deployed 2026-10-17: service `nraiorbit-ui` in `nraiorbit-agentic-film-product` (us-central1), allow-list
 rrshiva361@gmail.com. The link is in docs/PROJECT_STATUS.md.

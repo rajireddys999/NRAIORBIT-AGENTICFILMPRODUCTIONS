@@ -236,12 +236,13 @@ def make_project(projects_dir: Path, template: Path, row: dict, story_text: str,
     from ..config import deep_merge
 
     root = projects_dir / row["slug"]
-    if not (root / "pipeline.yaml").exists():
+    fresh = not (root / "pipeline.yaml").exists()
+    if fresh:
         root.mkdir(parents=True, exist_ok=True)
         if template.exists():
             shutil.copytree(template, root, dirs_exist_ok=True)
     (root / "input").mkdir(parents=True, exist_ok=True)
-    if not (root / "input" / "story.md").exists():
+    if fresh or not (root / "input" / "story.md").exists():      # the queued story, never the template's placeholder
         (root / "input" / "story.md").write_text(story_text, encoding="utf-8")
     cfg_path = root / "pipeline.yaml"
     cfg = (yaml.safe_load(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}) or {}
@@ -258,7 +259,10 @@ def apply_row(root: Path, row: dict) -> bool:
     cfg = (yaml.safe_load(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}) or {}
     before = yaml.safe_dump(cfg, sort_keys=True)
     if row.get("budget_usd"):
-        cfg.setdefault("budget", {})["max_usd"] = float(row["budget_usd"])
+        import math
+        cap = float(row["budget_usd"])
+        if math.isfinite(cap) and cap > 0:                     # a sheet cannot switch the hard stop off
+            cfg.setdefault("budget", {})["max_usd"] = cap
     pol = cfg.setdefault("policy", {})
     if row.get("gates"):
         pol["gates"] = row["gates"]

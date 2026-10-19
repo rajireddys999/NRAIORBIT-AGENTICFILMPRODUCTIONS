@@ -85,6 +85,7 @@
   <div class="info">
     <div class="needs">
       <p class="eyebrow" style="margin-bottom:8px">What needs you</p>
+      {% if f.hint %}<p class="bad" style="margin-bottom:10px">{{ f.hint }}</p>{% endif %}
       {% if f.gates %}
         {% for g in f.gates %}
           <p>Waiting at the <b>{{ g }}</b> gate.
@@ -93,7 +94,7 @@
           {% else %}<p class="small muted">This film is not in the queue; approve it from Claude Code (<span class="mono">nraiorbit approve {{ f.slug }} {{ g }}</span>).</p>{% endif %}
         {% endfor %}
       {% elif f.state.startswith('blocked') %}
-        <p>Blocked: <b class="bad">{{ f.state[8:] }}</b>. {{ f.row.note if f.row else '' }}</p>
+        <p>Blocked: <b class="bad">{{ f.state[8:] }}</b>. {{ f.hint or (f.row.note if f.row else '') }}</p>
         {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/retry"><button>Fix is in place, retry</button></form>{% endif %}
       {% elif f.state == 'done' %}<p>Done. The deliverables are under <a href="#deliver">Delivery</a>.</p>
       {% elif f.state == 'approved' %}<p><span class="live-dot" style="margin-right:8px"></span>Approved. The runner takes it up on its next tick{% if runner_running %} (one is running now){% endif %}; this page refreshes by itself.</p>

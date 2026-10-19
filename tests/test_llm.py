@@ -109,3 +109,14 @@ def test_client_is_created_lazily(monkeypatch):
     client = ClaudeClient()                      # must not import anthropic
     with pytest.raises(ImportError):
         _ = client.client                        # only the first real call needs it
+
+
+def test_client_names_the_workspace_when_the_key_is_organization_level(monkeypatch):
+    pytest.importorskip("anthropic")
+    from nraiorbit.llm import ClaudeClient
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", "wrkspc_0123")
+    assert ClaudeClient().client.default_headers.get("anthropic-workspace-id") == "wrkspc_0123"
+    monkeypatch.delenv("ANTHROPIC_WORKSPACE_ID")
+    assert "anthropic-workspace-id" not in ClaudeClient().client.default_headers
+

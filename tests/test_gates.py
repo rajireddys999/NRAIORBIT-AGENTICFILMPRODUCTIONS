@@ -142,6 +142,16 @@ def test_invalidating_a_stage_clears_the_runner_gates_it_makes_stale(tmp_path):
     assert (p.p.reviews / "story.approved").exists()
 
 
+def test_an_upload_record_speaks_only_for_the_very_file_it_recorded(tmp_path):
+    movie = tmp_path / "movie.mp4"
+    movie.write_bytes(b"cut one")
+    record = {"film": {"id": "vid1", "file": produce.fingerprint(movie)}}
+    assert produce.uploaded_already(record, "film", movie)
+    movie.write_bytes(b"cut two, re-assembled off the runner")       # an old record restored over a new cut
+    assert not produce.uploaded_already(record, "film", movie)
+    assert not produce.uploaded_already({"film": {"id": "vid1"}}, "film", movie)   # a record with no fingerprint
+
+
 def test_the_cost_approval_remembers_the_figure(tmp_path):
     p = _p(tmp_path, {})
     produce.hold(p, "cost", '{"total_usd": 12.5}\n')
@@ -158,8 +168,12 @@ def test_one_films_row_is_written_without_touching_the_others(tmp_path):
     queue.save(str(st), [{**base, "slug": "a", "state": "new"}, {**base, "slug": "b", "state": "new"}], queue.STORY_COLUMNS)
     stale = queue.load(str(st), queue.STORY_COLUMNS)                     # what a long tick loaded hours ago
     queue.write_story(str(st), {**base, "slug": "b", "state": "awaiting:story"})     # the owner's film moved on
+    edited = queue.load(str(st), queue.STORY_COLUMNS)                    # meanwhile the owner lowered a's cap
+    edited[0].update(budget_usd="50", publish="private")
+    queue.save(str(st), edited, queue.STORY_COLUMNS)
     queue.write_story(str(st), {**stale[0], "state": "done"})                       # the tick writes its own row
-    rows = {r["slug"]: r["state"] for r in queue.load(str(st), queue.STORY_COLUMNS)}
-    assert rows == {"a": "done", "b": "awaiting:story"}
+    rows = {r["slug"]: r for r in queue.load(str(st), queue.STORY_COLUMNS)}
+    assert rows["a"]["state"] == "done" and rows["b"]["state"] == "awaiting:story"
+    assert rows["a"]["budget_usd"] == "50" and rows["a"]["publish"] == "private"   # the owner's columns survive
     queue.write_story(str(st), {**base, "slug": "c", "state": "new"})
     assert [r["slug"] for r in queue.load(str(st), queue.STORY_COLUMNS)] == ["a", "b", "c"]

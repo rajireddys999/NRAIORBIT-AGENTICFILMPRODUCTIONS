@@ -90,13 +90,17 @@ def save(uri: str, rows: list[dict], columns: list[str]) -> None:
     _store(uri, buf.getvalue())
 
 
+TICK_COLUMNS = ("state", "note", "updated")           # what a tick writes; the cap, gates and publish are the owner's
+
+
 def write_story(uri: str, row: dict) -> None:
-    """Write one film's row into the sheet as it is now, not as it was when this tick began: another tick or the
-    owner may have changed other rows in the hours a run takes, and those changes must survive."""
+    """Write one film's state into the sheet as it is now, not as it was when this tick began: in the hours a run
+    takes the owner may have lowered this film's cap or changed its visibility, and another tick or the owner may
+    have changed other rows; all of that survives. Only the columns a tick owns are written."""
     rows = load(uri, STORY_COLUMNS)
     for i, r in enumerate(rows):
         if r["slug"] == row["slug"]:
-            rows[i] = {c: row.get(c, "") for c in STORY_COLUMNS}
+            rows[i] = {**r, **{c: row.get(c, "") for c in TICK_COLUMNS}}
             break
     else:
         rows.append({c: row.get(c, "") for c in STORY_COLUMNS})

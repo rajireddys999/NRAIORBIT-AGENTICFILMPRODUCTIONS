@@ -276,7 +276,7 @@ def publish_youtube(root: Path, privacy: str) -> dict:
     outline = Outline.model_validate_json((root / "02_outline.json").read_text(encoding="utf-8"))
     creds = youtube.credentials(secrets, token, interactive=False)
     master = root / "11_master"
-    done_path = root / "reports" / "youtube.json"           # what this cut already uploaded: never twice
+    done_path = root / "reports" / "youtube.json"           # what was uploaded, per file: the same file never twice
     try:
         out = json.loads(done_path.read_text(encoding="utf-8")) if done_path.exists() else {}
     except ValueError:
@@ -289,13 +289,30 @@ def publish_youtube(root: Path, privacy: str) -> dict:
     meta = youtube.build_metadata(bible, outline, privacy=privacy)
     captions = {lang: master / f"subs_{lang}.srt" for lang in ("te", "en") if (master / f"subs_{lang}.srt").exists()}
     thumb = master / "thumbnail.png"
-    if "film" not in out:
-        out["film"] = youtube.upload(master / "movie.mp4", meta, creds, captions=captions,
-                                     thumbnail=thumb if thumb.exists() else None)
+    if not uploaded_already(out, "film", master / "movie.mp4"):
+        out["film"] = {**youtube.upload(master / "movie.mp4", meta, creds, captions=captions,
+                                        thumbnail=thumb if thumb.exists() else None),
+                       "file": fingerprint(master / "movie.mp4")}
         record()
-    if (master / "trailer.mp4").exists() and "trailer" not in out:
+    if (master / "trailer.mp4").exists() and not uploaded_already(out, "trailer", master / "trailer.mp4"):
         tmeta = youtube.build_metadata(bible, outline, privacy=privacy)
         tmeta["snippet"]["title"] = f"{bible.title_te} ({bible.title_en}) | Official Trailer"[:100]
-        out["trailer"] = youtube.upload(master / "trailer.mp4", tmeta, creds)
+        out["trailer"] = {**youtube.upload(master / "trailer.mp4", tmeta, creds), "file": fingerprint(master / "trailer.mp4")}
         record()
     return out
+
+
+def fingerprint(path: Path) -> dict:
+    """What identifies a cut: its size and content hash, so a re-cut (even one restored over an old record) is new."""
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return {"bytes": path.stat().st_size, "sha256": h.hexdigest()}
+
+
+def uploaded_already(record: dict, asset: str, path: Path) -> bool:
+    """True when the record says this very file (same size and hash) went up; an old record of another cut does not."""
+    rec = record.get(asset)
+    return isinstance(rec, dict) and rec.get("file") == fingerprint(path)

@@ -105,6 +105,8 @@ def pending_gates(store: Store, slug: str, produce: dict | None, row: dict | Non
              and (n[:-len(".pending")] == waiting or f"{n[:-len('.pending')]}.approved" not in names)]
     if waiting and waiting not in gates:
         gates.append(waiting)
+    if isinstance(((produce or {}).get("steps") or {}).get("publish"), dict):     # uploaded: that marker is spent
+        gates = [g for g in gates if g != "publish"]
     return gates
 
 

@@ -22,13 +22,15 @@ FOLDERS = {                    # set name -> folder under the project; synced bo
     "scenes": "03_scenes",
     "shots": "04_shots",
     "post": "post",
-    "edit": "10_edit",         # the timeline and the cut before music: the trailer is cut from it, the cards too
     "reviews": "reviews",      # the gates' .pending / .approved marks: state, not media
 }
+# Never 10_edit, 07_video or 05_dialogue: the timeline there points at clips and takes a fresh container re-makes
+# from the caches for free, and a restored timeline without them would make the render step skip and the trailer
+# fail. Assembly masters again when its intermediates are gone (pipeline._assemble).
 FILES = ["pipeline.yaml", "pricing.yaml", "cast.lock.yaml", "takes.yaml", "reuse.yaml", "01_story_bible.json",
          "02_outline.json", "input/story.md"]
-DEFAULT_SETS = ["inbox", "cache", "keyframes", "music", "reports", "master", "scenes", "shots", "post", "edit",
-                "reviews", "files"]
+DEFAULT_SETS = ["inbox", "cache", "keyframes", "music", "reports", "master", "scenes", "shots", "post", "reviews",
+                "files"]
 LIBRARY_SETS = ("characters", "references")     # library/<set> <-> gs://bucket/library/<set>, shared by every film
 
 

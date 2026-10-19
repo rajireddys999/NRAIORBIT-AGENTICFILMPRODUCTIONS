@@ -784,7 +784,7 @@ def _main(argv: list[str] | None = None) -> None:
         p.add_argument("slug")
         p.add_argument("--bucket")
         p.add_argument("--sets", nargs="*",
-                       help="inbox cache keyframes music reports master scenes shots post edit reviews files")
+                       help="inbox cache keyframes music reports master scenes shots post reviews files")
         p.set_defaults(fn=cmd_backup)
 
     args = ap.parse_args(argv)

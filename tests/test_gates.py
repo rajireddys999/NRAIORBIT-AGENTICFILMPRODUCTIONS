@@ -499,8 +499,8 @@ def test_a_film_is_never_made_without_the_template_and_the_runner_finds_the_pack
 
 
 def test_assembly_masters_again_when_the_trailers_source_was_not_restored(tmp_path):
-    """A fresh container restores the finished master but, from an older backup, not 10_edit: the trailer is cut
-    from 10_edit/film_dialogue.mp4, so assembly masters again from the timeline instead of letting ffmpeg fail."""
+    """A fresh container restores the finished master but not 10_edit (never backed up): the trailer is cut from
+    10_edit/film_dialogue.mp4, so assembly masters again from the timeline instead of letting ffmpeg fail."""
     from nraiorbit.ops import backup
     calls = []
     p = SimpleNamespace(p=ProjectPaths(tmp_path), log=lambda *_: None, _animatic=lambda: True,
@@ -518,6 +518,6 @@ def test_assembly_masters_again_when_the_trailers_source_was_not_restored(tmp_pa
     (p.p.edit / "film_dialogue.mp4").write_bytes(b"dialogue cut")
     Pipeline._assemble(p)
     assert calls == [("cards", "movie.mp4"), ("gate", "pacing")]           # everything there: no re-master
-    # and the edit folder now travels with the project, so the next restore brings it back
-    assert ("folder", tmp_path / "10_edit", "gs://b/" + tmp_path.name + "/10_edit") in backup.pairs(tmp_path, "b", ["edit"])
-    assert "edit" in backup.DEFAULT_SETS
+    # 10_edit stays out of the backup on purpose: its timeline points at clips and takes that are not backed up
+    # either, and a restored timeline without them would make the render step skip and the trailer fail
+    assert "edit" not in backup.FOLDERS and not any("10_edit" in str(local) for _, local, _ in backup.pairs(tmp_path, "b"))

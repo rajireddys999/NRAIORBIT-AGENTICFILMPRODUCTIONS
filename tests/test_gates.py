@@ -503,8 +503,14 @@ def test_assembly_masters_again_when_the_trailers_source_was_not_restored(tmp_pa
     10_edit/film_dialogue.mp4, so assembly masters again from the timeline instead of letting ffmpeg fail."""
     from nraiorbit.ops import backup
     calls = []
-    p = SimpleNamespace(p=ProjectPaths(tmp_path), log=lambda *_: None, _animatic=lambda: True,
-                        _master=lambda movie: calls.append(("master", movie.name)),
+    paths = ProjectPaths(tmp_path)
+
+    def master(movie):
+        # by the time the film is mastered again, no old clean copy is left for the cards pass to re-card
+        assert not (paths.edit / "movie_nocards.mp4").exists()
+        calls.append(("master", movie.name))
+
+    p = SimpleNamespace(p=paths, log=lambda *_: None, _animatic=lambda: True, _master=master,
                         _place_cards=lambda movie: calls.append(("cards", movie.name)),
                         gate=lambda name: calls.append(("gate", name)))
     p.p.master.mkdir(parents=True)
@@ -513,6 +519,12 @@ def test_assembly_masters_again_when_the_trailers_source_was_not_restored(tmp_pa
     Pipeline._assemble(p)
     assert calls == [("master", "movie.mp4"), ("cards", "movie.mp4"), ("gate", "pacing")]
     assert not (p.p.master / "movie.mp4").exists()                        # the stale master is dropped first
+    calls.clear()
+    (p.p.master / "movie.mp4").write_bytes(b"carded")                     # a local disk: an old clean copy is
+    (p.p.edit / "movie_nocards.mp4").write_bytes(b"old clean copy")        # still there, the trailer's source gone
+    Pipeline._assemble(p)
+    assert calls == [("master", "movie.mp4"), ("cards", "movie.mp4"), ("gate", "pacing")]
+    assert not (p.p.edit / "movie_nocards.mp4").exists()                  # dropped before the re-master (see stub)
     calls.clear()
     (p.p.master / "movie.mp4").write_bytes(b"cut")
     (p.p.edit / "film_dialogue.mp4").write_bytes(b"dialogue cut")

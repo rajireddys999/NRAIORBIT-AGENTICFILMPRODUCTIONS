@@ -1,5 +1,6 @@
 """`produce`: the whole row on the recorded agents and mock providers, gates by policy, a report at the end."""
 
+import hashlib
 import json
 
 import pytest
@@ -89,6 +90,7 @@ def test_a_fresh_container_with_only_the_backed_up_sets_still_cuts_the_trailer(t
     assert report["state"] == "awaiting:pacing" and (p.p.master / "movie.mp4").exists()
     assert (p.p.edit / "film_dialogue.mp4").exists() and not (p.p.master / "trailer.mp4").exists()
     assert (p.p.edit / "movie_nocards.mp4").exists()                     # the master in 11_master carries the card
+    restored_master = hashlib.sha256((p.p.master / "movie.mp4").read_bytes()).hexdigest()
     fresh = tmp_path / "fresh" / "demo"                                  # what a new container restores, no more
     for kind, local, _ in backup.pairs(root, "bucket"):
         if not local.exists():
@@ -107,7 +109,9 @@ def test_a_fresh_container_with_only_the_backed_up_sets_still_cuts_the_trailer(t
     assert (q.p.master / "trailer.mp4").exists() and (q.p.edit / "film_dialogue.mp4").exists()
     carded = json.loads((q.p.edit / "cards.json").read_text(encoding="utf-8"))
     assert [c["kind"] for c in carded] == ["title"] and carded[0]["text_en"] == "MONKEY SAVES MAN"
-    assert (q.p.edit / "movie_nocards.mp4").exists()                     # carded once, from the fresh clean master
+    clean = q.p.edit / "movie_nocards.mp4"                               # carded once, from the fresh clean master:
+    assert clean.exists() and hashlib.sha256(clean.read_bytes()).hexdigest() != restored_master
+    # (a second card pass over the restored master would keep its bytes as the "clean" copy, shutil.move does)
     assert report["ledger_usd"] == 0.0                                   # nothing paid on the way
 
 

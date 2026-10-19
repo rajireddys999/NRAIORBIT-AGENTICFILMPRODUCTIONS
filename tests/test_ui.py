@@ -201,6 +201,21 @@ def test_approve_retry_and_row_edits_write_only_the_sheet(client, root):
     assert r.status_code == 303 and client.started == ["nraiorbit-runner", "nraiorbit-runner"]
 
 
+def test_a_run_under_way_offers_no_button_and_a_stale_click_changes_nothing(client, root):
+    """While a tick renders, the bucket still holds the previous stop's report and marker (awaiting:faces,
+    faces.pending). The page must not offer that gate again, the board neither, and a click from a stale page must
+    not turn the runner's claim back into an approval: that would let the next scheduled tick pay for the step twice."""
+    rs = rows(root)
+    rs[0].update(state="producing", updated=queue.now())
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    html = client.get("/film/demo").text
+    assert 'name="gate"' not in html and "Approve faces" not in html and "The runner is on it" in html
+    assert "Approve faces" not in client.get("/").text
+    r = client.post("/film/demo/approve", data={"gate": "faces"}, follow_redirects=False)
+    assert r.status_code == 303 and "nothing waits" in r.headers["location"].replace("%20", " ")
+    assert rows(root)[0]["state"] == "producing" and client.started == []
+
+
 def test_the_pipeline_flow_shows_the_gates_and_the_step_under_way(client, root, monkeypatch):
     """The film page's pipeline: twelve steps joined by arrows; the step that waits carries its approve button (the
     cost gate shows the estimate, the YouTube gate offers view, download and approve), and with nothing pending the

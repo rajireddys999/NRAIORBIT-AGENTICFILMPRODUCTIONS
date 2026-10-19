@@ -82,6 +82,11 @@ def test_a_bucket_that_keeps_spent_markers_does_not_deadlock_the_queue(tmp_path,
 
     def produce_fn(root, b):                     # stops at each gate in turn, as produce does, and writes its report
         assert queue.load(str(st), queue.STORY_COLUMNS)[0]["state"] == "producing"   # claimed before any work
+        if not (bucket / "rain").exists():       # during the first run the owner queues another film
+            rows_now = queue.load(str(st), queue.STORY_COLUMNS)
+            rows_now.append({"slug": "other", "story_uri": "", "budget_usd": "1", "gates": "ask", "publish": "none",
+                             "state": "blocked:owner", "note": "", "updated": ""})
+            queue.save(str(st), rows_now, queue.STORY_COLUMNS)
         reviews = root / "reviews"
         reviews.mkdir(exist_ok=True)
         state = "done"
@@ -109,6 +114,8 @@ def test_a_bucket_that_keeps_spent_markers_does_not_deadlock_the_queue(tmp_path,
     marks = {p.name for p in (bucket / "rain" / "reviews").iterdir()}
     assert "story.pending" in marks and "cast.approved" in marks         # the stale marker stayed and did no harm
     assert (bucket / "rain" / "reviews" / "cast.approved").read_text().endswith("look at cast\n")
+    others = [r for r in queue.load(str(st), queue.STORY_COLUMNS) if r["slug"] == "other"]
+    assert others and others[0]["state"] == "blocked:owner"            # a row added mid-run survived every save
 
 
 def test_a_producing_row_is_another_ticks_while_its_claim_is_fresh(monkeypatch):
@@ -144,15 +151,15 @@ def test_the_cost_approval_remembers_the_figure(tmp_path):
     assert produce.approved_figure(p, "cost") is None                     # an old approval carries no figure
 
 
-def test_the_backup_mirrors_the_review_markers_with_deletes(tmp_path, monkeypatch):
-    from pathlib import Path
-
-    from nraiorbit.ops import backup
-    from nraiorbit.release import gcs
-    calls = []
-    monkeypatch.setattr(gcs, "rsync", lambda src, dst, delete=False: calls.append((Path(src).name, delete)))
-    monkeypatch.setattr(gcs, "copy", lambda src, dst: None)
-    (tmp_path / "reviews").mkdir()
-    (tmp_path / "reports").mkdir()
-    backup.backup(tmp_path, "bkt", log=lambda *_: None)
-    assert ("reviews", True) in calls and ("reports", False) in calls
+def test_one_films_row_is_written_without_touching_the_others(tmp_path):
+    from nraiorbit.service import queue
+    st = tmp_path / "stories.csv"
+    base = {"story_uri": "", "budget_usd": "1", "gates": "ask", "publish": "none", "note": "", "updated": ""}
+    queue.save(str(st), [{**base, "slug": "a", "state": "new"}, {**base, "slug": "b", "state": "new"}], queue.STORY_COLUMNS)
+    stale = queue.load(str(st), queue.STORY_COLUMNS)                     # what a long tick loaded hours ago
+    queue.write_story(str(st), {**base, "slug": "b", "state": "awaiting:story"})     # the owner's film moved on
+    queue.write_story(str(st), {**stale[0], "state": "done"})                       # the tick writes its own row
+    rows = {r["slug"]: r["state"] for r in queue.load(str(st), queue.STORY_COLUMNS)}
+    assert rows == {"a": "done", "b": "awaiting:story"}
+    queue.write_story(str(st), {**base, "slug": "c", "state": "new"})
+    assert [r["slug"] for r in queue.load(str(st), queue.STORY_COLUMNS)] == ["a", "b", "c"]

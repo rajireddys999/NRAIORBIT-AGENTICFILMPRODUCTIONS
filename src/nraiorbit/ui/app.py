@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import datetime
+import html as _html
 import io
 import re
 from dataclasses import dataclass, field
@@ -476,6 +477,8 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         rows, row = _row(slug)
         if row["state"] == "approved":                        # pressed twice: one approval, one tick
             return back(f"/film/{slug}", "already approved; the runner takes it up on its next tick")
+        if row["state"] != f"awaiting:{gate}":                # a stale page, or a run under way: never touch the claim
+            return back(f"/film/{slug}", f"nothing waits at the {gate} gate: the film is {row['state']}; nothing changed")
         row.update(state="approved", note=f"{gate} approved in the control room by {email}", updated=queue.now())
         save_rows(store, STORIES, rows, queue.STORY_COLUMNS)
         msg = f"{gate} approved; the next tick carries on"
@@ -581,7 +584,8 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                 {"request": request, "settings": settings, "status": exc.status_code, "detail": exc.detail,
                  "email": None, "root": store.root, "msg": None})
         except Exception:
-            html = f"<!doctype html><meta charset='utf-8'><h1>{exc.status_code}</h1><p>{exc.detail}</p>"
+            html = (f"<!doctype html><meta charset='utf-8'><h1>{int(exc.status_code)}</h1>"
+                    f"<p>{_html.escape(str(exc.detail))}</p>")
         return HTMLResponse(html, status_code=exc.status_code)
 
     return app

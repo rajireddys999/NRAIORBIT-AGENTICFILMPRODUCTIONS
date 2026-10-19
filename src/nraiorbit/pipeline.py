@@ -148,6 +148,8 @@ class Pipeline:
             if STAGES.index(stage) <= STAGES.index(upto):
                 for suffix in ("approved", "pending"):
                     (self.p.reviews / f"{name}.{suffix}").unlink(missing_ok=True)
+        if STAGES.index(stage) <= STAGES.index("trailer"):
+            (self.p.reports / "youtube.json").unlink(missing_ok=True)      # a new cut is a new upload
 
     def status(self) -> dict[str, str]:
         out = {}

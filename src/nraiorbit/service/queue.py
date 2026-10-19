@@ -90,6 +90,19 @@ def save(uri: str, rows: list[dict], columns: list[str]) -> None:
     _store(uri, buf.getvalue())
 
 
+def write_story(uri: str, row: dict) -> None:
+    """Write one film's row into the sheet as it is now, not as it was when this tick began: another tick or the
+    owner may have changed other rows in the hours a run takes, and those changes must survive."""
+    rows = load(uri, STORY_COLUMNS)
+    for i, r in enumerate(rows):
+        if r["slug"] == row["slug"]:
+            rows[i] = {c: row.get(c, "") for c in STORY_COLUMNS}
+            break
+    else:
+        rows.append({c: row.get(c, "") for c in STORY_COLUMNS})
+    save(uri, rows, STORY_COLUMNS)
+
+
 # -------------------------------------------------------------------------------------------------- the work
 
 def claimed(row: dict, hours: float | None = None) -> bool:
@@ -227,7 +240,7 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
         root = projects_dir / s["slug"]
         was_approved = s["state"] == "approved"
         s.update(state="producing", updated=now())        # the claim, before the slow restore: no second tick joins in
-        save(stories_uri, rows, STORY_COLUMNS)
+        write_story(stories_uri, s)
         try:
             if bucket and not (root / "pipeline.yaml").exists():
                 from ..ops import backup
@@ -254,7 +267,7 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
                 backup.backup(root, bucket, log=lambda *_: None)
         except Exception as exc:
             s.update(state=f"blocked:{type(exc).__name__}", note=str(exc)[:200], updated=now())
-        save(stories_uri, rows, STORY_COLUMNS)
+        write_story(stories_uri, s)
         summary["story"] = {"slug": s["slug"], "state": s["state"]}
         log(f"  story {s['slug']}: {s['state']}")
     if bucket and (summary["reference"] or summary["story"]):

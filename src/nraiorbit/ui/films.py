@@ -91,13 +91,15 @@ def money(store: Store, slug: str, cfg: dict, row: dict | None, produce: dict | 
 
 
 def pending_gates(store: Store, slug: str, produce: dict | None, row: dict | None) -> list[str]:
-    """What waits on the owner: the gate the last run stopped at, plus markers never approved. A marker with an
-    .approved sibling is spent (the bucket mirror can bring one back) and an `approved` row is already on its way to
-    the runner, so neither shows a button."""
-    if (row or {}).get("state") == "approved":
-        return []
+    """What waits on the owner. A film in the queue waits only when its row says so (awaiting:<gate>): while a run
+    is on it the bucket still holds the previous stop's report and marker, and those must never offer a button. A
+    film driven by hand has no row: its markers never approved are what wait (a marker with an .approved sibling is
+    spent; the bucket mirror can bring one back)."""
+    if row is not None:
+        state = row.get("state") or ""
+        return [state[len("awaiting:"):]] if state.startswith("awaiting:") else []
     names = {n.rsplit("/", 1)[-1] for n in store.list(f"{slug}/reviews/")}
-    state = (produce or {}).get("state") or (row or {}).get("state") or ""
+    state = (produce or {}).get("state") or ""
     waiting = state[9:] if state.startswith("awaiting:") else None
     gates = [n[:-len(".pending")] for n in sorted(names) if n.endswith(".pending")
              and (n[:-len(".pending")] == waiting or f"{n[:-len('.pending')]}.approved" not in names)]

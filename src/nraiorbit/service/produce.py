@@ -276,14 +276,26 @@ def publish_youtube(root: Path, privacy: str) -> dict:
     outline = Outline.model_validate_json((root / "02_outline.json").read_text(encoding="utf-8"))
     creds = youtube.credentials(secrets, token, interactive=False)
     master = root / "11_master"
-    out = {}
+    done_path = root / "reports" / "youtube.json"           # what this cut already uploaded: never twice
+    try:
+        out = json.loads(done_path.read_text(encoding="utf-8")) if done_path.exists() else {}
+    except ValueError:
+        out = {}
+
+    def record():
+        done_path.parent.mkdir(parents=True, exist_ok=True)
+        done_path.write_text(json.dumps(out, indent=1, default=str), encoding="utf-8")
+
     meta = youtube.build_metadata(bible, outline, privacy=privacy)
     captions = {lang: master / f"subs_{lang}.srt" for lang in ("te", "en") if (master / f"subs_{lang}.srt").exists()}
     thumb = master / "thumbnail.png"
-    out["film"] = youtube.upload(master / "movie.mp4", meta, creds, captions=captions,
-                                 thumbnail=thumb if thumb.exists() else None)
-    if (master / "trailer.mp4").exists():
+    if "film" not in out:
+        out["film"] = youtube.upload(master / "movie.mp4", meta, creds, captions=captions,
+                                     thumbnail=thumb if thumb.exists() else None)
+        record()
+    if (master / "trailer.mp4").exists() and "trailer" not in out:
         tmeta = youtube.build_metadata(bible, outline, privacy=privacy)
         tmeta["snippet"]["title"] = f"{bible.title_te} ({bible.title_en}) | Official Trailer"[:100]
         out["trailer"] = youtube.upload(master / "trailer.mp4", tmeta, creds)
+        record()
     return out

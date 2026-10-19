@@ -391,10 +391,8 @@ def cmd_shotpack(args) -> None:
 
 
 def cmd_approve(args) -> None:
-    paths = ProjectPaths(_project(args.slug))
-    paths.reviews.mkdir(parents=True, exist_ok=True)
-    (paths.reviews / f"{args.gate}.pending").unlink(missing_ok=True)
-    (paths.reviews / f"{args.gate}.approved").write_text("approved\n", encoding="utf-8")
+    from .service import queue
+    queue.approve_gate(_project(args.slug), args.gate)       # keeps what the marker said (the cost gate's estimate)
     print(f"approved '{args.gate}'. Continue with: nraiorbit run {args.slug}")
 
 

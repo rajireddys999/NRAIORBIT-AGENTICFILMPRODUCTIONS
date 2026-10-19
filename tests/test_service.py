@@ -121,6 +121,8 @@ def test_the_queued_story_replaces_the_template_placeholder(tmp_path):
 
 def test_tick_records_failures_as_blocked(tmp_path):
     st, rf = _queues(tmp_path)
+    (tmp_path / "projects" / "_template").mkdir(parents=True)
+    (tmp_path / "projects" / "_template" / "pipeline.yaml").write_text("providers: {video: mock}\n", encoding="utf-8")
 
     def boom(*a, **k):
         raise RuntimeError("credits are out")

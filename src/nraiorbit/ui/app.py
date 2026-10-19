@@ -72,6 +72,7 @@ class Settings:
     session_secret: str | None = None        # signs the session cookie; random per deployment when unset
     session_days: int = 7
     public_url: str | None = None            # how the browser reaches us (https://...), for OAuth redirects
+    timezone: str = "America/New_York"       # the studio's clock: every time on the page, the runner log included
 
 
 def public_base(request: Request, settings: "Settings") -> str:
@@ -254,6 +255,30 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.filters["money"] = lambda v: "" if v is None else f"${float(v):,.2f}"
     templates.env.filters["short"] = lambda v, n=90: (v if len(v) <= n else v[:n - 1] + "…") if isinstance(v, str) else v
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(settings.timezone or "UTC")
+    except Exception:                                    # an unknown zone name: the page still renders, in UTC
+        print(f"control room: unknown UI_TIMEZONE {settings.timezone!r}; times shown in UTC", flush=True)
+        tz = datetime.timezone.utc
+
+    def local(v, fmt: str = "%Y-%m-%d %H:%M") -> str:
+        """A timestamp (ISO text from the sheets, the API or a report; UTC when it carries no zone) on the
+        studio's clock, with the zone's name."""
+        if not v:
+            return ""
+        if isinstance(v, datetime.datetime):
+            d = v
+        else:
+            try:
+                d = datetime.datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+            except ValueError:
+                return str(v)
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=datetime.timezone.utc)
+        d = d.astimezone(tz)
+        return f"{d.strftime(fmt)} {d.tzname() or ''}".strip()
+    templates.env.filters["local"] = local
 
     throttle = Throttle()
 
@@ -278,7 +303,7 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
 
     def page(name: str, request: Request, email: str, **kw):
         ctx = {"request": request, "settings": settings, "email": email, "root": store.root, "is_gs": store.is_gs,
-               "msg": request.query_params.get("msg"), "now": datetime.datetime.now(datetime.timezone.utc), **kw}
+               "msg": request.query_params.get("msg"), "now": datetime.datetime.now(tz), **kw}
         return templates.TemplateResponse(request, name, ctx)
 
     def back(url: str, msg: str) -> RedirectResponse:
@@ -518,7 +543,7 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         if panel["executions"]:
             latest = panel["executions"][0]["name"]
             try:
-                log_lines = runner_mod.logs(settings.project, latest)
+                log_lines = runner_mod.logs(settings.project, latest, tz=tz)
             except Exception as exc:
                 log_lines = [f"(log unavailable: {type(exc).__name__})"]
         running = bool(panel["executions"]) and panel["executions"][0]["state"] == "running"

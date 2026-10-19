@@ -66,7 +66,7 @@ p { margin:0 0 10px } p:last-child { margin-bottom:0 }
   text-transform:uppercase; background:var(--chip); color:var(--muted); white-space:nowrap; font-family:var(--sans) }
 .badge::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; flex:none }
 .badge.done, .badge.ok { background:rgba(92,211,138,.12); color:var(--ok) }
-.badge.partial, .badge.held, .badge.skipped { background:var(--gold-soft); color:var(--warn) }
+.badge.partial, .badge.held, .badge.skipped, .badge.stale { background:var(--gold-soft); color:var(--warn) }
 .badge.awaiting, .badge.producing, .badge.running, .badge.approved, .badge.retry, .badge.new, .badge.pending { background:var(--cyan-soft); color:var(--wait) }
 .badge.blocked, .badge.failed { background:rgba(255,107,107,.12); color:var(--bad) }
 .badge.todo { color:var(--todo) } .badge.plain::before { display:none }
@@ -112,7 +112,7 @@ tr:last-child td { border-bottom:0 }
 a.stage:hover { border-color:rgba(242,181,68,.45); transform:translateY(-2px); color:var(--ink) }
 .stage b { display:block; font-size:10.5px; letter-spacing:.16em; text-transform:uppercase; color:var(--dim); font-weight:800 }
 .stage.done, .stage.ok { border-color:rgba(92,211,138,.3) } .stage.awaiting, .stage.producing { border-color:rgba(79,216,240,.45); background:var(--cyan-soft) }
-.stage.partial { border-color:rgba(242,181,68,.4) } .stage.blocked { border-color:rgba(255,107,107,.45); background:rgba(255,107,107,.06) }
+.stage.partial, .stage.stale { border-color:rgba(242,181,68,.4) } .stage.blocked { border-color:rgba(255,107,107,.45); background:rgba(255,107,107,.06) }
 .stage .bar { height:3px; margin-top:auto } .stage.done .bar > span, .stage.ok .bar > span { background:var(--ok); background-image:none; width:100% }
 .stage.partial .bar > span, .stage.held .bar > span { width:50% } .stage.awaiting .bar > span, .stage.producing .bar > span { background:var(--cyan); background-image:none; width:66% }
 .stage.blocked .bar > span { background:var(--bad); background-image:none; width:66% } .stage.todo .bar > span, .stage.skipped .bar > span { width:0 }

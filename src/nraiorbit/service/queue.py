@@ -238,9 +238,11 @@ def make_project(projects_dir: Path, template: Path, row: dict, story_text: str,
     root = projects_dir / row["slug"]
     fresh = not (root / "pipeline.yaml").exists()
     if fresh:
+        if not template.exists():                           # never a film from scratch: it would run on the default
+            raise FileNotFoundError(                        # (mock) providers, a free animatic nobody asked for
+                f"no project template at {template}; the runner's image ships one under projects/_template")
         root.mkdir(parents=True, exist_ok=True)
-        if template.exists():
-            shutil.copytree(template, root, dirs_exist_ok=True)
+        shutil.copytree(template, root, dirs_exist_ok=True)
     (root / "input").mkdir(parents=True, exist_ok=True)
     if fresh or not (root / "input" / "story.md").exists():      # the queued story, never the template's placeholder
         (root / "input" / "story.md").write_text(story_text, encoding="utf-8")

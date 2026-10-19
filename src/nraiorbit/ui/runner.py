@@ -52,7 +52,8 @@ def run(project: str, region: str, job: str) -> str:
         return "started"
 
 
-def logs(project: str | None, execution: str | None, limit: int = 80) -> list[str]:
+def logs(project: str | None, execution: str | None, limit: int = 80, tz: datetime.tzinfo | None = None) -> list[str]:
+    """One execution's log lines, oldest first, each stamped with the clock time in `tz` (the studio's zone)."""
     if not project or not execution:
         return []
     from google.cloud import logging as cloud_logging
@@ -62,6 +63,6 @@ def logs(project: str | None, execution: str | None, limit: int = 80) -> list[st
     lines = []
     for entry in client.list_entries(filter_=flt, order_by=cloud_logging.DESCENDING, max_results=limit):
         payload = entry.payload if isinstance(entry.payload, str) else str(entry.payload)
-        ts = entry.timestamp.astimezone(datetime.timezone.utc).strftime("%H:%M:%S") if entry.timestamp else ""
+        ts = entry.timestamp.astimezone(tz or datetime.timezone.utc).strftime("%H:%M:%S") if entry.timestamp else ""
         lines.append(f"{ts}  {payload}".rstrip())
     return list(reversed(lines))

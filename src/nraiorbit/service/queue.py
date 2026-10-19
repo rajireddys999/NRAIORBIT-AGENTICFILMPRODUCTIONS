@@ -75,36 +75,128 @@ def _store(uri: str, text: str) -> None:
     Path(uri).write_text(text, encoding="utf-8")
 
 
-def load(uri: str, columns: list[str]) -> list[dict]:
-    text = _fetch(uri)
+def rows_of(text: str, columns: list[str]) -> list[dict]:
     rows = list(csv.DictReader(io.StringIO(text))) if text.strip() else []
     return [{c: (r.get(c) or "").strip() for c in columns} for r in rows]
 
 
-def save(uri: str, rows: list[dict], columns: list[str]) -> None:
+def csv_of(rows: list[dict], columns: list[str]) -> str:
     buf = io.StringIO()
     w = csv.DictWriter(buf, fieldnames=columns, lineterminator="\n")
     w.writeheader()
     for r in rows:
         w.writerow({c: r.get(c, "") for c in columns})
-    _store(uri, buf.getvalue())
+    return buf.getvalue()
+
+
+def load(uri: str, columns: list[str]) -> list[dict]:
+    return rows_of(_fetch(uri), columns)
+
+
+def save(uri: str, rows: list[dict], columns: list[str]) -> None:
+    _store(uri, csv_of(rows, columns))
+
+
+class SheetContended(RuntimeError):
+    """The sheet changed under every attempt to write it."""
+
+
+def update_text(uri: str, change, content_type: str = "text/csv", attempts: int = 6) -> str:
+    """Read, change, write, with a precondition on the bucket: the write lands only if nobody wrote the object since
+    it was read (its generation), else it is read again and the change redone, so two writers (a tick's claim and a
+    save in the control room, seconds apart) never lose each other's edit. `change(text)` returns the new text, or
+    None to leave the object alone. A local file is read and written in place. Returns the text as it stands."""
+    if not uri.startswith("gs://"):
+        p = Path(uri)
+        text = p.read_text(encoding="utf-8") if p.exists() else ""
+        new = change(text)
+        if new is not None and new != text:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(new, encoding="utf-8")
+            return new
+        return text
+    from google.api_core.exceptions import NotFound, PreconditionFailed
+
+    from ..release import gcs
+    bucket_name, _, key = uri[5:].partition("/")
+    for _ in range(attempts):
+        bucket = gcs.client().bucket(bucket_name)
+        blob = bucket.get_blob(key)
+        if blob is None:                                   # absent: create it, and only if still absent
+            text, generation, blob = "", 0, bucket.blob(key)
+        else:
+            try:
+                text, generation = blob.download_as_text(), blob.generation
+            except NotFound:                               # rewritten between the look-up and the read: again
+                continue
+        new = change(text)
+        if new is None or new == text:
+            return text
+        try:
+            blob.upload_from_string(new, content_type=content_type, if_generation_match=generation)
+            return new
+        except PreconditionFailed:
+            continue
+    raise SheetContended(f"{uri} kept changing; nothing written after {attempts} attempts")
 
 
 TICK_COLUMNS = ("state", "note", "updated")           # what a tick writes; the cap, gates and publish are the owner's
+REFERENCE_TICK_COLUMNS = ("state", "profile_uri", "note", "updated")
+
+
+def _write_row(uri: str, row: dict, columns: list[str], key: str, owned: tuple) -> None:
+    def change(text: str) -> str:
+        rows = rows_of(text, columns)
+        for i, r in enumerate(rows):
+            if r[key] == row[key]:
+                rows[i] = {**r, **{c: row.get(c, "") for c in owned}}
+                break
+        else:
+            rows.append({c: row.get(c, "") for c in columns})
+        return csv_of(rows, columns)
+    update_text(uri, change)
 
 
 def write_story(uri: str, row: dict) -> None:
     """Write one film's state into the sheet as it is now, not as it was when this tick began: in the hours a run
     takes the owner may have lowered this film's cap or changed its visibility, and another tick or the owner may
-    have changed other rows; all of that survives. Only the columns a tick owns are written."""
-    rows = load(uri, STORY_COLUMNS)
-    for i, r in enumerate(rows):
-        if r["slug"] == row["slug"]:
-            rows[i] = {**r, **{c: row.get(c, "") for c in TICK_COLUMNS}}
-            break
-    else:
-        rows.append({c: row.get(c, "") for c in STORY_COLUMNS})
-    save(uri, rows, STORY_COLUMNS)
+    have changed other rows; all of that survives. Only the columns a tick owns are written, under a precondition."""
+    _write_row(uri, row, STORY_COLUMNS, "slug", TICK_COLUMNS)
+
+
+REFERENCE_OWNER_COLUMNS = ("url", "title", "learn", "minutes")
+
+
+def write_reference(uri: str, row: dict) -> None:
+    """The same for one reference row. The same link may be queued twice with different focuses, so the result goes
+    to the row the tick picked: the first row with the owner's columns and a state the tick acts on (what
+    ready_reference chose), else the first pending row with that url, else that very reference wherever it is; a
+    row that vanished gets its result appended rather than lost. Never the wrong row: the picked one would stay
+    `new` and be watched, and paid for, every tick."""
+    def change(text: str) -> str:
+        rows = rows_of(text, REFERENCE_COLUMNS)
+
+        def same(r: dict) -> bool:
+            return all(r[c] == row.get(c, "") for c in REFERENCE_OWNER_COLUMNS)
+
+        def pending(r: dict) -> bool:
+            return r["state"] in ("new", "retry")
+        target = (next((r for r in rows if same(r) and pending(r)), None)
+                  or next((r for r in rows if r["url"] == row["url"] and pending(r)), None)
+                  or next((r for r in rows if same(r)), None))
+        if target is None:
+            rows.append({c: row.get(c, "") for c in REFERENCE_COLUMNS})
+        else:
+            target.update({c: row.get(c, "") for c in REFERENCE_TICK_COLUMNS})
+        return csv_of(rows, REFERENCE_COLUMNS)
+    update_text(uri, change)
+
+
+def restore_strikes(note: str) -> int:
+    """How many ticks in a row the restore has failed, as the row's note records it."""
+    import re
+    m = re.match(r"restore failed \((\d+)\)", note or "")
+    return int(m.group(1)) if m else 0
 
 
 # -------------------------------------------------------------------------------------------------- the work
@@ -189,6 +281,10 @@ def overrides_uri(story_uri: str) -> str:
     return f"{head}/{stem}.overrides.yaml" if head else f"{stem}.overrides.yaml"
 
 
+class RestoreFailed(RuntimeError):
+    """The bucket could not be read for the sets a run depends on; nothing runs on a half-restored project."""
+
+
 def run_state(root: Path) -> str:
     """The last run's state from reports/produce.json ('' when there is none)."""
     try:
@@ -238,7 +334,7 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
             r.update(state="done", profile_uri=str(profile), note="", updated=now())
         except Exception as exc:
             r.update(state=f"blocked:{type(exc).__name__}", note=str(exc)[:200], updated=now())
-        save(references_uri, refs, REFERENCE_COLUMNS)
+        write_reference(references_uri, r)
         summary["reference"] = {"url": r["url"], "state": r["state"]}
         log(f"  reference {r['url']}: {r['state']}")
     # one story step
@@ -246,13 +342,17 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
     s = ready_story(rows)
     if s:
         root = projects_dir / s["slug"]
-        was_approved = s["state"] == "approved"
+        prior, was_approved = s["state"], s["state"] == "approved"
         s.update(state="producing", updated=now())        # the claim, before the slow restore: no second tick joins in
         write_story(stories_uri, s)
+        mirror_reviews = False
         try:
             if bucket and not (root / "pipeline.yaml").exists():
                 from ..ops import backup
-                backup.restore(root, bucket, log=lambda *_: None)
+                _, failed = backup.restore_report(root, bucket, log=lambda *_: None)
+                if failed:                                # a half-restored project would pay again or skip a gate
+                    raise RestoreFailed(f"the bucket could not be read for {', '.join(sorted(failed))}")
+                mirror_reviews = True                     # this run saw every marker the bucket holds: it may mirror them
             if not (root / "pipeline.yaml").exists():
                 story = fetch_story(s["story_uri"]) if s.get("story_uri") else ""
                 if not story.strip():
@@ -272,7 +372,12 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
                      str(report.get("steps", {}).get("publish", "")), updated=now())
             if bucket:
                 from ..ops import backup
-                backup.backup(root, bucket, log=lambda *_: None)
+                backup.backup(root, bucket, log=lambda *_: None, mirror_reviews=mirror_reviews)
+        except RestoreFailed as exc:                      # not the film's fault: the row goes back as it was, with a
+            strikes = restore_strikes(s.get("note", "")) + 1       # strike; three in a row and the owner is told
+            back_to = "retry" if prior == "producing" else prior   # never a fresh claim nobody is working under
+            s.update(state="blocked:restore" if strikes >= 3 else back_to,
+                     note=f"restore failed ({strikes}): {exc}"[:200], updated=now())
         except Exception as exc:
             s.update(state=f"blocked:{type(exc).__name__}", note=str(exc)[:200], updated=now())
         write_story(stories_uri, s)

@@ -24,6 +24,14 @@ fires it every 15 minutes, and the queues live at `gs://nraiorbit-agentic-film-p
 model secrets and the YouTube token (stored by **Connect YouTube** in the control room) are in Secret Manager;
 the job carries `ANTHROPIC_WORKSPACE_ID` for the organization-level key (2026-10-19).
 
+Two things a tick guarantees on the bucket. It claims its row (`producing`, with the time) before it restores
+anything, and every row it writes goes through a generation precondition on the sheet object, re-read and redone on
+a conflict, so a save in the control room and a tick's claim seconds apart never lose each other's edit; a fresh
+claim is left alone by other ticks for six hours (`NRAIORBIT_CLAIM_HOURS`). And the project's `reviews` folder, the
+gate markers, is mirrored with deletes only by a tick that restored that folder in the same run, so a marker the
+runner consumed never comes back to be approved twice, while a failed restore can never wipe an approval: a tick
+whose restore of `reviews` or `reports` fails sets the row to `retry`, runs nothing, and the next tick tries again.
+
 Before anything is paid, `produce` prices the row's run and blocks without a cap or over it (docs/FRAMEWORK.md §7):
 a row needs `budget_usd`. Watch a tick: `gcloud run jobs executions list --job nraiorbit-runner --region us-central1`
 and its logs in Cloud Logging; the per-project report is `reports/produce.json` in the project's backup.

@@ -102,6 +102,39 @@ class Store:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(text, encoding="utf-8")
 
+    def update_text(self, rel: str, change, content_type: str | None = None, attempts: int = 6) -> str:
+        """Read, change, write under a precondition: on the bucket the write lands only if nobody wrote the object
+        since it was read (its generation), else the change is redone on the new text, so a save here and a tick's
+        claim seconds apart never lose each other's edit. `change(text)` returns the new text or None for no write."""
+        if not self.is_gs:
+            p = self.path / rel
+            text = p.read_text(encoding="utf-8") if p.is_file() else ""
+            new = change(text)
+            if new is not None and new != text:
+                self.write_text(rel, new, content_type)
+                return new
+            return text
+        from google.api_core.exceptions import NotFound, PreconditionFailed
+        ct = content_type or mimetypes.guess_type(rel)[0] or "text/plain"
+        for _ in range(attempts):
+            blob = self.bucket.get_blob(self._key(rel))
+            if blob is None:
+                text, generation, blob = "", 0, self.bucket.blob(self._key(rel))
+            else:
+                try:
+                    text, generation = blob.download_as_text(), blob.generation
+                except NotFound:                           # rewritten between the look-up and the read: again
+                    continue
+            new = change(text)
+            if new is None or new == text:
+                return text
+            try:
+                blob.upload_from_string(new, content_type=ct, if_generation_match=generation)
+                return new
+            except PreconditionFailed:
+                continue
+        raise RuntimeError(f"{rel} kept changing under every write; try again")
+
     def uri(self, rel: str) -> str:
         """The address the runner understands: gs://bucket/<rel> or an absolute local path."""
         return f"{self.root}/{rel}" if self.is_gs else str((self.path / rel).resolve())

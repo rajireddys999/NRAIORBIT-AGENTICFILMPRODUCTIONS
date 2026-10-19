@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import csv
 import datetime
 import html as _html
-import io
 import math
 import re
 from dataclasses import dataclass, field
@@ -225,18 +223,26 @@ def denied_page(seen: str | None, allowed: set[str]) -> str:
 
 
 def load_rows(store: Store, rel: str, columns: list[str]) -> list[dict]:
-    text = store.read_text(rel) or ""
-    rows = list(csv.DictReader(io.StringIO(text))) if text.strip() else []
-    return [{c: (r.get(c) or "").strip() for c in columns} for r in rows]
+    return queue.rows_of(store.read_text(rel) or "", columns)
 
 
-def save_rows(store: Store, rel: str, rows: list[dict], columns: list[str]) -> None:
-    buf = io.StringIO()
-    w = csv.DictWriter(buf, fieldnames=columns, lineterminator="\n")
-    w.writeheader()
-    for r in rows:
-        w.writerow({c: r.get(c, "") for c in columns})
-    store.write_text(rel, buf.getvalue(), "text/csv")
+def edit_row(store: Store, slug: str, change) -> dict:
+    """Change one film's row in the queue sheet under the store's write precondition, so an edit here and a tick's
+    claim seconds apart never lose each other. `change(row)` edits the row in place; returning False leaves the sheet
+    untouched. Returns the row as it stands afterwards."""
+    seen: dict = {}
+
+    def apply(text: str):
+        rows = queue.rows_of(text, queue.STORY_COLUMNS)
+        row = next((r for r in rows if r["slug"] == slug), None)
+        if row is None:
+            raise HTTPException(400, f"{slug} is not in the queue; films made by hand are driven from Claude Code")
+        seen["row"] = row
+        if change(row) is False:
+            return None
+        return queue.csv_of(rows, queue.STORY_COLUMNS)
+    store.update_text(STORIES, apply, "text/csv")
+    return seen["row"]
 
 
 def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
@@ -479,9 +485,15 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         store.write_text(f"stories/{slug}.md", story.strip() + "\n", "text/markdown")
         store.write_text(f"stories/{slug}.overrides.yaml",
                          yaml.safe_dump({"film": {"runtime_minutes": minutes}}), "text/yaml")
-        rows.append({"slug": slug, "story_uri": store.uri(f"stories/{slug}.md"), "budget_usd": money_text(cap),
-                     "gates": gates, "publish": publish, "state": "new", "note": "", "updated": queue.now()})
-        save_rows(store, STORIES, rows, queue.STORY_COLUMNS)
+
+        def add(text: str) -> str:                        # under the precondition: a tick's claim lands beside it
+            rows = queue.rows_of(text, queue.STORY_COLUMNS)
+            if any(r["slug"] == slug for r in rows):
+                raise HTTPException(400, f"{slug} exists already; pick another slug")
+            rows.append({"slug": slug, "story_uri": store.uri(f"stories/{slug}.md"), "budget_usd": money_text(cap),
+                         "gates": gates, "publish": publish, "state": "new", "note": "", "updated": queue.now()})
+            return queue.csv_of(rows, queue.STORY_COLUMNS)
+        store.update_text(STORIES, add, "text/csv")
         msg = f"{slug} queued; the runner picks it up within 15 minutes"
         if start and settings.project and settings.job:
             try:
@@ -514,24 +526,23 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                     latest=latest, runner_running=running, youtube=youtube_status())
 
     # ------------------------------------------------------------------ actions (the queue sheet only)
-    def _row(slug: str):
-        rows = load_rows(store, STORIES, queue.STORY_COLUMNS)
-        row = next((r for r in rows if r["slug"] == slug), None)
-        if row is None:
-            raise HTTPException(400, f"{slug} is not in the queue; films made by hand are driven from Claude Code")
-        return rows, row
-
     @app.post("/film/{slug}/approve")
     def approve(slug: str, email: str = Depends(guard), gate: str = Form("")):
         if gate not in queue.GATES:
             raise HTTPException(400, f"no gate called {gate[:40]!r}; one of {', '.join(queue.GATES)}")
-        rows, row = _row(slug)
-        if row["state"] == "approved":                        # pressed twice: one approval, one tick
-            return back(f"/film/{slug}", "already approved; the runner takes it up on its next tick")
-        if row["state"] != f"awaiting:{gate}":                # a stale page, or a run under way: never touch the claim
-            return back(f"/film/{slug}", f"nothing waits at the {gate} gate: the film is {row['state']}; nothing changed")
-        row.update(state="approved", note=f"{gate} approved in the control room by {email}", updated=queue.now())
-        save_rows(store, STORIES, rows, queue.STORY_COLUMNS)
+        refused: dict = {}
+
+        def change(row: dict):
+            if row["state"] == "approved":                    # pressed twice: one approval, one tick
+                refused["msg"] = "already approved; the runner takes it up on its next tick"
+                return False
+            if row["state"] != f"awaiting:{gate}":            # a stale page, or a run under way: never touch the claim
+                refused["msg"] = f"nothing waits at the {gate} gate: the film is {row['state']}; nothing changed"
+                return False
+            row.update(state="approved", note=f"{gate} approved in the control room by {email}", updated=queue.now())
+        edit_row(store, slug, change)
+        if refused:
+            return back(f"/film/{slug}", refused["msg"])
         msg = f"{gate} approved; the next tick carries on"
         if settings.project and settings.job:                 # no fifteen-minute wait: the next step starts now
             try:
@@ -549,15 +560,12 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
 
     @app.post("/film/{slug}/retry")
     def retry(slug: str, email: str = Depends(guard)):
-        rows, row = _row(slug)
-        row.update(state="retry", updated=queue.now())
-        save_rows(store, STORIES, rows, queue.STORY_COLUMNS)
+        edit_row(store, slug, lambda row: row.update(state="retry", updated=queue.now()))
         return back(f"/film/{slug}", "set to retry; the next tick runs it again")
 
     @app.post("/film/{slug}/row")
     def save_row(slug: str, email: str = Depends(guard), budget: str = Form(""), gates: str = Form(""),
                  publish: str = Form("")):
-        rows, row = _row(slug)
         if budget:
             try:
                 cap = float(budget)
@@ -565,13 +573,16 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                     raise ValueError
             except ValueError:
                 raise HTTPException(400, "the budget cap must be a real number above zero") from None
-            row["budget_usd"] = money_text(cap)
-        if gates in ("ask", "auto"):
-            row["gates"] = gates
-        if publish in ("none", "private", "unlisted", "public"):
-            row["publish"] = publish
-        row["updated"] = queue.now()
-        save_rows(store, STORIES, rows, queue.STORY_COLUMNS)
+
+        def change(row: dict):
+            if budget:
+                row["budget_usd"] = money_text(cap)
+            if gates in ("ask", "auto"):
+                row["gates"] = gates
+            if publish in ("none", "private", "unlisted", "public"):
+                row["publish"] = publish
+            row["updated"] = queue.now()
+        edit_row(store, slug, change)
         return back(f"/film/{slug}", "saved; the next tick writes it into the project")
 
     @app.post("/tick")
@@ -602,19 +613,26 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                 minutes = f"{float(minutes):g}"
             except ValueError:
                 raise HTTPException(400, "minutes must be a number") from None
-        refs = load_rows(store, REFERENCES, queue.REFERENCE_COLUMNS)
-        refs.append({"url": url, "title": title.strip(), "learn": learn, "minutes": minutes, "state": "new",
-                     "profile_uri": "", "note": "", "updated": queue.now()})
-        save_rows(store, REFERENCES, refs, queue.REFERENCE_COLUMNS)
+        new = {"url": url, "title": title.strip(), "learn": learn, "minutes": minutes, "state": "new",
+               "profile_uri": "", "note": "", "updated": queue.now()}
+
+        def add(text: str) -> str:
+            refs = queue.rows_of(text, queue.REFERENCE_COLUMNS)
+            if any(r["url"] == url and r["learn"] == learn for r in refs):   # the same watch twice is paid twice
+                raise HTTPException(400, f"that link is already queued to learn {learn}; set it to retry instead")
+            return queue.csv_of(refs + [new], queue.REFERENCE_COLUMNS)
+        store.update_text(REFERENCES, add, "text/csv")
         return back("/references", "queued; the next tick watches it (the cost guard applies)")
 
     @app.post("/references/retry")
     def retry_reference(email: str = Depends(guard), url: str = Form(...)):
-        refs = load_rows(store, REFERENCES, queue.REFERENCE_COLUMNS)
-        for r in refs:
-            if r["url"] == url:
-                r.update(state="retry", updated=queue.now())
-        save_rows(store, REFERENCES, refs, queue.REFERENCE_COLUMNS)
+        def change(text: str) -> str:
+            refs = queue.rows_of(text, queue.REFERENCE_COLUMNS)
+            for r in refs:
+                if r["url"] == url:
+                    r.update(state="retry", updated=queue.now())
+            return queue.csv_of(refs, queue.REFERENCE_COLUMNS)
+        store.update_text(REFERENCES, change, "text/csv")
         return back("/references", "set to retry")
 
     if not store.is_gs:

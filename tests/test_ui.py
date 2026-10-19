@@ -205,12 +205,27 @@ def test_new_story_writes_the_story_the_overrides_and_the_row(client, root):
     assert new["slug"] == "rain-ferry" and new["state"] == "new" and new["budget_usd"] == "120"
     assert new["story_uri"].endswith("stories/rain-ferry.md") and client.started == ["nraiorbit-runner"]
     assert client.get("/film/rain-ferry").status_code == 200                    # a queued film with no plan yet
-    # guards: a bad slug, a tiny story, no cap, a duplicate
-    bad = dict(slug="Rain Ferry", story=story, budget="10")
-    assert client.post("/new", data=bad).status_code == 400
-    assert client.post("/new", data={**bad, "slug": "ok-slug", "story": "short"}).status_code == 400
-    assert client.post("/new", data={**bad, "slug": "ok-slug", "budget": "0"}).status_code == 400
-    assert client.post("/new", data={**bad, "slug": "demo"}).status_code == 400
+    # any name works: it is turned into the folder name; a taken name gets -2; an empty one comes from the story
+    r = client.post("/new", data={"slug": "Rain Ferry!", "story": story, "budget": "10"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/film/rain-ferry-2")
+    r = client.post("/new", data={"slug": "demo", "story": story, "budget": "10"}, follow_redirects=False)
+    assert r.headers["location"].startswith("/film/demo-2")                     # demo is a film already
+    english = "The ferryman of Godavari saves the village in a flood. " * 3
+    r = client.post("/new", data={"slug": "", "story": english, "budget": "10"}, follow_redirects=False)
+    assert r.headers["location"].startswith("/film/the-ferryman-of-godavari-saves-the")
+    r = client.post("/new", data={"slug": "గోదావరి సింహం", "story": story, "budget": "10"}, follow_redirects=False)
+    assert r.headers["location"].startswith("/film/film-20")                    # nothing Latin to use: the date
+    # real mistakes come back as the form with the message and the text kept, never a bare error page
+    r = client.post("/new", data={"slug": "ok", "story": "short", "budget": "10"})
+    assert r.status_code == 400 and "too short" in r.text and 'name="story"' in r.text
+    r = client.post("/new", data={"slug": "ok", "story": story, "budget": "0", "publish": "unlisted"})
+    assert r.status_code == 400 and "above zero" in r.text and story[:20] in r.text and 'value="unlisted" selected' in r.text
+    assert app_mod.slugify("Rain Ferry!") == "rain-ferry" and app_mod.slugify("ఆ") == "" and app_mod.slugify("Café-7") == "cafe-7"
+    # a name that is a bucket prefix or a route of this app never becomes a film folder
+    r = client.post("/new", data={"slug": "queue", "story": story, "budget": "10"}, follow_redirects=False)
+    assert r.headers["location"].startswith("/film/queue-2")
+    assert app_mod.pick_slug("library", story, lambda s: False) == "library-2"
+    assert app_mod.pick_slug("x" * 60, story, lambda s: s == "x" * 41) == "x" * 39 + "-2"
 
 
 def test_reference_queue(client, root):

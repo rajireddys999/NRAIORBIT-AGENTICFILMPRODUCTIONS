@@ -655,7 +655,8 @@ def _main(argv: list[str] | None = None) -> None:
 
     p = sub.add_parser("approve")
     p.add_argument("slug")
-    p.add_argument("gate", choices=["story", "cast", "faces", "pacing", "final_cut", "trailer"])
+    p.add_argument("gate", choices=["story", "outline", "scenes", "cast", "shots", "cost", "faces", "render", "pacing",
+                                    "final_cut", "trailer", "publish"])
     p.set_defaults(fn=cmd_approve)
 
     p = sub.add_parser("status")

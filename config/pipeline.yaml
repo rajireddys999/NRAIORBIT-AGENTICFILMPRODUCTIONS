@@ -170,6 +170,12 @@ review_gates:
   pacing: {enabled: true, auto_approve: false}
   final_cut: {enabled: true, auto_approve: false}
   trailer: {enabled: true, auto_approve: false}
+  # the step gates between stages: off here, on (auto_approve: false) in the control room's project template so a
+  # queued film waits for a look after every step; cost, faces and publish are the runner's own gates (service/produce)
+  outline: {enabled: true, auto_approve: true}
+  scenes: {enabled: true, auto_approve: true}
+  shots: {enabled: true, auto_approve: true}
+  render: {enabled: true, auto_approve: true}
 
 audio:
   master_lufs: -14

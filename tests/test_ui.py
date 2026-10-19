@@ -180,7 +180,8 @@ def test_film_page_shows_every_stage_and_the_craft(client, root):
 
 def test_approve_retry_and_row_edits_write_only_the_sheet(client, root):
     r = client.post("/film/demo/approve", data={"gate": "faces"}, follow_redirects=False)
-    assert r.status_code == 303 and "approved" in r.headers["location"]
+    assert r.status_code == 303 and "approved" in r.headers["location"] and "tick" in r.headers["location"]
+    assert client.started == ["nraiorbit-runner"]                              # the next step starts now, not in 15 min
     row = rows(root)[0]
     assert row["state"] == "approved" and "owner@example.com" in row["note"]
     client.post("/film/demo/row", data={"budget": "75", "publish": "unlisted", "gates": ""})
@@ -191,7 +192,48 @@ def test_approve_retry_and_row_edits_write_only_the_sheet(client, root):
     assert rows(root)[0]["state"] == "retry"
     assert not (root / "demo" / "reviews" / "faces.approved").exists()          # the runner does the file work
     r = client.post("/tick", data={"next": "/film/demo"}, follow_redirects=False)
-    assert r.status_code == 303 and client.started == ["nraiorbit-runner"]
+    assert r.status_code == 303 and client.started == ["nraiorbit-runner", "nraiorbit-runner"]
+
+
+def test_the_pipeline_flow_shows_the_gates_and_the_step_under_way(client, root, monkeypatch):
+    """The film page's pipeline: twelve steps joined by arrows; the step that waits carries its approve button (the
+    cost gate shows the estimate, the YouTube gate offers view, download and approve), and with nothing pending the
+    first unfinished step is marked as executing while a tick runs."""
+    proj = root / "demo"
+
+    def set_state(state, steps):
+        rs = rows(root)
+        rs[0]["state"] = state
+        (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+        rep = json.loads((proj / "reports" / "produce.json").read_text())
+        rep["state"] = state
+        rep["steps"].update(steps)
+        (proj / "reports" / "produce.json").write_text(json.dumps(rep))
+
+    (proj / "reviews" / "faces.pending").unlink()
+    (proj / "reviews" / "cost.pending").write_text('{"total_usd": 12.5}')
+    set_state("awaiting:cost", {"cost": "awaiting:cost"})
+    html = client.get("/film/demo").text
+    assert 'name="gate" value="cost"' in html and "Approve $12.50" in html and "needs you" in html
+    assert html.count('class="arrow"') == 11
+    (proj / "reviews" / "cost.pending").unlink()
+    (proj / "reviews" / "publish.pending").write_text("x")
+    (proj / "11_master" / "deliver").mkdir(parents=True)
+    (proj / "11_master" / "movie.mp4").write_bytes(b"")
+    (proj / "11_master" / "trailer.mp4").write_bytes(b"")
+    (proj / "11_master" / "deliver" / "delivery.json").write_text(
+        json.dumps([{"name": "demo_720p.mp4", "mb": 12.0, "url": None}]))
+    set_state("awaiting:publish", {"cost": "approved", "render": "done", "publish": "awaiting:publish"})
+    html = client.get("/film/demo").text
+    assert "Approve YouTube · private" in html and 'name="gate" value="publish"' in html
+    assert "View the film" in html and "/file/demo/11_master/movie.mp4" in html and "Download" in html
+    (proj / "reviews" / "publish.pending").unlink()
+    set_state("producing", {"publish": "none"})
+    monkeypatch.setattr(runner_mod, "executions", lambda *a, **k: [
+        {"name": "nraiorbit-runner-xyz", "created": "2026-10-17T10:00:00", "completed": "", "succeeded": 0, "failed": 0,
+         "running": 1, "state": "running"}])
+    html = client.get("/film/demo").text
+    assert "executing now" in html and 'class="badge next live">executing</span>' in html
 
 
 def test_new_story_writes_the_story_the_overrides_and_the_row(client, root):

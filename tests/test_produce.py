@@ -66,3 +66,37 @@ def test_policy_overrides_and_faces_gate_rule(tmp_path):
     p.p.reviews.mkdir(parents=True)
     (p.p.reviews / "faces.approved").write_text("ok")
     assert not produce._faces_needed(p)
+
+
+def test_every_gate_listed_stops_at_each_step_the_cost_and_the_upload(tmp_path, monkeypatch):
+    """The control room's template: every step waits for a look, the estimate is approved before anything is paid,
+    and the YouTube upload is approved once the film can be watched. Each stop leaves the marker the queue approves."""
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    every = ["story", "outline", "scenes", "cast", "shots", "render", "pacing", "final_cut", "trailer"]
+    root = tmp_path / "demo"
+    (root / "input").mkdir(parents=True)
+    (root / "input" / "story.md").write_text(DEMO_PLOT, encoding="utf-8")
+    cfg = deep_merge(DEMO_CONFIG, {"review_gates": {g: {"enabled": True, "auto_approve": False} for g in every},
+                                   "policy": {"gates": "ask", "publish": "private"}})
+    (root / "pipeline.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+    p = Pipeline(root, demo_llm(), cfg=load_pipeline_config(root), log=lambda *_: None)
+    monkeypatch.setattr(produce, "cost_gate", lambda pipeline: (None, {"total_usd": 12.5, "video_usd": 10.0, "tts_usd": 2.5}))
+    uploads = []
+    monkeypatch.setattr(produce, "publish_youtube", lambda root, privacy: uploads.append(privacy) or {"film": {"id": "vid1"}})
+    seen = []
+    for _ in range(14):
+        report = produce.produce(p, log=lambda *_: None)
+        if not report["state"].startswith("awaiting:"):
+            break
+        gate = report["state"][len("awaiting:"):]
+        seen.append(gate)
+        assert (p.p.reviews / f"{gate}.pending").exists(), gate
+        if gate == "cost":
+            assert json.loads((p.p.reviews / "cost.pending").read_text())["total_usd"] == 12.5
+            assert report["steps"]["estimate"]["total_usd"] == 12.5 and not uploads
+        produce.approve(p, gate)
+    assert report["state"] == "done", report
+    assert seen[:6] == ["story", "outline", "scenes", "cast", "shots", "cost"]
+    assert seen[6] == "render" and seen[7] in ("pacing", "final_cut") and seen[8:] == ["trailer", "publish"]
+    assert report["steps"]["cost"] == "approved" and uploads == ["private"]
+    assert report["steps"]["publish"] == {"film": {"id": "vid1"}}

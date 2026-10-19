@@ -457,8 +457,9 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                 log_lines = runner_mod.logs(settings.project, latest)
             except Exception as exc:
                 log_lines = [f"(log unavailable: {type(exc).__name__})"]
+        running = bool(panel["executions"]) and panel["executions"][0]["state"] == "running"
         return page("film.html", request, email, f=d, stages=films.STAGES, runner=panel, log_lines=log_lines,
-                    latest=latest, youtube=youtube_status())
+                    latest=latest, runner_running=running, youtube=youtube_status())
 
     # ------------------------------------------------------------------ actions (the queue sheet only)
     def _row(slug: str):
@@ -473,7 +474,15 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         rows, row = _row(slug)
         row.update(state="approved", note=f"{gate} approved in the control room by {email}", updated=queue.now())
         save_rows(store, STORIES, rows, queue.STORY_COLUMNS)
-        return back(f"/film/{slug}", f"{gate or 'gate'} approved; the next tick carries on")
+        msg = f"{gate or 'gate'} approved; the next tick carries on"
+        if settings.project and settings.job:                 # no fifteen-minute wait: the next step starts now
+            try:
+                ex = runner_mod.run(settings.project, settings.region, settings.job)
+                msg = f"{gate or 'gate'} approved; a tick started ({ex}) and the next step is under way"
+            except Exception as exc:
+                msg = f"{gate or 'gate'} approved; the tick could not be started ({type(exc).__name__}), " \
+                      f"the scheduled one carries on"
+        return back(f"/film/{slug}", msg)
 
     @app.post("/film/{slug}/retry")
     def retry(slug: str, email: str = Depends(guard)):

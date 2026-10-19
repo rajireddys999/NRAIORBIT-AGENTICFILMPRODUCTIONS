@@ -1,14 +1,16 @@
 """One story, start to finish, under the project's policy (`nraiorbit produce <slug>`).
 
-    plan (story bible … shots, cues)  →  faces (first frames, checked before video is paid)  →  render (picture,
-    voices, music, lip-sync under the cap)  →  assemble, trailer  →  QA (lip-sync sheets, film check)  →  deliver
-    (720p, bucket, links)  →  publish (YouTube, private by default)  →  backup
+    plan (story bible … shots, cues)  →  cost (the paid stages priced against the cap, approved before anything is
+    paid)  →  faces (first frames, checked before video is paid)  →  render (picture, voices, music, lip-sync under
+    the cap)  →  assemble, trailer  →  QA (lip-sync sheets, film check)  →  deliver (720p, bucket, links)  →
+    publish (YouTube, approved first; private by default)  →  backup
 
 `policy` in the project's pipeline.yaml says how far it goes on its own:
 
     policy:
-      gates: ask | auto        ask: stop at every review gate (story, cast, faces, pacing, trailer) and report
-                               awaiting:<gate>; auto: approve them as they come. The budget cap is never touched.
+      gates: ask | auto        ask: stop at every review gate the project lists (story, outline, scenes, cast, shots,
+                               cost, faces, render, pacing, trailer, publish) and report awaiting:<gate>; auto:
+                               approve them as they come. The budget cap is never touched.
       publish: none | private | unlisted | public
       deliver_days: 7
       tag: ""                  a word in the delivery file names
@@ -29,7 +31,9 @@ from types import SimpleNamespace
 from ..costing import BudgetExceeded, SpendLedger
 from ..pipeline import GatePending, Pipeline, PipelineBlocked
 
-GATE_ORDER = ["story", "cast", "faces", "pacing", "final_cut", "trailer"]
+GATE_ORDER = ["story", "outline", "scenes", "cast", "shots", "cost", "faces", "render", "pacing", "final_cut", "trailer",
+              "publish"]
+RUNNER_GATES = ("cost", "faces", "publish")          # raised here, between pipeline runs, not inside a stage
 
 
 def policy_of(cfg: dict, **overrides) -> dict:
@@ -43,6 +47,17 @@ def approve(pipeline: Pipeline, gate: str) -> None:
     pipeline.p.reviews.mkdir(parents=True, exist_ok=True)
     (pipeline.p.reviews / f"{gate}.pending").unlink(missing_ok=True)
     (pipeline.p.reviews / f"{gate}.approved").write_text("approved by policy\n", encoding="utf-8")
+
+
+def approved(pipeline: Pipeline, gate: str) -> bool:
+    return (pipeline.p.reviews / f"{gate}.approved").exists()
+
+
+def hold(pipeline: Pipeline, gate: str, text: str) -> None:
+    """Leave the gate's pending marker, the same file a pipeline gate writes: the control room lists it, and an
+    approval in the queue turns it into <gate>.approved before the next run."""
+    pipeline.p.reviews.mkdir(parents=True, exist_ok=True)
+    (pipeline.p.reviews / f"{gate}.pending").write_text(text, encoding="utf-8")
 
 
 def _faces_needed(pipeline: Pipeline) -> bool:
@@ -89,19 +104,8 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
             return finish(f"blocked:{str(b)[:120]}")
     report["steps"]["plan"] = "done"
 
-    # 2. faces: first frames for every shot with a lead, then a human look (ask) or straight on (auto)
-    if _faces_needed(pipeline) and pol["gates"] == "ask":
-        if keyframes is not None:
-            try:
-                keyframes(SimpleNamespace(slug=root.name, only=None, max_spend=None, yes=True))
-            except SystemExit as e:                      # the command reports its own reason
-                report["steps"]["faces"] = f"blocked: {e}"
-                return finish(f"blocked:{str(e)[:120]}")
-        report["steps"]["faces"] = "awaiting:faces"
-        return finish("awaiting:faces")
-    report["steps"]["faces"] = "approved" if (pipeline.p.reviews / "faces.approved").exists() else "not needed"
-
-    # 3. the cost gate: what the paid stages would cost against what is left of the cap, before anything is paid
+    # 2. the cost gate: what the paid stages would cost against what is left of the cap, before anything is paid.
+    #    Over the cap it blocks; under it the owner approves the figure (ask) or it goes straight on (auto).
     block, preview = cost_gate(pipeline)
     if preview:
         report["steps"]["estimate"] = {k: preview[k] for k in ("total_usd", "video_usd", "keyframe_usd", "tts_usd",
@@ -109,6 +113,26 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
     if block:
         report["steps"]["render"] = block["why"]
         return finish(block["state"])
+    if preview and float(preview.get("total_usd") or 0) > 0 and not approved(pipeline, "cost"):
+        if pol["gates"] == "ask":
+            hold(pipeline, "cost", json.dumps(report["steps"]["estimate"]) + "\n")
+            report["steps"]["cost"] = "awaiting:cost"
+            return finish("awaiting:cost")
+        approve(pipeline, "cost")
+    report["steps"]["cost"] = "approved" if approved(pipeline, "cost") else "not needed"
+
+    # 3. faces: first frames for every shot with a lead, then a human look (ask) or straight on (auto)
+    if _faces_needed(pipeline) and pol["gates"] == "ask":
+        if keyframes is not None:
+            try:
+                keyframes(SimpleNamespace(slug=root.name, only=None, max_spend=None, yes=True))
+            except SystemExit as e:                      # the command reports its own reason
+                report["steps"]["faces"] = f"blocked: {e}"
+                return finish(f"blocked:{str(e)[:120]}")
+        hold(pipeline, "faces", "Look at the first frames in the control room, then approve faces.\n")
+        report["steps"]["faces"] = "awaiting:faces"
+        return finish("awaiting:faces")
+    report["steps"]["faces"] = "approved" if approved(pipeline, "faces") else "not needed"
 
     # 4. the paid stages, assembly and trailer under the cap
     while True:
@@ -151,10 +175,15 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
         report["steps"]["deliver"] = f"failed: {type(exc).__name__}: {str(exc)[:160]}"
         return finish("blocked:deliver")
 
-    # 6. YouTube, private unless the policy says otherwise; only when the film check passed; never a browser
+    # 6. YouTube, private unless the policy says otherwise; approved by the owner first (ask), and on its own only
+    #    when the film check passed (auto); never a browser
     if pol["publish"] not in ("private", "unlisted", "public"):
         report["steps"]["publish"] = "none"
-    elif report["steps"].get("qa_film") != "ok":
+    elif pol["gates"] == "ask" and not approved(pipeline, "publish"):
+        hold(pipeline, "publish", f"Watch the film and the trailer, then approve the {pol['publish']} YouTube upload.\n")
+        report["steps"]["publish"] = "awaiting:publish"
+        return finish("awaiting:publish")
+    elif report["steps"].get("qa_film") != "ok" and not approved(pipeline, "publish"):
         report["steps"]["publish"] = "held: the film check did not pass; look at reports/qa/film.json, then " \
                                      "`nraiorbit release youtube <slug>`"
     else:

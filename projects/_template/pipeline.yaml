@@ -38,13 +38,19 @@ shots:
 budget:
   max_usd: 0                       # nothing is paid until you set the cap (or pass --max-spend)
 
-review_gates:
+review_gates:                      # every step waits for a look in the control room; policy.gates: auto waves them all
   story: {auto_approve: false}
+  outline: {auto_approve: false}
+  scenes: {auto_approve: false}
   cast: {auto_approve: false}
-  pacing: {auto_approve: true}
-  trailer: {auto_approve: true}
+  shots: {auto_approve: false}
+  render: {auto_approve: false}
+  pacing: {auto_approve: false}
+  final_cut: {auto_approve: false}
+  trailer: {auto_approve: false}
 
 policy:                            # for `nraiorbit produce` and the service runner
-  gates: ask                       # ask: stop at every gate above | auto: approve them all (faces are still checked)
-  publish: private                 # none | private | unlisted | public (YouTube)
+  gates: ask                       # ask: stop at every gate above, plus the cost, first-frames and YouTube gates
+                                   # (approve each in the control room) | auto: approve them all as they come
+  publish: private                 # none | private | unlisted | public (YouTube; the upload is approved first)
   deliver_days: 7

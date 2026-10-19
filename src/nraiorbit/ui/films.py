@@ -15,11 +15,13 @@ from .store import Store
 
 STAGES = [
     ("story", "Story bible"), ("outline", "Outline"), ("scenes", "Scenes & dialogue"), ("cast", "Cast"),
-    ("shots", "Shot lists"), ("faces", "First frames"), ("render", "Picture, voices, music, lips"),
+    ("shots", "Shot lists"), ("cost", "Cost"), ("faces", "First frames"), ("render", "Picture, voices, music, lips"),
     ("assemble", "Film & trailer"), ("qa", "QA"), ("deliver", "Delivery"), ("publish", "YouTube"),
 ]
-GATES = {"story": "story", "cast": "cast", "faces": "faces", "pacing": "assemble", "final_cut": "assemble",
-         "trailer": "assemble"}
+GATES = {"story": "story", "outline": "outline", "scenes": "scenes", "cast": "cast", "shots": "shots", "cost": "cost",
+         "faces": "faces", "render": "render", "pacing": "assemble", "final_cut": "assemble", "trailer": "assemble",
+         "publish": "publish"}
+RUNNING = {"new", "approved", "retry", "producing"}       # row states in which the runner is, or is about to be, on it
 NOT_FILMS = {"queue", "library", "lipsync", "stories", "_template", "final"}
 
 
@@ -73,6 +75,10 @@ def money(store: Store, slug: str, cfg: dict, row: dict | None, produce: dict | 
         by[c.get("provider", "?")] += float(c.get("usd") or 0)
     spent = round(sum(by.values()), 2)
     cap = (cfg.get("budget") or {}).get("max_usd")
+    try:
+        cap = float(cap) if cap not in (None, "") else None           # a hand-edited "40" is still a cap
+    except (TypeError, ValueError):
+        cap = None
     if row and row.get("budget_usd"):
         try:
             cap = float(row["budget_usd"])
@@ -85,10 +91,22 @@ def money(store: Store, slug: str, cfg: dict, row: dict | None, produce: dict | 
 
 
 def pending_gates(store: Store, slug: str, produce: dict | None, row: dict | None) -> list[str]:
-    gates = [n.rsplit("/", 1)[-1][:-len(".pending")] for n in store.list(f"{slug}/reviews/") if n.endswith(".pending")]
-    state = (produce or {}).get("state") or (row or {}).get("state") or ""
-    if state.startswith("awaiting:") and state[9:] not in gates:
-        gates.append(state[9:])
+    """What waits on the owner. A film in the queue waits only when its row says so (awaiting:<gate>): while a run
+    is on it the bucket still holds the previous stop's report and marker, and those must never offer a button. A
+    film driven by hand has no row: its markers never approved are what wait (a marker with an .approved sibling is
+    spent; the bucket mirror can bring one back)."""
+    if row is not None:
+        state = row.get("state") or ""
+        return [state[len("awaiting:"):]] if state.startswith("awaiting:") else []
+    names = {n.rsplit("/", 1)[-1] for n in store.list(f"{slug}/reviews/")}
+    state = (produce or {}).get("state") or ""
+    waiting = state[9:] if state.startswith("awaiting:") else None
+    gates = [n[:-len(".pending")] for n in sorted(names) if n.endswith(".pending")
+             and (n[:-len(".pending")] == waiting or f"{n[:-len('.pending')]}.approved" not in names)]
+    if waiting and waiting not in gates:
+        gates.append(waiting)
+    if isinstance(((produce or {}).get("steps") or {}).get("publish"), dict):     # uploaded: that marker is spent
+        gates = [g for g in gates if g != "publish"]
     return gates
 
 
@@ -158,6 +176,8 @@ def detail(store: Store, slug: str, row: dict | None) -> dict:
     delivery = _json(store, f"{slug}/11_master/deliver/delivery.json")
     gates = pending_gates(store, slug, produce, row)
     steps = (produce or {}).get("steps") or {}
+    cash = money(store, slug, cfg, row, produce)
+    state = (row or {}).get("state") or (produce or {}).get("state") or ("made by hand" if bible else "new")
 
     with_leads = [sh for sh in shots if sh.get("characters_in_frame")]
     speaking_needed = len(synced)
@@ -180,6 +200,19 @@ def detail(store: Store, slug: str, row: dict | None) -> dict:
     framed = sum(1 for sh in with_leads if sh.get("shot_id") in keyframes)
     filmed = sum(1 for sh in shots if sh.get("shot_id") in clips)
     all_filmed = bool(shots) and filmed >= len(shots)
+    est = cash["estimate"]
+    cost_step = str(steps.get("cost") or "")
+    if cost_step in ("approved", "not needed") or filmed or steps.get("render") == "done":
+        cost_status = "done"
+    elif str(steps.get("render", "")).startswith("estimate") or str(steps.get("render", "")).startswith("the paid"):
+        cost_status = "blocked"
+    else:
+        cost_status = "todo"
+    cost_text = (f"about ${est['total_usd']:,.2f} for the paid stages" if est and est.get("total_usd") else
+                 ("nothing to pay" if cost_step == "not needed" else ""))
+    if cash["cap"]:
+        cost_text += f"{' · ' if cost_text else ''}cap ${cash['cap']:,.2f}, ${cash['spent']:,.2f} spent"
+    put("cost", cost_status, cost_text)
     if "faces" in gates:
         faces_status = "awaiting"
     elif with_leads and framed >= len(with_leads):
@@ -226,7 +259,17 @@ def detail(store: Store, slug: str, row: dict | None) -> dict:
     put("publish", "done" if isinstance(pub, dict) else ("held" if isinstance(pub, str) and pub.startswith("held")
                                                          else ("skipped" if isinstance(pub, str) and pub.startswith("skipped")
                                                                else "todo")),
-        pub if isinstance(pub, str) else "")
+        pub if isinstance(pub, str) and not pub.startswith("awaiting") else "")
+    gate_for = {}                                             # stage key -> the gate waiting there
+    for g in gates:
+        key = GATES.get(g)
+        if key in stage:
+            stage[key]["status"] = "awaiting"
+            gate_for[key] = g
+    # the step the runner is on (or about to pick up): the first unfinished stage while nothing waits on the owner
+    next_stage = None
+    if state.split(":")[0] in RUNNING and not gates:
+        next_stage = next((k for k, _ in STAGES if stage[k]["status"] in ("todo", "partial")), None)
 
     def img(rel):
         return store.url(rel)
@@ -285,11 +328,12 @@ def detail(store: Store, slug: str, row: dict | None) -> dict:
     return {
         "slug": slug, "row": row, "cfg": cfg, "bible": bible, "outline": scenes_out, "cast": cast_cards,
         "scenes": scene_views, "shots": shot_views, "keyframes": keyframe_cards, "stages": stage, "gates": gates,
-        "money": money(store, slug, cfg, row, produce), "produce": produce, "steps": steps,
+        "gate_for": gate_for, "next_stage": next_stage,
+        "money": cash, "produce": produce, "steps": steps,
         "review_queue": review_queue[-30:], "qa_film": qa_film, "qa_md": qa_md,
         "strips": [{"shot_id": n.rsplit("/", 1)[-1].replace("_strip.jpg", ""), "url": img(n)} for n in strips],
         "media": media, "delivery": deliver_links, "title": bible.get("title_en") or slug, "title_te": bible.get("title_te"),
-        "state": (row or {}).get("state") or (produce or {}).get("state") or ("made by hand" if bible else "new"),
+        "state": state,
         "hint": explain_note((row or {}).get("note")),
         "policy": cfg.get("policy") or {}, "runtime": (cfg.get("film") or {}).get("runtime_minutes"),
         "story_text": store.read_text(f"{slug}/project/input/story.md") or "",

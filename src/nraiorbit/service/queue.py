@@ -17,7 +17,9 @@ Reference states: `new` → `done` (profile written) or `blocked:<reason>`.
 
 One tick does one unit of work per queue (a reference profile is minutes; a film can be hours), restores the
 project from the bucket first and backs it up after, so a Cloud Run job with an empty disk can carry on where the
-last one stopped. A tick never raises a budget cap: the row's `budget_usd` is the cap, and only the owner edits it.
+last one stopped. A tick claims its row (`producing`, with the time) before the restore, and another tick leaves a
+claimed row alone for as long as a run can take, so two executions never do the same paid step. A tick never raises
+a budget cap: the row's `budget_usd` is the cap, and only the owner edits it.
 """
 
 from __future__ import annotations
@@ -25,6 +27,8 @@ from __future__ import annotations
 import csv
 import datetime
 import io
+import json
+import os
 import shutil
 from pathlib import Path
 
@@ -32,6 +36,9 @@ import yaml
 
 STORY_COLUMNS = ["slug", "story_uri", "budget_usd", "gates", "publish", "state", "note", "updated"]
 REFERENCE_COLUMNS = ["url", "title", "learn", "minutes", "state", "profile_uri", "note", "updated"]
+GATES = ["story", "outline", "scenes", "cast", "shots", "cost", "faces", "render", "pacing", "final_cut", "trailer",
+         "publish"]                                   # every gate a run can stop at, in order; what approve accepts
+CLAIM_HOURS = 6.0                                     # a producing row is another tick's for this long (the job's limit)
 
 
 def now() -> str:
@@ -83,13 +90,45 @@ def save(uri: str, rows: list[dict], columns: list[str]) -> None:
     _store(uri, buf.getvalue())
 
 
+TICK_COLUMNS = ("state", "note", "updated")           # what a tick writes; the cap, gates and publish are the owner's
+
+
+def write_story(uri: str, row: dict) -> None:
+    """Write one film's state into the sheet as it is now, not as it was when this tick began: in the hours a run
+    takes the owner may have lowered this film's cap or changed its visibility, and another tick or the owner may
+    have changed other rows; all of that survives. Only the columns a tick owns are written."""
+    rows = load(uri, STORY_COLUMNS)
+    for i, r in enumerate(rows):
+        if r["slug"] == row["slug"]:
+            rows[i] = {**r, **{c: row.get(c, "") for c in TICK_COLUMNS}}
+            break
+    else:
+        rows.append({c: row.get(c, "") for c in STORY_COLUMNS})
+    save(uri, rows, STORY_COLUMNS)
+
+
 # -------------------------------------------------------------------------------------------------- the work
 
+def claimed(row: dict, hours: float | None = None) -> bool:
+    """A `producing` row whose claim is younger than the longest a run can take: another execution is on it."""
+    if row.get("state") != "producing" or not row.get("updated"):
+        return False
+    try:
+        since = datetime.datetime.fromisoformat(row["updated"])
+    except ValueError:
+        return False
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=datetime.timezone.utc)
+    limit = float(os.environ.get("NRAIORBIT_CLAIM_HOURS") or (CLAIM_HOURS if hours is None else hours))
+    return datetime.datetime.now(datetime.timezone.utc) - since < datetime.timedelta(hours=limit)
+
+
 def ready_story(rows: list[dict]) -> dict | None:
-    """The first row the runner may act on: new, retry, approved, or a run that was interrupted (producing)."""
+    """The first row the runner may act on: new, retry, approved, or a run that was interrupted (producing, once
+    its claim has expired)."""
     for state in ("approved", "retry", "producing", "new"):
         for r in rows:
-            if r["state"] == state:
+            if r["state"] == state and not claimed(r):
                 return r
     return None
 
@@ -150,9 +189,34 @@ def overrides_uri(story_uri: str) -> str:
     return f"{head}/{stem}.overrides.yaml" if head else f"{stem}.overrides.yaml"
 
 
+def run_state(root: Path) -> str:
+    """The last run's state from reports/produce.json ('' when there is none)."""
+    try:
+        return str(json.loads((root / "reports" / "produce.json").read_text(encoding="utf-8")).get("state") or "")
+    except (OSError, ValueError):
+        return ""
+
+
 def pending_gate(root: Path) -> str | None:
-    pend = sorted((root / "reviews").glob("*.pending")) if (root / "reviews").exists() else []
-    return pend[0].stem if pend else None
+    """The gate an approval is for: the one the last run stopped at, else the first marker that was never approved.
+    A marker with an .approved sibling is spent (the bucket mirror can bring one back); it is never approved twice."""
+    reviews = root / "reviews"
+    pend = {p.stem for p in reviews.glob("*.pending")} if reviews.exists() else set()
+    state = run_state(root)
+    if state.startswith("awaiting:") and state[9:] in pend:
+        return state[9:]
+    live = sorted(g for g in pend if not (reviews / f"{g}.approved").exists())
+    return live[0] if live else None
+
+
+def approve_gate(root: Path, gate: str) -> None:
+    """Turn the gate's pending marker into its approval, keeping what the marker said (the cost gate's estimate)."""
+    reviews = root / "reviews"
+    reviews.mkdir(parents=True, exist_ok=True)
+    pend = reviews / f"{gate}.pending"
+    text = pend.read_text(encoding="utf-8") if pend.exists() else ""
+    pend.unlink(missing_ok=True)
+    (reviews / f"{gate}.approved").write_text("approved in the queue\n" + text, encoding="utf-8")
 
 
 def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: str | None, produce_fn, learn_fn,
@@ -182,6 +246,9 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
     s = ready_story(rows)
     if s:
         root = projects_dir / s["slug"]
+        was_approved = s["state"] == "approved"
+        s.update(state="producing", updated=now())        # the claim, before the slow restore: no second tick joins in
+        write_story(stories_uri, s)
         try:
             if bucket and not (root / "pipeline.yaml").exists():
                 from ..ops import backup
@@ -195,13 +262,10 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
                              overrides=(yaml.safe_load(extra) or {}) if extra.strip() else None)
             else:
                 apply_row(root, s)                        # the sheet's cap and policy win, every tick
-            if s["state"] == "approved":
+            if was_approved:
                 gate = pending_gate(root)
                 if gate:
-                    (root / "reviews" / f"{gate}.pending").unlink(missing_ok=True)
-                    (root / "reviews" / f"{gate}.approved").write_text("approved in the queue\n", encoding="utf-8")
-            s.update(state="producing", updated=now())
-            save(stories_uri, rows, STORY_COLUMNS)
+                    approve_gate(root, gate)
             report = produce_fn(root, bucket)
             s.update(state=report["state"], note=(report.get("steps", {}).get("publish") or "")
                      if isinstance(report.get("steps", {}).get("publish"), str) else
@@ -211,7 +275,7 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
                 backup.backup(root, bucket, log=lambda *_: None)
         except Exception as exc:
             s.update(state=f"blocked:{type(exc).__name__}", note=str(exc)[:200], updated=now())
-        save(stories_uri, rows, STORY_COLUMNS)
+        write_story(stories_uri, s)
         summary["story"] = {"slug": s["slug"], "state": s["state"]}
         log(f"  story {s['slug']}: {s['state']}")
     if bucket and (summary["reference"] or summary["story"]):

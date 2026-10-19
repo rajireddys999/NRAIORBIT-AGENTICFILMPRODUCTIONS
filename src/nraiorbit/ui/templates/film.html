@@ -18,10 +18,28 @@
 .outline td.small { max-width:420px }
 .report td pre { max-height:220px }
 .section-head { display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin-bottom:12px; flex-wrap:wrap } .section-head h2 { margin:0 }
+.flow { display:flex; flex-wrap:wrap; align-items:stretch; gap:10px 0; margin:0; padding:0; list-style:none }
+.node { flex:1 1 170px; max-width:250px; min-width:0; display:flex; flex-direction:column; border:1px solid var(--line); border-radius:16px; background:var(--card2); position:relative; transition:border-color .15s ease,transform .15s ease }
+.node:hover { border-color:rgba(242,181,68,.45); transform:translateY(-2px) }
+.node .node-body { display:flex; flex-direction:column; gap:7px; padding:14px 14px 12px; color:var(--ink); flex:1 }
+.node .node-body:hover { color:var(--ink) }
+.node .n { font-family:var(--mono); font-size:10px; color:var(--dim); letter-spacing:.1em }
+.node b { font-size:13px; line-height:1.2 } .node .txt { font-size:12px; line-height:1.4 }
+.node .details { margin-top:auto; padding-top:6px; font-size:10px; color:var(--gold); font-weight:800; letter-spacing:.14em; text-transform:uppercase; display:flex; align-items:center; gap:6px }
+.node.done { border-color:rgba(92,211,138,.3) } .node.todo { opacity:.72 } .node.todo:hover { opacity:1 }
+.node.awaiting { border-color:rgba(79,216,240,.6); background:var(--cyan-soft); box-shadow:0 0 0 4px rgba(79,216,240,.12) }
+.node.next { border-color:rgba(242,181,68,.55); background:rgba(242,181,68,.06) } .node.running { box-shadow:0 0 0 4px rgba(242,181,68,.14) }
+.node.blocked { border-color:rgba(255,107,107,.5); background:rgba(255,107,107,.06) }
+.node.held, .node.partial { border-color:rgba(242,181,68,.35) }
+.node .node-act { padding:0 14px 14px; display:flex; flex-direction:column; gap:8px } .node .node-act form { display:block } .node .node-act button, .node .node-act .btn { width:100% }
+.badge.next { background:var(--gold-soft); color:var(--gold) }
+.arrow { flex:0 0 26px; display:flex; align-items:center; justify-content:center; color:rgba(255,255,255,.25) } .node.done + .arrow { color:var(--ok) } .node.awaiting + .arrow, .node.next + .arrow { color:var(--gold) }
+@media (max-width:720px) { .node { flex-basis:100%; max-width:none } .arrow { flex-basis:100%; height:22px } .arrow svg { transform:rotate(90deg) } }
 {% endblock %}
 {% block body %}
 {% set m = f.money %}
 {% set state0 = f.state.split(':')[0] %}
+{% set executing = runner_running and state0 == 'producing' %}
 {% set hue = (f.slug|length) % 8 %}
 {% set shot_count = f.shots|map(attribute='shots')|map('length')|sum %}
 
@@ -52,7 +70,7 @@
 </div>
 
 <div class="toc" style="margin-bottom:20px">
-  {% for key, label in stages %}<a href="#{{ key }}">{{ label }}</a>{% endfor %}<a href="#money">Costs</a><a href="#report">Report</a><a href="#log">Log</a>
+  <a href="#flow">Pipeline</a>{% for key, label in stages %}<a href="#{{ 'money' if key == 'cost' else key }}">{{ label }}</a>{% endfor %}<a href="#report">Report</a><a href="#log">Log</a>
 </div>
 
 <section class="hero" aria-label="Overview">
@@ -71,7 +89,7 @@
       {% if f.gates %}
         {% for g in f.gates %}
           <p>Waiting at the <b>{{ g }}</b> gate.
-          {% if g == 'faces' %}Look at the <a href="#faces">first frames</a>; video is bought only after this.{% elif g == 'story' %}Read the <a href="#story">story bible</a> and <a href="#outline">outline</a>.{% elif g == 'cast' %}Check the <a href="#cast">cast</a>.{% else %}See <a href="#assemble">film &amp; trailer</a>.{% endif %}</p>
+          {% if g == 'faces' %}Look at the <a href="#faces">first frames</a>; video is bought only after this.{% elif g == 'story' %}Read the <a href="#story">story bible</a>.{% elif g == 'outline' %}Read the <a href="#outline">outline</a>.{% elif g == 'scenes' %}Read the <a href="#scenes">scenes and dialogue</a>.{% elif g == 'cast' %}Check the <a href="#cast">cast</a>.{% elif g == 'shots' %}Check the <a href="#shots">shot lists</a>.{% elif g == 'cost' %}Approve the <a href="#money">estimate</a> in the pipeline below; nothing is paid before that.{% elif g == 'render' %}Look at what was <a href="#render">rendered</a> before it is cut.{% elif g == 'publish' %}Watch the <a href="#assemble">film and trailer</a>, then approve the YouTube upload in the pipeline below.{% else %}See <a href="#assemble">film &amp; trailer</a>.{% endif %}</p>
           {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/approve"><input type="hidden" name="gate" value="{{ g }}"><button>Approve {{ g }} and continue</button></form>
           {% else %}<p class="small muted">This film is not in the queue; approve it from Claude Code (<span class="mono">nraiorbit approve {{ f.slug }} {{ g }}</span>).</p>{% endif %}
         {% endfor %}
@@ -79,21 +97,67 @@
         <p>Blocked: <b class="bad">{{ f.state[8:] }}</b>. {{ f.hint or (f.row.note if f.row else '') }}</p>
         {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/retry"><button>Fix is in place, retry</button></form>{% endif %}
       {% elif f.state == 'done' %}<p>Done. The deliverables are under <a href="#deliver">Delivery</a>.</p>
-      {% elif f.state in ['new','approved','retry','producing'] %}<p><span class="live-dot" style="margin-right:8px"></span>The runner is on it (state <b>{{ f.state }}</b>). This page refreshes by itself.</p>
+      {% elif f.state == 'approved' %}<p><span class="live-dot" style="margin-right:8px"></span>Approved. The runner takes it up on its next tick{% if runner_running %} (one is running now){% endif %}; this page refreshes by itself.</p>
+      {% elif f.state in ['new','retry','producing'] %}<p><span class="live-dot" style="margin-right:8px"></span>The runner is on it (state <b>{{ f.state }}</b>). This page refreshes by itself.</p>
       {% else %}<p class="muted">Nothing is waiting on you.</p>{% endif %}
     </div>
     {% if f.bible.logline %}<p class="muted">{{ f.bible.logline }}</p>{% endif %}
-    <div class="stages" style="grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:6px;margin-top:auto">
+    <div class="stages" style="grid-template-columns:repeat(auto-fit,minmax(84px,1fr));gap:6px;margin-top:auto">
       {% for key, label in stages %}{% set s = f.stages[key] %}
-      <a class="stage {{ s.status }}" href="#{{ key }}" title="{{ label }}: {{ s.status }}" style="padding:10px 10px;border-radius:12px;gap:6px"><b style="font-size:9px">{{ label|truncate(12, True, '…') }}</b><div class="bar"><span></span></div></a>
+      <a class="stage {{ s.status }}{% if key == f.next_stage %} producing{% endif %}" href="#{{ 'money' if key == 'cost' else key }}" title="{{ label }}: {{ s.status }}" style="padding:10px 10px;border-radius:12px;gap:6px"><b style="font-size:9px">{{ label|truncate(12, True, '…') }}</b><div class="bar"><span></span></div></a>
       {% endfor %}
     </div>
   </div>
 </section>
 
+<section class="card" id="flow" aria-label="Pipeline">
+  <div class="section-head">
+    <h2>Pipeline</h2>
+    <span class="mono tiny {% if f.gates %}cyan{% elif f.next_stage %}gold{% else %}dim{% endif %}">
+      {% if f.gates %}waiting on you · {{ f.gates|join(', ') }}{% elif f.next_stage %}{{ 'executing now' if executing else 'next up, on the next tick' }} · {{ f.next_stage }}{% else %}read from the plan files, never a second copy{% endif %}
+    </span>
+  </div>
+  <ol class="flow">
+  {% for key, label in stages %}{% set s = f.stages[key] %}{% set gate = f.gate_for.get(key) %}{% set is_next = (key == f.next_stage) %}
+    <li class="node {{ s.status }}{% if is_next %} next{% if executing %} running{% endif %}{% endif %}">
+      <a class="node-body" href="#{{ 'money' if key == 'cost' else key }}" title="{{ label }}: details">
+        <span class="n">{{ '%02d'|format(loop.index) }}</span>
+        <b>{{ label }}</b>
+        {% if gate %}<span class="badge awaiting">needs you</span>
+        {% elif is_next %}<span class="badge next{% if executing %} live{% endif %}">{{ 'executing' if executing else 'next up' }}</span>
+        {% else %}<span class="badge {{ s.status }}">{{ s.status }}</span>{% endif %}
+        {% if s.text %}<span class="txt muted">{{ s.text }}</span>{% endif %}
+        <span class="details">Details <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m6 13 6 6 6-6"/></svg></span>
+      </a>
+      {% if gate %}
+      <div class="node-act">
+        {% if key == 'publish' %}
+          {% if f.media['movie.mp4'] %}<a class="btn quiet sm" href="{{ f.media['movie.mp4'] }}" target="_blank" rel="noopener">View the film</a>{% endif %}
+          {% if f.media['trailer.mp4'] %}<a class="btn quiet sm" href="{{ f.media['trailer.mp4'] }}" target="_blank" rel="noopener">View the trailer</a>{% endif %}
+          {% if f.delivery %}<a class="btn quiet sm" href="{{ f.delivery[0].url or '#deliver' }}">Download{% if f.delivery|length > 1 %} · {{ f.delivery|length }} files{% endif %}</a>{% endif %}
+          {% if f.row %}
+            {% set pol = f.row.publish or f.policy.publish or 'private' %}
+            <form method="post" action="/film/{{ f.slug }}/approve"><input type="hidden" name="gate" value="publish"><button class="sm">Approve YouTube · {{ pol }}</button></form>
+            <span class="tiny dim">Change the visibility under <a href="#money">costs</a> before approving.</span>
+          {% endif %}
+        {% elif key == 'cost' %}
+          {% if f.row %}<form method="post" action="/film/{{ f.slug }}/approve"><input type="hidden" name="gate" value="cost"><button class="sm">Approve {% if f.money.estimate %}{{ f.money.estimate.total_usd|money }}{% else %}cost{% endif %}</button></form>{% endif %}
+          <span class="tiny dim">{% if f.money.cap %}Cap {{ f.money.cap|money }}, {{ f.money.spent|money }} spent.{% else %}No cap set: nothing is paid until one is.{% endif %}</span>
+        {% else %}
+          {% if f.row %}<form method="post" action="/film/{{ f.slug }}/approve"><input type="hidden" name="gate" value="{{ gate }}"><button class="sm">Approve {{ gate }}</button></form>{% endif %}
+        {% endif %}
+        {% if not f.row %}<span class="tiny dim">Not in the queue: <span class="mono">nraiorbit approve {{ f.slug }} {{ gate }}</span></span>{% endif %}
+      </div>
+      {% endif %}
+    </li>
+    {% if not loop.last %}<li class="arrow" aria-hidden="true"><svg width="22" height="14" viewBox="0 0 24 14"><path d="M0 7h18" stroke="currentColor" stroke-width="1.6"/><path d="m14 1 6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></li>{% endif %}
+  {% endfor %}
+  </ol>
+</section>
+
 <div class="grid g2">
   <div class="card money" id="money">
-    <div class="section-head"><h2>Money</h2><span class="mono tiny dim">reports/cost.jsonl · {{ m.items }} paid calls</span></div>
+    <div class="section-head"><h2>Money</h2><span class="mono tiny dim">reports/cost.jsonl · {{ m['items'] }} paid calls</span></div>
     <p><span class="big gold">{{ m.spent|money }}<small>spent</small></span>{% if m.cap %} <span class="muted">of the <b>{{ m.cap|money }}</b> cap ({{ m.left|money }} left)</span>{% else %} · <b class="bad">no cap: nothing paid until one is set</b>{% endif %}</p>
     {% if m.cap %}<div class="bar {% if m.spent > m.cap %}over{% endif %}" style="margin:12px 0"><span style="width:{{ [100, (100 * m.spent / m.cap)|round]|min }}%"></span></div>{% endif %}
     {% if m.estimate %}<p class="small">Next paid run, one attempt per shot: about <b>{{ m.estimate.total_usd|money }}</b>
@@ -108,12 +172,14 @@
     </form>{% endif %}
   </div>
   <div class="card">
-    <div class="section-head"><h2>Stages</h2><span class="mono tiny dim">read from the plan files, never a second copy</span></div>
-    <div class="stages" style="grid-template-columns:repeat(auto-fill,minmax(140px,1fr))">
-      {% for key, label in stages %}{% set s = f.stages[key] %}
-      <a class="stage {{ s.status }}" href="#{{ key }}"><b>{{ label }}</b><span class="badge {{ s.status }}">{{ s.status }}</span><div class="small muted">{{ s.text }}</div><div class="bar"><span></span></div></a>
-      {% endfor %}
-    </div>
+    <div class="section-head"><h2>Runner</h2>{% if runner.project and runner.job %}<span class="badge plain {% if runner_running %}live{% endif %}" style="color:{{ 'var(--ok)' if runner_running else 'var(--muted)' }}">{{ 'tick running' if runner_running else 'idle' }}</span>{% endif %}</div>
+    {% if runner.project and runner.job %}
+      <p class="small muted">Cloud Run job <span class="mono gold">{{ runner.job }}</span>, one tick every 15 minutes; an approval starts one at once. Each tick does one step and stops at the next gate.</p>
+      {% if runner.executions %}<div class="table-wrap"><table><tr><th>Execution</th><th>Started</th><th>State</th></tr>
+      {% for e in runner.executions[:4] %}<tr><td class="mono">{{ e.name }}</td><td class="small muted">{{ e.created|replace('T',' ') }}</td><td><span class="badge {{ e.state }}">{{ e.state }}</span></td></tr>{% endfor %}</table></div>{% endif %}
+      {% if runner.error %}<p class="small muted">Executions unavailable: {{ runner.error }}</p>{% endif %}
+    {% else %}<p class="small muted">No runner configured: this control room reads a local folder, so approvals wait for a manual run.</p>{% endif %}
+    <p class="small dim" style="margin-top:12px">Gates in order: {% for g in ['story','outline','scenes','cast','shots','cost','faces','render','pacing','trailer','publish'] %}<span class="mono">{{ g }}</span>{% if not loop.last %} · {% endif %}{% endfor %}</p>
   </div>
 </div>
 

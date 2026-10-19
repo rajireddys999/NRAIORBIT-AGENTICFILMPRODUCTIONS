@@ -5,6 +5,14 @@ spend and estimate, a page per film with every stage's output (story bible, outl
 lists, first frames, render progress, QA, the film and trailer, delivery links, the YouTube result, the run report
 and the runner's log), approve / retry / cap buttons, and the reference queue.
 
+The film page's pipeline shows the twelve steps joined by arrows, the step under way, and the step that waits for
+you. With `gates: ask` (the template's default) a film stops after every step: story bible, outline, scenes, cast,
+shot lists, the **cost** (the paid stages' estimate, approved before anything is paid), first frames, render, the cut,
+the trailer and the **YouTube upload** (watch the film and the trailer, download the delivery, then approve at the
+visibility the row says). Every stop leaves `reviews/<gate>.pending` in the project; the approve button sets the row
+to `approved`, which the next tick turns into `reviews/<gate>.approved`, and starts that tick at once. `gates: auto`
+waves every gate through.
+
 It writes only `queue/stories.csv`, `queue/references.csv` and `stories/<slug>.*`; the runner does every paid step
 under the row's cap. There is no database: the page can never disagree with what the runner sees.
 

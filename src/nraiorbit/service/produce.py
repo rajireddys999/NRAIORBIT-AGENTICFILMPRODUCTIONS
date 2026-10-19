@@ -1,14 +1,16 @@
 """One story, start to finish, under the project's policy (`nraiorbit produce <slug>`).
 
-    plan (story bible … shots, cues)  →  faces (first frames, checked before video is paid)  →  render (picture,
-    voices, music, lip-sync under the cap)  →  assemble, trailer  →  QA (lip-sync sheets, film check)  →  deliver
-    (720p, bucket, links)  →  publish (YouTube, private by default)  →  backup
+    plan (story bible … shots, cues)  →  cost (the paid stages priced against the cap, approved before anything is
+    paid)  →  faces (first frames, checked before video is paid)  →  render (picture, voices, music, lip-sync under
+    the cap)  →  assemble, trailer  →  QA (lip-sync sheets, film check)  →  deliver (720p, bucket, links)  →
+    publish (YouTube, approved first; private by default)  →  backup
 
 `policy` in the project's pipeline.yaml says how far it goes on its own:
 
     policy:
-      gates: ask | auto        ask: stop at every review gate (story, cast, faces, pacing, trailer) and report
-                               awaiting:<gate>; auto: approve them as they come. The budget cap is never touched.
+      gates: ask | auto        ask: stop at every review gate the project lists (story, outline, scenes, cast, shots,
+                               cost, faces, render, pacing, trailer, publish) and report awaiting:<gate>; auto:
+                               approve them as they come. The budget cap is never touched.
       publish: none | private | unlisted | public
       deliver_days: 7
       tag: ""                  a word in the delivery file names
@@ -28,8 +30,10 @@ from types import SimpleNamespace
 
 from ..costing import BudgetExceeded, SpendLedger
 from ..pipeline import GatePending, Pipeline, PipelineBlocked
+from .queue import GATES as GATE_ORDER
 
-GATE_ORDER = ["story", "cast", "faces", "pacing", "final_cut", "trailer"]
+RUNNER_GATES = ("cost", "faces", "publish")          # raised here, between pipeline runs, not inside a stage
+COST_GROWTH = 0.10                                   # an approved estimate that grows by more than this is asked again
 
 
 def policy_of(cfg: dict, **overrides) -> dict:
@@ -39,10 +43,40 @@ def policy_of(cfg: dict, **overrides) -> dict:
     return pol
 
 
-def approve(pipeline: Pipeline, gate: str) -> None:
+def approve(pipeline: Pipeline, gate: str, text: str = "approved by policy\n") -> None:
     pipeline.p.reviews.mkdir(parents=True, exist_ok=True)
     (pipeline.p.reviews / f"{gate}.pending").unlink(missing_ok=True)
-    (pipeline.p.reviews / f"{gate}.approved").write_text("approved by policy\n", encoding="utf-8")
+    (pipeline.p.reviews / f"{gate}.approved").write_text(text, encoding="utf-8")
+
+
+def approved(pipeline: Pipeline, gate: str) -> bool:
+    return (pipeline.p.reviews / f"{gate}.approved").exists()
+
+
+def approved_figure(pipeline: Pipeline, gate: str) -> float | None:
+    """The estimate the owner approved: the JSON line the marker carried into the approval; None when none was."""
+    try:
+        for line in (pipeline.p.reviews / f"{gate}.approved").read_text(encoding="utf-8").splitlines():
+            if line.startswith("{"):
+                return float(json.loads(line).get("total_usd") or 0)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def hold(pipeline: Pipeline, gate: str, text: str) -> None:
+    """Leave the gate's pending marker, the same file a pipeline gate writes: the control room lists it, and an
+    approval in the queue turns it into <gate>.approved before the next run."""
+    if gate not in GATE_ORDER:                            # a marker no approve button or CLI choice could ever clear
+        raise ValueError(f"unknown gate {gate!r}; the gates are {', '.join(GATE_ORDER)}")
+    pipeline.p.reviews.mkdir(parents=True, exist_ok=True)
+    (pipeline.p.reviews / f"{gate}.pending").write_text(text, encoding="utf-8")
+
+
+def clear(pipeline: Pipeline, gate: str, *suffixes: str) -> None:
+    """Drop a runner gate's markers: a pending one the run passed, an approval that was used up."""
+    for suffix in suffixes or ("pending",):
+        (pipeline.p.reviews / f"{gate}.{suffix}").unlink(missing_ok=True)
 
 
 def _faces_needed(pipeline: Pipeline) -> bool:
@@ -89,19 +123,8 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
             return finish(f"blocked:{str(b)[:120]}")
     report["steps"]["plan"] = "done"
 
-    # 2. faces: first frames for every shot with a lead, then a human look (ask) or straight on (auto)
-    if _faces_needed(pipeline) and pol["gates"] == "ask":
-        if keyframes is not None:
-            try:
-                keyframes(SimpleNamespace(slug=root.name, only=None, max_spend=None, yes=True))
-            except SystemExit as e:                      # the command reports its own reason
-                report["steps"]["faces"] = f"blocked: {e}"
-                return finish(f"blocked:{str(e)[:120]}")
-        report["steps"]["faces"] = "awaiting:faces"
-        return finish("awaiting:faces")
-    report["steps"]["faces"] = "approved" if (pipeline.p.reviews / "faces.approved").exists() else "not needed"
-
-    # 3. the cost gate: what the paid stages would cost against what is left of the cap, before anything is paid
+    # 2. the cost gate: what the paid stages would cost against what is left of the cap, before anything is paid.
+    #    Over the cap it blocks; under it the owner approves the figure (ask) or it goes straight on (auto).
     block, preview = cost_gate(pipeline)
     if preview:
         report["steps"]["estimate"] = {k: preview[k] for k in ("total_usd", "video_usd", "keyframe_usd", "tts_usd",
@@ -109,6 +132,35 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
     if block:
         report["steps"]["render"] = block["why"]
         return finish(block["state"])
+    total = float(preview.get("total_usd") or 0) if preview else 0.0
+    if total > 0:
+        was = approved_figure(pipeline, "cost") if approved(pipeline, "cost") else None
+        grown = was is not None and total > was * (1 + COST_GROWTH) + 0.5     # the plan changed since the approval
+        if not approved(pipeline, "cost") or grown:
+            marker = json.dumps(report["steps"]["estimate"]) + "\n"
+            if pol["gates"] == "ask":
+                clear(pipeline, "cost", "approved")
+                hold(pipeline, "cost", marker)
+                report["steps"]["cost"] = "awaiting:cost" + (f" (the estimate grew from {was:.2f} to {total:.2f})"
+                                                             if grown else "")
+                return finish("awaiting:cost")
+            approve(pipeline, "cost", "approved by policy\n" + marker)
+    clear(pipeline, "cost")                                   # passed: never shown as waiting
+    report["steps"]["cost"] = "approved" if approved(pipeline, "cost") else "not needed"
+
+    # 3. faces: first frames for every shot with a lead, then a human look (ask) or straight on (auto)
+    if _faces_needed(pipeline) and pol["gates"] == "ask":
+        if keyframes is not None:
+            try:
+                keyframes(SimpleNamespace(slug=root.name, only=None, max_spend=None, yes=True))
+            except SystemExit as e:                      # the command reports its own reason
+                report["steps"]["faces"] = f"blocked: {e}"
+                return finish(f"blocked:{str(e)[:120]}")
+        hold(pipeline, "faces", "Look at the first frames in the control room, then approve faces.\n")
+        report["steps"]["faces"] = "awaiting:faces"
+        return finish("awaiting:faces")
+    clear(pipeline, "faces")
+    report["steps"]["faces"] = "approved" if approved(pipeline, "faces") else "not needed"
 
     # 4. the paid stages, assembly and trailer under the cap
     while True:
@@ -151,15 +203,23 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
         report["steps"]["deliver"] = f"failed: {type(exc).__name__}: {str(exc)[:160]}"
         return finish("blocked:deliver")
 
-    # 6. YouTube, private unless the policy says otherwise; only when the film check passed; never a browser
+    # 6. YouTube, private unless the policy says otherwise; approved by the owner first (ask), and on its own only
+    #    when the film check passed (auto); never a browser
     if pol["publish"] not in ("private", "unlisted", "public"):
+        clear(pipeline, "publish")
         report["steps"]["publish"] = "none"
-    elif report["steps"].get("qa_film") != "ok":
+    elif pol["gates"] == "ask" and not approved(pipeline, "publish"):
+        hold(pipeline, "publish", f"Watch the film and the trailer, then approve the {pol['publish']} YouTube upload.\n")
+        report["steps"]["publish"] = "awaiting:publish"
+        return finish("awaiting:publish")
+    elif report["steps"].get("qa_film") != "ok" and not approved(pipeline, "publish"):
+        clear(pipeline, "publish")
         report["steps"]["publish"] = "held: the film check did not pass; look at reports/qa/film.json, then " \
                                      "`nraiorbit release youtube <slug>`"
     else:
         try:
             report["steps"]["publish"] = publish_youtube(root, pol["publish"])
+            clear(pipeline, "publish", "pending", "approved")     # one approval, one upload: a new cut asks again
         except Exception as exc:
             report["steps"]["publish"] = f"skipped: {type(exc).__name__}: {str(exc)[:160]}"
 
@@ -216,14 +276,44 @@ def publish_youtube(root: Path, privacy: str) -> dict:
     outline = Outline.model_validate_json((root / "02_outline.json").read_text(encoding="utf-8"))
     creds = youtube.credentials(secrets, token, interactive=False)
     master = root / "11_master"
-    out = {}
+    done_path = root / "reports" / "youtube.json"           # what was uploaded, per file: the same file never twice
+    try:
+        out = json.loads(done_path.read_text(encoding="utf-8")) if done_path.exists() else {}
+    except ValueError:
+        out = {}
+
+    def record():
+        done_path.parent.mkdir(parents=True, exist_ok=True)
+        done_path.write_text(json.dumps(out, indent=1, default=str), encoding="utf-8")
+
     meta = youtube.build_metadata(bible, outline, privacy=privacy)
     captions = {lang: master / f"subs_{lang}.srt" for lang in ("te", "en") if (master / f"subs_{lang}.srt").exists()}
     thumb = master / "thumbnail.png"
-    out["film"] = youtube.upload(master / "movie.mp4", meta, creds, captions=captions,
-                                 thumbnail=thumb if thumb.exists() else None)
-    if (master / "trailer.mp4").exists():
+    if not uploaded_already(out, "film", master / "movie.mp4"):
+        video_id = youtube.upload(master / "movie.mp4", meta, creds, captions=captions,
+                                  thumbnail=thumb if thumb.exists() else None)
+        out["film"] = {"id": video_id, "file": fingerprint(master / "movie.mp4")}
+        record()
+    if (master / "trailer.mp4").exists() and not uploaded_already(out, "trailer", master / "trailer.mp4"):
         tmeta = youtube.build_metadata(bible, outline, privacy=privacy)
         tmeta["snippet"]["title"] = f"{bible.title_te} ({bible.title_en}) | Official Trailer"[:100]
-        out["trailer"] = youtube.upload(master / "trailer.mp4", tmeta, creds)
+        out["trailer"] = {"id": youtube.upload(master / "trailer.mp4", tmeta, creds),
+                          "file": fingerprint(master / "trailer.mp4")}
+        record()
     return out
+
+
+def fingerprint(path: Path) -> dict:
+    """What identifies a cut: its size and content hash, so a re-cut (even one restored over an old record) is new."""
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return {"bytes": path.stat().st_size, "sha256": h.hexdigest()}
+
+
+def uploaded_already(record: dict, asset: str, path: Path) -> bool:
+    """True when the record says this very file (same size and hash) went up; an old record of another cut does not."""
+    rec = record.get(asset)
+    return isinstance(rec, dict) and rec.get("file") == fingerprint(path)

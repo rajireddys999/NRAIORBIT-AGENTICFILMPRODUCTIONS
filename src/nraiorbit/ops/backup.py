@@ -54,8 +54,8 @@ def backup(project_root: Path, bucket: str | None = None, sets=None, log=print) 
         if not local.exists():
             continue
         log(f"  {local.relative_to(Path(project_root))} -> {remote}")
-        (gcs.rsync if kind == "folder" else gcs.copy)(local, remote)
-        done += 1
+        (gcs.rsync if kind == "folder" else gcs.copy)(local, remote)      # never deletes: a marker the runner
+        done += 1                                                          # consumed may come back; it is spent
     return done
 
 

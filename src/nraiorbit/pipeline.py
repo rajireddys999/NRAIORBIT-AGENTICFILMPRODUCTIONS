@@ -43,7 +43,12 @@ from .shotpack import clips_for, selected
 from .schemas import CastLock, Critique, Cue, CueSheet, Outline, SceneScript, ShotList, StoryBible
 
 STAGES = ["story_bible", "outline", "scenes", "cast", "shots", "music_plan", "render", "assemble", "trailer"]
-STAGE_GATES = {"story_bible": "story", "cast": "cast", "assemble": "pacing", "trailer": "trailer"}
+STAGE_GATES = {"story_bible": "story", "outline": "outline", "scenes": "scenes", "cast": "cast", "shots": "shots",
+               "render": "render", "assemble": "pacing", "trailer": "trailer"}
+# The step gates sit between stages (run() raises them after the stage) and fire only when the project's
+# review_gates lists them: the control room's template does, so a queued film stops at every step; a project that
+# never mentions them (the CLI's defaults, the demo configs) runs through as before.
+STEP_GATES = {"outline", "scenes", "shots", "render"}
 DIALOGUE_LEAD_IN_S = 0.2
 DIALOGUE_GAP_S = 0.25        # breath between consecutive lines
 
@@ -121,6 +126,8 @@ class Pipeline:
         for stage in STAGES:
             self.log(f"[{stage}]")
             getattr(self, f"_{stage}")()
+            if STAGE_GATES.get(stage) in STEP_GATES:
+                self.gate(STAGE_GATES[stage])
             if stage == until:
                 return
 
@@ -135,6 +142,14 @@ class Pipeline:
             if gate:
                 for suffix in ("approved", "pending"):
                     (self.p.reviews / f"{gate}.{suffix}").unlink(missing_ok=True)
+        # the runner's own gates (service/produce) answer for what follows: a replan or a re-render needs the cost
+        # and the first frames approved again; a new cut needs the upload approved again
+        for name, upto in (("cost", "render"), ("faces", "render"), ("publish", "trailer")):
+            if STAGES.index(stage) <= STAGES.index(upto):
+                for suffix in ("approved", "pending"):
+                    (self.p.reviews / f"{name}.{suffix}").unlink(missing_ok=True)
+        if STAGES.index(stage) <= STAGES.index("trailer"):
+            (self.p.reports / "youtube.json").unlink(missing_ok=True)      # a new cut is a new upload
 
     def status(self) -> dict[str, str]:
         out = {}
@@ -148,7 +163,10 @@ class Pipeline:
         return out
 
     def gate(self, name: str) -> None:
-        g = self.cfg.get("review_gates", {}).get(name, {})
+        gates = self.cfg.get("review_gates") or {}
+        if name in STEP_GATES and name not in gates:          # a step gate the project never asked for
+            return
+        g = gates.get(name) or {}
         if not g.get("enabled", True) or g.get("auto_approve", False):
             return
         if (self.p.reviews / f"{name}.approved").exists():

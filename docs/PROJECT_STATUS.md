@@ -255,8 +255,10 @@ _Last updated: 2026-10-15. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
   that came with it: the library (identity packs, reference profiles) and the gates' review marks are now backed up
   and restored around every tick (a fresh container no longer pays for identity images again), the sheet's cap,
   gates and publish reach the project on every tick, `<story>.overrides.yaml` sets runtime and cast, and a
-  reference row carries its minutes for the cost guard. Still needed for a film queued from the page to plan itself:
-  an Anthropic API key as the secret ANTHROPIC_API_KEY attached to the runner job. Sign-in moved from IAP (no
+  reference row carries its minutes for the cost guard. The runner now plans films queued from the page itself: the
+  secret ANTHROPIC_API_KEY is attached to the job with `ANTHROPIC_WORKSPACE_ID` (an organization-level key must name
+  its workspace on every request), and the first page-queued film, monkey-saves-man, wrote its story bible
+  ("Vaanara Veerudu", 5 characters, 9 acts) and stopped at the story gate on 2026-10-19. Sign-in moved from IAP (no
   Google-managed OAuth client in a project without an organization) to "Sign in with Google" in the page plus a
   Secret Manager passphrase; **Connect YouTube** on the board stores the channel's upload token in Secret Manager
   (YOUTUBE_TOKEN_JSON) and the runner reads it when publishing (2026-10-19).

@@ -15,9 +15,9 @@ template. **Keep godavari10 on `sync_silence: always` and without the grid**: it
 are keyed to the old crops; changing either re-makes crops and pays sync.so again.
 
 The control room (docs/FRAMEWORK.md §8, deploy/ui/) is live behind Google sign-in for the owner's account; its link is
-in docs/PROJECT_STATUS.md. It is a viewer over the bucket plus the queue buttons. Films queued there need an Anthropic
-API key in the runner (secret ANTHROPIC_API_KEY attached to the job) for the planning agents; until then plan in
-Claude Code, back up, and queue the row, and the runner carries on from the first frames.
+in docs/PROJECT_STATUS.md. It is a viewer over the bucket plus the queue buttons. Films queued there are planned by
+the runner itself (secret ANTHROPIC_API_KEY plus ANTHROPIC_WORKSPACE_ID on the job); monkey-saves-man is the first,
+waiting at the story gate.
 
 ## Where things stand (2026-10-17): voice E, lips by sync.so sync-3
 

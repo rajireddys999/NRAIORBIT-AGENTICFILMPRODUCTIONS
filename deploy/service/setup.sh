@@ -20,14 +20,17 @@ for role in roles/aiplatform.user roles/storage.objectAdmin roles/secretmanager.
 done
 
 # 3. secrets: create each once with `printf %s "$VALUE" | gcloud secrets create NAME --data-file=-`
-#    SYNC_API_KEY, ELEVENLABS_API_KEY, GOOGLE_APPLICATION_CREDENTIALS_JSON (a key for a signing-capable SA),
+#    ANTHROPIC_API_KEY (planning agents; an organization-level key also needs ANTHROPIC_WORKSPACE_ID=wrkspc_… in
+#    ENV below, a workspace-scoped key does not), SYNC_API_KEY, ELEVENLABS_API_KEY,
+#    GOOGLE_APPLICATION_CREDENTIALS_JSON (a key for a signing-capable SA),
 #    YOUTUBE_TOKEN_JSON (made once on a laptop with `nraiorbit release youtube <slug> --dry-run` then the OAuth flow)
-SECRETS="SYNC_API_KEY=SYNC_API_KEY:latest,ELEVENLABS_API_KEY=ELEVENLABS_API_KEY:latest,GOOGLE_APPLICATION_CREDENTIALS_JSON=GOOGLE_APPLICATION_CREDENTIALS_JSON:latest"
+SECRETS="ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,SYNC_API_KEY=SYNC_API_KEY:latest,ELEVENLABS_API_KEY=ELEVENLABS_API_KEY:latest,GOOGLE_APPLICATION_CREDENTIALS_JSON=GOOGLE_APPLICATION_CREDENTIALS_JSON:latest"
+ENV="GOOGLE_CLOUD_PROJECT=$PROJECT,GOOGLE_CLOUD_LOCATION=$REGION${ANTHROPIC_WORKSPACE_ID:+,ANTHROPIC_WORKSPACE_ID=$ANTHROPIC_WORKSPACE_ID}"
 
 # 4. the job: 4 vCPU, 8 GiB, up to 6 hours per tick, one task
 gcloud run jobs deploy nraiorbit-runner --project "$PROJECT" --region "$REGION" --image "$IMAGE" \
   --service-account "$SA" --cpu 4 --memory 8Gi --task-timeout 6h --max-retries 0 --tasks 1 \
-  --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT,GOOGLE_CLOUD_LOCATION=$REGION" \
+  --set-env-vars "$ENV" \
   --set-secrets "$SECRETS" \
   --args="--stories,gs://$BUCKET/queue/stories.csv,--references,gs://$BUCKET/queue/references.csv,--bucket,$BUCKET"
 

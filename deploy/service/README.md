@@ -10,7 +10,9 @@ CPU-hours of Cloud Run over its life (under $1) plus the paid models, which the 
 | `queue/references.csv` | url, title, learn (all/score/emotion/action/characters/trailer), state, profile_uri, note, updated | new → done / blocked:\<reason\> |
 
 Setup: `PROJECT=… REGION=us-central1 BUCKET=… deploy/service/setup.sh` (image, service account, secrets, job,
-schedule). Secrets to create first in Secret Manager: `SYNC_API_KEY`, `ELEVENLABS_API_KEY`,
+schedule). Secrets to create first in Secret Manager: `ANTHROPIC_API_KEY` (the planning agents; an
+organization-level key also needs the env var `ANTHROPIC_WORKSPACE_ID=wrkspc_…` on the job, a workspace-scoped key
+needs nothing), `SYNC_API_KEY`, `ELEVENLABS_API_KEY`,
 `GOOGLE_APPLICATION_CREDENTIALS_JSON` (a key for a service account that can sign download links) and, for
 publishing, `YOUTUBE_TOKEN_JSON` (the OAuth token made once on a laptop with `nraiorbit release youtube <slug>
 --auth`; without it a row's upload is reported as skipped and the film still lands in the bucket). The repository's
@@ -18,8 +20,9 @@ publishing, `YOUTUBE_TOKEN_JSON` (the OAuth token made once on a laptop with `nr
 
 Deployed 2026-10-17 in `nraiorbit-agentic-film-product` (us-central1): the job `nraiorbit-runner` runs as
 `nraiorbit-runner@…` (Vertex AI user, bucket objects, secret access, logs), the scheduler `nraiorbit-runner-tick`
-fires it every 15 minutes, and the queues live at `gs://nraiorbit-agentic-film-product-media/queue/`. The three
-model secrets are in Secret Manager; the YouTube token is not yet (publishing waits for it).
+fires it every 15 minutes, and the queues live at `gs://nraiorbit-agentic-film-product-media/queue/`. The four
+model secrets and the YouTube token (stored by **Connect YouTube** in the control room) are in Secret Manager;
+the job carries `ANTHROPIC_WORKSPACE_ID` for the organization-level key (2026-10-19).
 
 Before anything is paid, `produce` prices the row's run and blocks without a cap or over it (docs/FRAMEWORK.md §7):
 a row needs `budget_usd`. Watch a tick: `gcloud run jobs executions list --job nraiorbit-runner --region us-central1`

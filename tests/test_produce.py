@@ -71,7 +71,8 @@ def test_policy_overrides_and_faces_gate_rule(tmp_path):
 def test_a_fresh_container_with_only_the_backed_up_sets_still_cuts_the_trailer(tmp_path, monkeypatch):
     """The incident: a tick stops at the pacing gate and backs the project up; the approval tick starts on an empty
     disk with only the backed-up sets (no 10_edit, no 07_video, no 05_dialogue). The render step re-makes the
-    timeline from the caches, assembly masters again because the trailer's source is gone, and the trailer is cut."""
+    timeline from the caches, assembly masters again because the trailer's source is gone, the cards go on the new
+    master once (never a second time over the restored, already carded one), and the trailer is cut."""
     import shutil
 
     from nraiorbit.ops import backup
@@ -79,13 +80,15 @@ def test_a_fresh_container_with_only_the_backed_up_sets_still_cuts_the_trailer(t
     root = tmp_path / "demo"
     (root / "input").mkdir(parents=True)
     (root / "input" / "story.md").write_text(DEMO_PLOT, encoding="utf-8")
+    title = {"kind": "title", "at_s": 1.0, "length_s": 1.5, "text_en": "MONKEY SAVES MAN"}
     cfg = deep_merge(DEMO_CONFIG, {"review_gates": {"pacing": {"enabled": True, "auto_approve": False}},
-                                   "policy": {"gates": "ask", "publish": "none"}})
+                                   "policy": {"gates": "ask", "publish": "none"}, "cards": [title]})
     (root / "pipeline.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
     p = Pipeline(root, demo_llm(), cfg=load_pipeline_config(root), log=lambda *_: None)
     report = produce.produce(p, log=lambda *_: None)
     assert report["state"] == "awaiting:pacing" and (p.p.master / "movie.mp4").exists()
     assert (p.p.edit / "film_dialogue.mp4").exists() and not (p.p.master / "trailer.mp4").exists()
+    assert (p.p.edit / "movie_nocards.mp4").exists()                     # the master in 11_master carries the card
     fresh = tmp_path / "fresh" / "demo"                                  # what a new container restores, no more
     for kind, local, _ in backup.pairs(root, "bucket"):
         if not local.exists():
@@ -102,6 +105,9 @@ def test_a_fresh_container_with_only_the_backed_up_sets_still_cuts_the_trailer(t
     report = produce.produce(q, log=lambda *_: None)
     assert report["state"] == "done", report
     assert (q.p.master / "trailer.mp4").exists() and (q.p.edit / "film_dialogue.mp4").exists()
+    carded = json.loads((q.p.edit / "cards.json").read_text(encoding="utf-8"))
+    assert [c["kind"] for c in carded] == ["title"] and carded[0]["text_en"] == "MONKEY SAVES MAN"
+    assert (q.p.edit / "movie_nocards.mp4").exists()                     # carded once, from the fresh clean master
     assert report["ledger_usd"] == 0.0                                   # nothing paid on the way
 
 

@@ -152,6 +152,34 @@ def test_an_upload_record_speaks_only_for_the_very_file_it_recorded(tmp_path):
     assert not produce.uploaded_already({"film": {"id": "vid1"}}, "film", movie)   # a record with no fingerprint
 
 
+def test_publishing_uploads_each_cut_once_and_records_it(tmp_path, monkeypatch):
+    """The real publish path with YouTube's own return type (a video id string): the film and the trailer go up
+    once each and are recorded; a second run uploads nothing; a re-cut trailer goes up again, the film does not."""
+    from nraiorbit.demo import OUTLINE, STORY_BIBLE
+    from nraiorbit.publish import youtube
+    from nraiorbit.schemas import Outline, StoryBible
+    root = tmp_path / "film"
+    (root / "11_master").mkdir(parents=True)
+    (root / "01_story_bible.json").write_text(StoryBible.model_validate(STORY_BIBLE).model_dump_json(), encoding="utf-8")
+    (root / "02_outline.json").write_text(Outline.model_validate(OUTLINE).model_dump_json(), encoding="utf-8")
+    (root / "11_master" / "movie.mp4").write_bytes(b"the film")
+    (root / "11_master" / "trailer.mp4").write_bytes(b"the trailer")
+    monkeypatch.setenv("YOUTUBE_CLIENT_SECRETS", str(tmp_path / "missing.json"))
+    monkeypatch.setattr(youtube, "token_available", lambda token: True)
+    monkeypatch.setattr(youtube, "credentials", lambda secrets, token, interactive=True: "creds")
+    monkeypatch.setattr(youtube, "build_metadata", lambda bible, outline, privacy: {"snippet": {"title": "t"}})
+    sent = []
+    monkeypatch.setattr(youtube, "upload", lambda video, meta, creds, captions=None, thumbnail=None:
+                        sent.append(video.name) or f"id-{len(sent)}")
+    out = produce.publish_youtube(root, "private")
+    assert sent == ["movie.mp4", "trailer.mp4"] and out["film"]["id"] == "id-1" and out["trailer"]["id"] == "id-2"
+    assert (root / "reports" / "youtube.json").exists()
+    assert produce.publish_youtube(root, "private") == out and sent == ["movie.mp4", "trailer.mp4"]
+    (root / "11_master" / "trailer.mp4").write_bytes(b"the trailer, re-cut")
+    out = produce.publish_youtube(root, "private")
+    assert sent == ["movie.mp4", "trailer.mp4", "trailer.mp4"] and out["trailer"]["id"] == "id-3"
+
+
 def test_the_cost_approval_remembers_the_figure(tmp_path):
     p = _p(tmp_path, {})
     produce.hold(p, "cost", '{"total_usd": 12.5}\n')

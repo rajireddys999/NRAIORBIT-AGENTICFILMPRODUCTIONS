@@ -290,14 +290,15 @@ def publish_youtube(root: Path, privacy: str) -> dict:
     captions = {lang: master / f"subs_{lang}.srt" for lang in ("te", "en") if (master / f"subs_{lang}.srt").exists()}
     thumb = master / "thumbnail.png"
     if not uploaded_already(out, "film", master / "movie.mp4"):
-        out["film"] = {**youtube.upload(master / "movie.mp4", meta, creds, captions=captions,
-                                        thumbnail=thumb if thumb.exists() else None),
-                       "file": fingerprint(master / "movie.mp4")}
+        video_id = youtube.upload(master / "movie.mp4", meta, creds, captions=captions,
+                                  thumbnail=thumb if thumb.exists() else None)
+        out["film"] = {"id": video_id, "file": fingerprint(master / "movie.mp4")}
         record()
     if (master / "trailer.mp4").exists() and not uploaded_already(out, "trailer", master / "trailer.mp4"):
         tmeta = youtube.build_metadata(bible, outline, privacy=privacy)
         tmeta["snippet"]["title"] = f"{bible.title_te} ({bible.title_en}) | Official Trailer"[:100]
-        out["trailer"] = {**youtube.upload(master / "trailer.mp4", tmeta, creds), "file": fingerprint(master / "trailer.mp4")}
+        out["trailer"] = {"id": youtube.upload(master / "trailer.mp4", tmeta, creds),
+                          "file": fingerprint(master / "trailer.mp4")}
         record()
     return out
 

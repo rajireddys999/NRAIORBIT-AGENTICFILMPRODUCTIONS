@@ -73,10 +73,13 @@ def test_a_bucket_that_keeps_spent_markers_does_not_deadlock_the_queue(tmp_path,
     template = projects / "_template"
     template.mkdir(parents=True)
     (template / "pipeline.yaml").write_text("providers: {video: mock}\n", encoding="utf-8")
-    monkeypatch.setattr(backup, "restore", lambda root, b, log=None: (bucket / root.name).exists()
-                        and shutil.copytree(bucket / root.name, root, dirs_exist_ok=True))
-    monkeypatch.setattr(backup, "backup",
-                        lambda root, b, log=None: shutil.copytree(root, bucket / root.name, dirs_exist_ok=True))
+    def restore_report(root, b, log=None):                # bucket -> empty disk, nothing ever missing or failing
+        if (bucket / root.name).exists():
+            shutil.copytree(bucket / root.name, root, dirs_exist_ok=True)
+        return 1, []
+    monkeypatch.setattr(backup, "restore_report", restore_report)
+    monkeypatch.setattr(backup, "backup", lambda root, b, log=None, mirror_reviews=False:
+                        shutil.copytree(root, bucket / root.name, dirs_exist_ok=True))    # a union: nothing deleted
     monkeypatch.setattr(backup, "sync_library", lambda *a, **k: None)
     order = ["story", "outline", "scenes", "cast"]
 
@@ -205,3 +208,159 @@ def test_one_films_row_is_written_without_touching_the_others(tmp_path):
     assert rows["a"]["budget_usd"] == "50" and rows["a"]["publish"] == "private"   # the owner's columns survive
     queue.write_story(str(st), {**base, "slug": "c", "state": "new"})
     assert [r["slug"] for r in queue.load(str(st), queue.STORY_COLUMNS)] == ["a", "b", "c"]
+
+
+# ------------------------------------------------------------------ the bucket as GCS sees it: objects with generations
+
+class _Obj:
+    def __init__(self, text, generation):
+        self.text, self.generation = text, generation
+
+
+class _FakeBlob:
+    def __init__(self, objects, key, generation):
+        self._o, self.key, self.generation = objects, key, generation
+
+    def download_as_text(self):
+        return self._o[self.key].text
+
+    def upload_from_string(self, text, content_type=None, if_generation_match=None):
+        from google.api_core.exceptions import PreconditionFailed
+        cur = self._o.get(self.key)
+        gen = cur.generation if cur else 0
+        if if_generation_match is not None and if_generation_match != gen:
+            raise PreconditionFailed("stale generation")
+        self._o[self.key] = _Obj(text, gen + 1)
+
+
+class _FakeBucket:
+    def __init__(self, objects):
+        self._o = objects
+
+    def get_blob(self, key):
+        o = self._o.get(key)
+        return _FakeBlob(self._o, key, o.generation) if o else None
+
+    def blob(self, key):
+        return _FakeBlob(self._o, key, 0)
+
+
+class _FakeClient:
+    def __init__(self, objects):
+        self._o = objects
+
+    def bucket(self, name):
+        return _FakeBucket(self._o)
+
+
+def _fake_bucket(monkeypatch) -> dict:
+    from nraiorbit.release import gcs
+    objects: dict = {}
+    monkeypatch.setattr(gcs, "STORAGE_FACTORY", lambda: _FakeClient(objects))
+    return objects
+
+
+_ROW = {"story_uri": "", "budget_usd": "1", "gates": "ask", "publish": "none", "note": "", "updated": ""}
+
+
+def test_a_sheet_write_lands_only_on_the_generation_it_read_and_redoes_itself(monkeypatch):
+    """The tick's claim and a save in the control room, seconds apart: the second writer's precondition fails, it
+    reads the sheet again, redoes its change on top of the first writer's, and nothing is lost."""
+    from nraiorbit.service import queue
+    objects = _fake_bucket(monkeypatch)
+    uri, key = "gs://bkt/queue/stories.csv", "queue/stories.csv"
+    rows = [{**_ROW, "slug": "a", "state": "new"}, {**_ROW, "slug": "b", "state": "approved"}]
+    queue.update_text(uri, lambda t: queue.csv_of(rows, queue.STORY_COLUMNS))
+    assert objects[key].generation == 1
+    reads = []
+
+    def claim(text):                                      # the tick claims b; between its read and write the owner
+        reads.append(text)                                # lowers a's cap from the control room
+        if len(reads) == 1:
+            other = queue.rows_of(text, queue.STORY_COLUMNS)
+            other[0]["budget_usd"] = "50"
+            _FakeBlob(objects, key, 0).upload_from_string(queue.csv_of(other, queue.STORY_COLUMNS))
+        mine = queue.rows_of(text, queue.STORY_COLUMNS)
+        mine[1]["state"] = "producing"
+        return queue.csv_of(mine, queue.STORY_COLUMNS)
+    queue.update_text(uri, claim)
+    final = {r["slug"]: r for r in queue.rows_of(objects[key].text, queue.STORY_COLUMNS)}
+    assert len(reads) == 2 and objects[key].generation == 3
+    assert final["a"]["budget_usd"] == "50" and final["b"]["state"] == "producing"
+    queue.write_story(uri, {**_ROW, "slug": "b", "state": "done"})        # the result, through the same path
+    assert queue.rows_of(objects[key].text, queue.STORY_COLUMNS)[1]["state"] == "done"
+    assert queue.update_text(uri, lambda t: None) == objects[key].text and objects[key].generation == 4
+
+
+def test_the_control_room_edits_a_row_under_the_same_precondition(monkeypatch):
+    from nraiorbit.service import queue
+    from nraiorbit.ui.store import Store
+    objects = _fake_bucket(monkeypatch)
+    store, key = Store("gs://bkt/films"), "films/queue/stories.csv"
+    seed = queue.csv_of([{**_ROW, "slug": "a", "state": "awaiting:story"}], queue.STORY_COLUMNS)
+    store.update_text("queue/stories.csv", lambda t: seed, "text/csv")
+    reads = []
+
+    def approve(text):                                    # the owner approves; a tick's note lands in between
+        reads.append(text)
+        if len(reads) == 1:
+            rows = queue.rows_of(text, queue.STORY_COLUMNS)
+            rows[0]["note"] = "a tick wrote this"
+            _FakeBlob(objects, key, 0).upload_from_string(queue.csv_of(rows, queue.STORY_COLUMNS))
+        rows = queue.rows_of(text, queue.STORY_COLUMNS)
+        rows[0]["state"] = "approved"
+        return queue.csv_of(rows, queue.STORY_COLUMNS)
+    store.update_text("queue/stories.csv", approve, "text/csv")
+    row = queue.rows_of(objects[key].text, queue.STORY_COLUMNS)[0]
+    assert len(reads) == 2 and row["state"] == "approved" and row["note"] == "a tick wrote this"
+    assert store.update_text("queue/stories.csv", lambda t: None, "text/csv") == objects[key].text
+
+
+def test_a_failed_restore_of_the_markers_or_the_ledger_stops_the_tick_before_produce(tmp_path, monkeypatch):
+    from nraiorbit.ops import backup
+    from nraiorbit.service import queue
+    st, rf = tmp_path / "stories.csv", tmp_path / "references.csv"
+    queue.save(str(st), [{**_ROW, "slug": "rain", "story_uri": str(tmp_path / "rain.md"), "state": "new"}],
+               queue.STORY_COLUMNS)
+    queue.save(str(rf), [], queue.REFERENCE_COLUMNS)
+    (tmp_path / "rain.md").write_text("A ferryman and a flood.", encoding="utf-8")
+    projects = tmp_path / "projects"
+    (projects / "_template").mkdir(parents=True)
+    (projects / "_template" / "pipeline.yaml").write_text("providers: {video: mock}\n", encoding="utf-8")
+    monkeypatch.setattr(backup, "sync_library", lambda *a, **k: None)
+    monkeypatch.setattr(backup, "restore_report", lambda root, b, log=None: (2, ["reviews"]))
+    ran, seen = [], {}
+    kw = dict(bucket="b", produce_fn=lambda r, b: ran.append(1) or {"state": "done", "steps": {}}, learn_fn=None,
+              template=projects / "_template", log=lambda *_: None)
+    queue.tick(str(st), str(rf), projects, **kw)
+    row = queue.load(str(st), queue.STORY_COLUMNS)[0]
+    assert ran == [] and row["state"] == "retry" and "reviews" in row["note"]   # nothing run, nothing blamed on the film
+    # an empty bucket (a first run) is no failure: produce runs, and the backup may mirror the markers it restored
+    monkeypatch.setattr(backup, "restore_report", lambda root, b, log=None: (0, []))
+    monkeypatch.setattr(backup, "backup", lambda root, b, log=None, mirror_reviews=False: seen.update(mirror=mirror_reviews))
+    queue.tick(str(st), str(rf), projects, **kw)
+    assert ran == [1] and seen == {"mirror": True} and queue.load(str(st), queue.STORY_COLUMNS)[0]["state"] == "done"
+
+
+def test_restore_reports_a_failure_but_not_an_empty_bucket_and_the_mirror_is_opt_in(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from nraiorbit.ops import backup
+    from nraiorbit.release import gcs
+
+    def rsync(src, dst, delete=False):
+        if "reviews" in str(src):
+            raise gcs.BucketError("gcloud storage rsync failed: Did not find existing object gs://bkt/film/reviews")
+        if "reports" in str(src):
+            raise gcs.BucketError("gcloud storage rsync failed: 503 backend error")
+    monkeypatch.setattr(gcs, "rsync", rsync)
+    monkeypatch.setattr(gcs, "copy", lambda src, dst: None)
+    done, failed = backup.restore_report(tmp_path / "film", "bkt", ["reviews", "reports", "inbox"], log=lambda *_: None)
+    assert (done, failed) == (1, ["reports"])
+    calls = []
+    monkeypatch.setattr(gcs, "rsync", lambda src, dst, delete=False: calls.append((Path(src).name, delete)))
+    backup.backup(tmp_path / "film", "bkt", ["reviews", "inbox"], log=lambda *_: None, mirror_reviews=True)
+    assert calls == [("reviews", True), ("inbox", False)]
+    calls.clear()
+    backup.backup(tmp_path / "film", "bkt", ["reviews", "inbox"], log=lambda *_: None)
+    assert calls == [("reviews", False), ("inbox", False)]

@@ -31,38 +31,59 @@ DEFAULT_SETS = ["inbox", "cache", "keyframes", "music", "reports", "master", "sc
 LIBRARY_SETS = ("characters", "references")     # library/<set> <-> gs://bucket/library/<set>, shared by every film
 
 
-def pairs(project_root: Path, bucket: str, sets=None) -> list[tuple[str, Path, str]]:
-    """(kind, local path, gs:// uri) for every set asked for: 'folder' pairs sync, 'file' pairs copy."""
+def named_pairs(project_root: Path, bucket: str, sets=None) -> list[tuple[str, str, Path, str]]:
+    """(set name, kind, local path, gs:// uri) for every set asked for: 'folder' pairs sync, 'file' pairs copy."""
     project_root = Path(project_root)
     slug = project_root.name
     out = []
     for name in (sets or DEFAULT_SETS):
         if name == "files":
             for f in FILES:
-                out.append(("file", project_root / f, f"gs://{bucket}/{slug}/project/{f}"))
+                out.append((name, "file", project_root / f, f"gs://{bucket}/{slug}/project/{f}"))
         elif name in FOLDERS:
-            out.append(("folder", project_root / FOLDERS[name], f"gs://{bucket}/{slug}/{FOLDERS[name]}"))
+            out.append((name, "folder", project_root / FOLDERS[name], f"gs://{bucket}/{slug}/{FOLDERS[name]}"))
         else:
             raise ValueError(f"unknown backup set '{name}'; choose from {', '.join([*FOLDERS, 'files'])}")
     return out
 
 
-def backup(project_root: Path, bucket: str | None = None, sets=None, log=print) -> int:
+def pairs(project_root: Path, bucket: str, sets=None) -> list[tuple[str, Path, str]]:
+    """(kind, local path, gs:// uri) for every set asked for: 'folder' pairs sync, 'file' pairs copy."""
+    return [(kind, local, remote) for _, kind, local, remote in named_pairs(project_root, bucket, sets)]
+
+
+def backup(project_root: Path, bucket: str | None = None, sets=None, log=print, mirror_reviews: bool = False) -> int:
+    """Folders only ever gain objects in the bucket, so a marker the runner consumed may come back on the next
+    restore (it is spent, and nothing acts on it). With `mirror_reviews` the reviews folder is mirrored with deletes
+    instead: only a caller that restored that folder in this very run may ask for it, or a failed restore would
+    wipe every approval the bucket holds."""
     bucket = bucket or gcs.default_bucket()
     done = 0
-    for kind, local, remote in pairs(project_root, bucket, sets):
+    for name, kind, local, remote in named_pairs(project_root, bucket, sets):
         if not local.exists():
             continue
         log(f"  {local.relative_to(Path(project_root))} -> {remote}")
-        (gcs.rsync if kind == "folder" else gcs.copy)(local, remote)      # never deletes: a marker the runner
-        done += 1                                                          # consumed may come back; it is spent
+        if kind == "folder":
+            gcs.rsync(local, remote, **({"delete": True} if mirror_reviews and name == "reviews" else {}))
+        else:
+            gcs.copy(local, remote)
+        done += 1
     return done
 
 
-def restore(project_root: Path, bucket: str | None = None, sets=None, log=print) -> int:
+def _missing(error: Exception) -> bool:
+    """A restore that found nothing to copy (a project's first run) is not a failure."""
+    text = str(error).lower()
+    return any(s in text for s in ("did not find", "not found", "no urls matched", "404", "does not exist"))
+
+
+def restore_report(project_root: Path, bucket: str | None = None, sets=None, log=print) -> tuple[int, list[str]]:
+    """Restore every set; returns (sets restored, names of sets that FAILED for a reason other than 'nothing there').
+    The runner refuses to produce when the reviews or the reports failed: running on a half-restored project would
+    skip approvals or pay for work the bucket already holds."""
     bucket = bucket or gcs.default_bucket()
-    done = 0
-    for kind, local, remote in pairs(project_root, bucket, sets):
+    done, failed = 0, []
+    for name, kind, local, remote in named_pairs(project_root, bucket, sets):
         local.parent.mkdir(parents=True, exist_ok=True)
         log(f"  {remote} -> {local.relative_to(Path(project_root))}")
         try:
@@ -74,7 +95,13 @@ def restore(project_root: Path, bucket: str | None = None, sets=None, log=print)
             done += 1
         except gcs.BucketError as e:
             log(f"    skipped ({str(e).splitlines()[-1][:120]})")
-    return done
+            if not _missing(e) and name not in failed:
+                failed.append(name)
+    return done, failed
+
+
+def restore(project_root: Path, bucket: str | None = None, sets=None, log=print) -> int:
+    return restore_report(project_root, bucket, sets, log)[0]
 
 
 def sync_library(bucket: str, direction: str = "backup", sets=LIBRARY_SETS, log=print) -> int:

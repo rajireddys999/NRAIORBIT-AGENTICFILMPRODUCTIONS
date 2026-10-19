@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Privacy policy' if kind == 'privacy' else 'Terms of service' }} · {{ settings.title }}{% endblock %}
+{% block body %}
+<div class="card" style="max-width:760px;margin:24px auto">
+{% if kind == 'privacy' %}
+  <h1>Privacy policy</h1>
+  <p class="muted small">{{ settings.title }} · {{ origin }}</p>
+  <p>This page is the private production console of a single film studio. It is not offered to the public and has no
+  users other than the studio's own accounts.</p>
+  <h3>What it stores</h3>
+  <ul>
+    <li><b>Sign-in.</b> When you sign in with Google, the page receives your Google account's e-mail address to check it
+      against the studio's allow-list, and keeps a signed session cookie in your browser for up to seven days. Nothing
+      else from your Google account is read or kept.</li>
+    <li><b>YouTube.</b> When the studio connects its own channel, Google issues an upload token for that channel. The
+      token is stored in Google Cloud Secret Manager inside the studio's own project and is used only to upload the
+      studio's films and their captions to that channel. The channel's name and the time of connection are recorded.</li>
+    <li><b>Film data.</b> Stories, scripts, images, video, audio and reports made for the studio's films live in the
+      studio's private Google Cloud storage bucket. They belong to the studio.</li>
+  </ul>
+  <h3>What it does not do</h3>
+  <ul>
+    <li>No advertising, no analytics, no tracking, no sale or sharing of data with anyone.</li>
+    <li>No access to anyone else's Google or YouTube account.</li>
+  </ul>
+  <h3>Removal</h3>
+  <p>The studio can revoke the page's access at any time at <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>,
+  and can delete the stored token and records from its Google Cloud project.</p>
+{% else %}
+  <h1>Terms of service</h1>
+  <p class="muted small">{{ settings.title }} · {{ origin }}</p>
+  <p>This page is an internal tool of one film studio, provided as is, for the studio's own accounts only. It is not a
+  service offered to the public and carries no warranty. Use of it is governed by the studio's own policies; the
+  Google services it talks to are governed by Google's terms.</p>
+{% endif %}
+  <p class="small muted">Contact: {{ contact }}</p>
+</div>
+{% endblock %}

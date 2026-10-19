@@ -257,6 +257,21 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
     def healthz():
         return "ok"
 
+    @app.get("/privacy", response_class=HTMLResponse)
+    def privacy(request: Request):
+        """Public: Google's consent screen links here. Also the truth about what this page does with data."""
+        return templates.TemplateResponse(request, "policy.html", {
+            "request": request, "settings": settings, "email": None, "root": store.root, "msg": None,
+            "kind": "privacy", "origin": public_base(request, settings),
+            "contact": next(iter(sorted(settings.allowed_emails)), "")})
+
+    @app.get("/terms", response_class=HTMLResponse)
+    def terms(request: Request):
+        return templates.TemplateResponse(request, "policy.html", {
+            "request": request, "settings": settings, "email": None, "root": store.root, "msg": None,
+            "kind": "terms", "origin": public_base(request, settings),
+            "contact": next(iter(sorted(settings.allowed_emails)), "")})
+
     @app.get("/login", response_class=HTMLResponse)
     def login(request: Request):
         if not settings.auth:

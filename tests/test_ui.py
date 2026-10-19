@@ -142,6 +142,15 @@ def test_only_the_allowed_account_gets_in(root):
     assert local.get("/").status_code == 200                                    # a laptop, no sign-in
 
 
+def test_policy_pages_are_public(root):
+    app = create_app(Store(str(root)), Settings(allowed_emails={"owner@example.com"}, auth=True,
+                                                 public_url="https://room.example"))
+    anon = TestClient(app)
+    for path, word in (("/privacy", "Privacy policy"), ("/terms", "Terms of service")):
+        r = anon.get(path)
+        assert r.status_code == 200 and word in r.text and "owner@example.com" in r.text and "room.example" in r.text
+
+
 def test_board_shows_the_film_its_gate_and_its_money(client):
     html = client.get("/").text
     assert "demo" in html and STORY_BIBLE["title_en"] in html

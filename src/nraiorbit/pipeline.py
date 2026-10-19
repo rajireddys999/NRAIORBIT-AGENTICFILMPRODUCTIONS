@@ -142,6 +142,12 @@ class Pipeline:
             if gate:
                 for suffix in ("approved", "pending"):
                     (self.p.reviews / f"{gate}.{suffix}").unlink(missing_ok=True)
+        # the runner's own gates (service/produce) answer for what follows: a replan or a re-render needs the cost
+        # and the first frames approved again; a new cut needs the upload approved again
+        for name, upto in (("cost", "render"), ("faces", "render"), ("publish", "trailer")):
+            if STAGES.index(stage) <= STAGES.index(upto):
+                for suffix in ("approved", "pending"):
+                    (self.p.reviews / f"{name}.{suffix}").unlink(missing_ok=True)
 
     def status(self) -> dict[str, str]:
         out = {}

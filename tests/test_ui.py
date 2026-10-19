@@ -184,6 +184,12 @@ def test_approve_retry_and_row_edits_write_only_the_sheet(client, root):
     assert client.started == ["nraiorbit-runner"]                              # the next step starts now, not in 15 min
     row = rows(root)[0]
     assert row["state"] == "approved" and "owner@example.com" in row["note"]
+    r = client.post("/film/demo/approve", data={"gate": "faces"}, follow_redirects=False)
+    assert r.status_code == 303 and "already" in r.headers["location"] and client.started == ["nraiorbit-runner"]
+    html = client.get("/film/demo").text                                        # pressed twice: one tick, no button
+    assert 'name="gate"' not in html and 'class="badge awaiting">needs you' not in html
+    assert "Approved. The runner takes it up" in html
+    assert client.post("/film/demo/approve", data={"gate": "bogus"}).status_code == 400
     client.post("/film/demo/row", data={"budget": "75", "publish": "unlisted", "gates": ""})
     row = rows(root)[0]
     assert row["budget_usd"] == "75" and row["publish"] == "unlisted" and row["gates"] == "ask"

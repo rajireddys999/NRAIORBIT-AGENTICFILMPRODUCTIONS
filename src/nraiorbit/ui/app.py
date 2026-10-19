@@ -471,16 +471,25 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
 
     @app.post("/film/{slug}/approve")
     def approve(slug: str, email: str = Depends(guard), gate: str = Form("")):
+        if gate not in queue.GATES:
+            raise HTTPException(400, f"no gate called {gate[:40]!r}; one of {', '.join(queue.GATES)}")
         rows, row = _row(slug)
+        if row["state"] == "approved":                        # pressed twice: one approval, one tick
+            return back(f"/film/{slug}", "already approved; the runner takes it up on its next tick")
         row.update(state="approved", note=f"{gate} approved in the control room by {email}", updated=queue.now())
         save_rows(store, STORIES, rows, queue.STORY_COLUMNS)
-        msg = f"{gate or 'gate'} approved; the next tick carries on"
+        msg = f"{gate} approved; the next tick carries on"
         if settings.project and settings.job:                 # no fifteen-minute wait: the next step starts now
             try:
-                ex = runner_mod.run(settings.project, settings.region, settings.job)
-                msg = f"{gate or 'gate'} approved; a tick started ({ex}) and the next step is under way"
+                busy = [e for e in runner_mod.executions(settings.project, settings.region, settings.job)
+                        if e["state"] == "running"]
+                if busy:                                      # never two executions on the queue at once
+                    msg = f"{gate} approved; a tick is running ({busy[0]['name']}), the next scheduled one carries on"
+                else:
+                    ex = runner_mod.run(settings.project, settings.region, settings.job)
+                    msg = f"{gate} approved; a tick started ({ex}) and the next step is under way"
             except Exception as exc:
-                msg = f"{gate or 'gate'} approved; the tick could not be started ({type(exc).__name__}), " \
+                msg = f"{gate} approved; the tick could not be started ({type(exc).__name__}), " \
                       f"the scheduled one carries on"
         return back(f"/film/{slug}", msg)
 

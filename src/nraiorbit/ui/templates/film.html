@@ -39,6 +39,7 @@
 {% block body %}
 {% set m = f.money %}
 {% set state0 = f.state.split(':')[0] %}
+{% set executing = runner_running and state0 == 'producing' %}
 {% set hue = (f.slug|length) % 8 %}
 {% set shot_count = f.shots|map(attribute='shots')|map('length')|sum %}
 
@@ -95,7 +96,8 @@
         <p>Blocked: <b class="bad">{{ f.state[8:] }}</b>. {{ f.row.note if f.row else '' }}</p>
         {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/retry"><button>Fix is in place, retry</button></form>{% endif %}
       {% elif f.state == 'done' %}<p>Done. The deliverables are under <a href="#deliver">Delivery</a>.</p>
-      {% elif f.state in ['new','approved','retry','producing'] %}<p><span class="live-dot" style="margin-right:8px"></span>The runner is on it (state <b>{{ f.state }}</b>). This page refreshes by itself.</p>
+      {% elif f.state == 'approved' %}<p><span class="live-dot" style="margin-right:8px"></span>Approved. The runner takes it up on its next tick{% if runner_running %} (one is running now){% endif %}; this page refreshes by itself.</p>
+      {% elif f.state in ['new','retry','producing'] %}<p><span class="live-dot" style="margin-right:8px"></span>The runner is on it (state <b>{{ f.state }}</b>). This page refreshes by itself.</p>
       {% else %}<p class="muted">Nothing is waiting on you.</p>{% endif %}
     </div>
     {% if f.bible.logline %}<p class="muted">{{ f.bible.logline }}</p>{% endif %}
@@ -111,17 +113,17 @@
   <div class="section-head">
     <h2>Pipeline</h2>
     <span class="mono tiny {% if f.gates %}cyan{% elif f.next_stage %}gold{% else %}dim{% endif %}">
-      {% if f.gates %}waiting on you · {{ f.gates|join(', ') }}{% elif f.next_stage %}{{ 'executing now' if runner_running else 'next up, on the next tick' }} · {{ f.next_stage }}{% else %}read from the plan files, never a second copy{% endif %}
+      {% if f.gates %}waiting on you · {{ f.gates|join(', ') }}{% elif f.next_stage %}{{ 'executing now' if executing else 'next up, on the next tick' }} · {{ f.next_stage }}{% else %}read from the plan files, never a second copy{% endif %}
     </span>
   </div>
   <ol class="flow">
   {% for key, label in stages %}{% set s = f.stages[key] %}{% set gate = f.gate_for.get(key) %}{% set is_next = (key == f.next_stage) %}
-    <li class="node {{ s.status }}{% if is_next %} next{% if runner_running %} running{% endif %}{% endif %}">
+    <li class="node {{ s.status }}{% if is_next %} next{% if executing %} running{% endif %}{% endif %}">
       <a class="node-body" href="#{{ 'money' if key == 'cost' else key }}" title="{{ label }}: details">
         <span class="n">{{ '%02d'|format(loop.index) }}</span>
         <b>{{ label }}</b>
         {% if gate %}<span class="badge awaiting">needs you</span>
-        {% elif is_next %}<span class="badge next{% if runner_running %} live{% endif %}">{{ 'executing' if runner_running else 'next up' }}</span>
+        {% elif is_next %}<span class="badge next{% if executing %} live{% endif %}">{{ 'executing' if executing else 'next up' }}</span>
         {% else %}<span class="badge {{ s.status }}">{{ s.status }}</span>{% endif %}
         {% if s.text %}<span class="txt muted">{{ s.text }}</span>{% endif %}
         <span class="details">Details <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m6 13 6 6 6-6"/></svg></span>

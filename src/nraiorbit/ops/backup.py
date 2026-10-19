@@ -54,7 +54,12 @@ def backup(project_root: Path, bucket: str | None = None, sets=None, log=print) 
         if not local.exists():
             continue
         log(f"  {local.relative_to(Path(project_root))} -> {remote}")
-        (gcs.rsync if kind == "folder" else gcs.copy)(local, remote)
+        if kind == "folder":
+            # the review markers are state: a marker the runner consumed must not come back from the bucket on the
+            # next restore, so that folder is mirrored with deletes; media folders only ever gain files
+            gcs.rsync(local, remote, **({"delete": True} if local.name == FOLDERS["reviews"] else {}))
+        else:
+            gcs.copy(local, remote)
         done += 1
     return done
 

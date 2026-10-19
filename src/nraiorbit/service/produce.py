@@ -30,10 +30,10 @@ from types import SimpleNamespace
 
 from ..costing import BudgetExceeded, SpendLedger
 from ..pipeline import GatePending, Pipeline, PipelineBlocked
+from .queue import GATES as GATE_ORDER
 
-GATE_ORDER = ["story", "outline", "scenes", "cast", "shots", "cost", "faces", "render", "pacing", "final_cut", "trailer",
-              "publish"]
 RUNNER_GATES = ("cost", "faces", "publish")          # raised here, between pipeline runs, not inside a stage
+COST_GROWTH = 0.10                                   # an approved estimate that grows by more than this is asked again
 
 
 def policy_of(cfg: dict, **overrides) -> dict:
@@ -43,21 +43,40 @@ def policy_of(cfg: dict, **overrides) -> dict:
     return pol
 
 
-def approve(pipeline: Pipeline, gate: str) -> None:
+def approve(pipeline: Pipeline, gate: str, text: str = "approved by policy\n") -> None:
     pipeline.p.reviews.mkdir(parents=True, exist_ok=True)
     (pipeline.p.reviews / f"{gate}.pending").unlink(missing_ok=True)
-    (pipeline.p.reviews / f"{gate}.approved").write_text("approved by policy\n", encoding="utf-8")
+    (pipeline.p.reviews / f"{gate}.approved").write_text(text, encoding="utf-8")
 
 
 def approved(pipeline: Pipeline, gate: str) -> bool:
     return (pipeline.p.reviews / f"{gate}.approved").exists()
 
 
+def approved_figure(pipeline: Pipeline, gate: str) -> float | None:
+    """The estimate the owner approved: the JSON line the marker carried into the approval; None when none was."""
+    try:
+        for line in (pipeline.p.reviews / f"{gate}.approved").read_text(encoding="utf-8").splitlines():
+            if line.startswith("{"):
+                return float(json.loads(line).get("total_usd") or 0)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def hold(pipeline: Pipeline, gate: str, text: str) -> None:
     """Leave the gate's pending marker, the same file a pipeline gate writes: the control room lists it, and an
     approval in the queue turns it into <gate>.approved before the next run."""
+    if gate not in GATE_ORDER:                            # a marker no approve button or CLI choice could ever clear
+        raise ValueError(f"unknown gate {gate!r}; the gates are {', '.join(GATE_ORDER)}")
     pipeline.p.reviews.mkdir(parents=True, exist_ok=True)
     (pipeline.p.reviews / f"{gate}.pending").write_text(text, encoding="utf-8")
+
+
+def clear(pipeline: Pipeline, gate: str, *suffixes: str) -> None:
+    """Drop a runner gate's markers: a pending one the run passed, an approval that was used up."""
+    for suffix in suffixes or ("pending",):
+        (pipeline.p.reviews / f"{gate}.{suffix}").unlink(missing_ok=True)
 
 
 def _faces_needed(pipeline: Pipeline) -> bool:
@@ -113,12 +132,20 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
     if block:
         report["steps"]["render"] = block["why"]
         return finish(block["state"])
-    if preview and float(preview.get("total_usd") or 0) > 0 and not approved(pipeline, "cost"):
-        if pol["gates"] == "ask":
-            hold(pipeline, "cost", json.dumps(report["steps"]["estimate"]) + "\n")
-            report["steps"]["cost"] = "awaiting:cost"
-            return finish("awaiting:cost")
-        approve(pipeline, "cost")
+    total = float(preview.get("total_usd") or 0) if preview else 0.0
+    if total > 0:
+        was = approved_figure(pipeline, "cost") if approved(pipeline, "cost") else None
+        grown = was is not None and total > was * (1 + COST_GROWTH) + 0.5     # the plan changed since the approval
+        if not approved(pipeline, "cost") or grown:
+            marker = json.dumps(report["steps"]["estimate"]) + "\n"
+            if pol["gates"] == "ask":
+                clear(pipeline, "cost", "approved")
+                hold(pipeline, "cost", marker)
+                report["steps"]["cost"] = "awaiting:cost" + (f" (the estimate grew from {was:.2f} to {total:.2f})"
+                                                             if grown else "")
+                return finish("awaiting:cost")
+            approve(pipeline, "cost", "approved by policy\n" + marker)
+    clear(pipeline, "cost")                                   # passed: never shown as waiting
     report["steps"]["cost"] = "approved" if approved(pipeline, "cost") else "not needed"
 
     # 3. faces: first frames for every shot with a lead, then a human look (ask) or straight on (auto)
@@ -132,6 +159,7 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
         hold(pipeline, "faces", "Look at the first frames in the control room, then approve faces.\n")
         report["steps"]["faces"] = "awaiting:faces"
         return finish("awaiting:faces")
+    clear(pipeline, "faces")
     report["steps"]["faces"] = "approved" if approved(pipeline, "faces") else "not needed"
 
     # 4. the paid stages, assembly and trailer under the cap
@@ -178,17 +206,20 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
     # 6. YouTube, private unless the policy says otherwise; approved by the owner first (ask), and on its own only
     #    when the film check passed (auto); never a browser
     if pol["publish"] not in ("private", "unlisted", "public"):
+        clear(pipeline, "publish")
         report["steps"]["publish"] = "none"
     elif pol["gates"] == "ask" and not approved(pipeline, "publish"):
         hold(pipeline, "publish", f"Watch the film and the trailer, then approve the {pol['publish']} YouTube upload.\n")
         report["steps"]["publish"] = "awaiting:publish"
         return finish("awaiting:publish")
     elif report["steps"].get("qa_film") != "ok" and not approved(pipeline, "publish"):
+        clear(pipeline, "publish")
         report["steps"]["publish"] = "held: the film check did not pass; look at reports/qa/film.json, then " \
                                      "`nraiorbit release youtube <slug>`"
     else:
         try:
             report["steps"]["publish"] = publish_youtube(root, pol["publish"])
+            clear(pipeline, "publish", "pending", "approved")     # one approval, one upload: a new cut asks again
         except Exception as exc:
             report["steps"]["publish"] = f"skipped: {type(exc).__name__}: {str(exc)[:160]}"
 

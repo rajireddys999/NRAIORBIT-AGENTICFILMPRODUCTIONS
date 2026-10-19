@@ -75,6 +75,10 @@ def money(store: Store, slug: str, cfg: dict, row: dict | None, produce: dict | 
         by[c.get("provider", "?")] += float(c.get("usd") or 0)
     spent = round(sum(by.values()), 2)
     cap = (cfg.get("budget") or {}).get("max_usd")
+    try:
+        cap = float(cap) if cap not in (None, "") else None           # a hand-edited "40" is still a cap
+    except (TypeError, ValueError):
+        cap = None
     if row and row.get("budget_usd"):
         try:
             cap = float(row["budget_usd"])
@@ -87,10 +91,18 @@ def money(store: Store, slug: str, cfg: dict, row: dict | None, produce: dict | 
 
 
 def pending_gates(store: Store, slug: str, produce: dict | None, row: dict | None) -> list[str]:
-    gates = [n.rsplit("/", 1)[-1][:-len(".pending")] for n in store.list(f"{slug}/reviews/") if n.endswith(".pending")]
+    """What waits on the owner: the gate the last run stopped at, plus markers never approved. A marker with an
+    .approved sibling is spent (the bucket mirror can bring one back) and an `approved` row is already on its way to
+    the runner, so neither shows a button."""
+    if (row or {}).get("state") == "approved":
+        return []
+    names = {n.rsplit("/", 1)[-1] for n in store.list(f"{slug}/reviews/")}
     state = (produce or {}).get("state") or (row or {}).get("state") or ""
-    if state.startswith("awaiting:") and state[9:] not in gates:
-        gates.append(state[9:])
+    waiting = state[9:] if state.startswith("awaiting:") else None
+    gates = [n[:-len(".pending")] for n in sorted(names) if n.endswith(".pending")
+             and (n[:-len(".pending")] == waiting or f"{n[:-len('.pending')]}.approved" not in names)]
+    if waiting and waiting not in gates:
+        gates.append(waiting)
     return gates
 
 

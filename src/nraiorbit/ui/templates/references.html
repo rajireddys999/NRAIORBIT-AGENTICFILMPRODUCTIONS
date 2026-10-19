@@ -1,23 +1,66 @@
 {% extends "base.html" %}
+{% block title %}References · {{ settings.title }}{% endblock %}
+{% block style %}
+.refs { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:16px }
+.ref { display:flex; flex-direction:column; border:1px solid var(--line); border-radius:18px; overflow:hidden; background:var(--card2); min-width:0; transition:transform .2s ease,border-color .2s ease }
+.ref:hover { transform:translateY(-3px); border-color:rgba(242,181,68,.4) }
+.ref .frame { border-radius:0 } .ref .body { padding:14px 16px 16px; display:flex; flex-direction:column; gap:8px }
+.ref .body h3 { margin:0; font-size:20px; line-height:1.15; word-break:break-word }
+.ref .note { font-size:12.5px; color:var(--muted); line-height:1.5 }
+.ref .frame .badge { position:absolute; left:12px; top:22px; background:rgba(12,14,23,.75); backdrop-filter:blur(6px) }
+.learn { display:inline-flex; align-items:center; gap:6px; font-family:var(--mono); font-size:10.5px; letter-spacing:.08em; color:var(--cyan); text-transform:uppercase }
+.queue-form { display:grid; grid-template-columns:2fr 1fr; gap:16px } .queue-form .full { grid-column:1 / -1 }
+@media (max-width:720px) { .queue-form { grid-template-columns:1fr } }
+{% endblock %}
 {% block body %}
+{% set done = refs|selectattr('state','equalto','done')|list %}
+<div class="row between end" style="margin-bottom:24px">
+  <div>
+    <p class="eyebrow">Reference films · {{ refs|length }} queued · {{ done|length }} learned</p>
+    <h1 style="margin:0">Films the agents <em>learn from.</em></h1>
+    <p class="muted" style="margin-top:12px;max-width:620px">Gemini watches a public YouTube link and writes craft notes (score, emotional beats, action, characters, trailer). Nothing is downloaded or copied. Each watch is priced first from its length and refused over $1 unless the length is given; a feature film at one frame every four seconds is about $2.</p>
+  </div>
+</div>
+
 <div class="card">
-  <h1>Reference films</h1>
-  <p class="muted small">Gemini watches a public YouTube link and writes craft notes (score, emotional beats, action, characters, trailer). Nothing is downloaded or copied. Each watch is priced first from its length and refused over $1 unless the length is given; a feature film at one frame every four seconds is about $2.</p>
-  <form method="post" action="/references" class="grid g2">
-    <div><label>YouTube link</label><input name="url" required placeholder="https://www.youtube.com/watch?v=..."></div>
-    <div><label>Title (optional)</label><input name="title"></div>
-    <div><label>Learn</label><select name="learn">{% for w in ['all','score','emotion','action','characters','trailer'] %}<option>{{ w }}</option>{% endfor %}</select></div>
-    <div><label>Length in minutes (for the cost guard)</label><input name="minutes" type="number" step="1" min="1" placeholder="150"></div>
-    <div><p><button>Queue the reference</button></p></div>
+  <div class="row between" style="margin-bottom:4px"><h2 style="margin:0">Queue a reference</h2><span class="mono tiny dim">queue/references.csv</span></div>
+  <form method="post" action="/references" class="queue-form">
+    <div><label for="url">YouTube link</label><input id="url" name="url" required placeholder="https://www.youtube.com/watch?v=..." autocomplete="off" spellcheck="false" style="font-family:var(--mono)"></div>
+    <div><label for="title">Title · optional</label><input id="title" name="title" placeholder="What you call it"></div>
+    <div><label for="learn">Learn</label><select id="learn" name="learn">{% for w in ['all','score','emotion','action','characters','trailer'] %}<option>{{ w }}</option>{% endfor %}</select></div>
+    <div><label for="minutes">Length in minutes · for the cost guard</label><input id="minutes" name="minutes" type="number" step="1" min="1" placeholder="150"></div>
+    <div class="full actions" style="margin-top:6px"><button><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>Queue the reference</button><span class="small dim">The next tick watches it; the cost guard applies.</span></div>
   </form>
 </div>
-<div class="card">
-  <table><tr><th>Link</th><th>Title</th><th>Learn</th><th>Min</th><th>State</th><th>Note</th><th></th></tr>
-  {% for r in refs %}<tr>
-    <td><a href="{{ r.url }}" target="_blank" rel="noopener">{{ r.url|short(48) }}</a></td><td>{{ r.title }}</td><td>{{ r.learn }}</td><td>{{ r.minutes }}</td>
-    <td><span class="badge {{ r.state.split(':')[0] }}">{{ r.state }}</span></td><td class="small">{{ r.note|short(120) }}</td>
-    <td>{% if r.state.startswith('blocked') %}<form class="inline" method="post" action="/references/retry"><input type="hidden" name="url" value="{{ r.url }}"><button class="quiet">Retry</button></form>{% endif %}</td>
-  </tr>{% else %}<tr><td colspan="7" class="muted">No references yet.</td></tr>{% endfor %}
-  </table>
-</div>
+
+<section aria-label="Reference queue">
+  <div class="row between" style="margin:10px 0 16px"><h2 style="margin:0">The queue <span class="mono dim" style="font-size:13px;margin-left:6px">{{ refs|length }}</span></h2></div>
+  {% if not refs %}<div class="card" style="text-align:center;padding:48px 24px"><p class="serif" style="font-size:26px;margin:0">No references yet.</p><p class="muted small" style="margin-top:8px">Queue a public YouTube link above and the next tick writes its craft notes.</p></div>{% endif %}
+  <div class="refs">
+  {% for r in refs %}
+    {% set u = r.url %}
+    {% set vid = (u.split('v=')[1].split('&')[0] if 'v=' in u else (u.split('youtu.be/')[1].split('?')[0] if 'youtu.be/' in u else (u.split('shorts/')[1].split('?')[0] if 'shorts/' in u else ''))) %}
+    {% set hue = loop.index0 % 8 %}
+    {% set href = u if u.startswith('https://') else '#' %}
+    <article class="ref">
+      <a class="frame{% if hue %} hue{{ hue }}{% endif %}" href="{{ href }}" target="_blank" rel="noopener" aria-label="Open on YouTube">
+        {% if vid %}<img src="https://i.ytimg.com/vi/{{ vid }}/hqdefault.jpg" alt="" loading="lazy" referrerpolicy="no-referrer">{% endif %}
+        <span class="bars" aria-hidden="true"></span>
+        <span class="badge {{ r.state.split(':')[0] }}">{{ r.state }}</span>
+        {% if r.minutes %}<span class="tag tr">{{ r.minutes }} MIN</span>{% endif %}
+        <span class="tag br">YOUTUBE ↗</span>
+      </a>
+      <div class="body">
+        <h3>{{ r.title or r.url|short(48) }}</h3>
+        <div class="row" style="gap:10px"><span class="learn">learn · {{ r.learn }}</span><a class="mono tiny dim" href="{{ href }}" target="_blank" rel="noopener">{{ r.url|short(44) }}</a></div>
+        {% if r.note %}<p class="note">{{ r.note|short(160) }}</p>{% endif %}
+        <div class="row between" style="margin-top:4px">
+          <span class="mono tiny dim">{% if r.updated %}{{ r.updated[:16]|replace('T',' ') }}{% endif %}</span>
+          {% if r.state.startswith('blocked') %}<form class="inline" method="post" action="/references/retry"><input type="hidden" name="url" value="{{ r.url }}"><button class="quiet sm">Retry</button></form>{% endif %}
+        </div>
+      </div>
+    </article>
+  {% endfor %}
+  </div>
+</section>
 {% endblock %}

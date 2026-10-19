@@ -1,69 +1,160 @@
 {% extends "base.html" %}
 {% block head %}<meta http-equiv="refresh" content="90">{% endblock %}
+{% block style %}
+.films { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:18px }
+.film .logline { font-size:13px; line-height:1.5; color:var(--muted); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden }
+.film .meta { display:flex; align-items:center; gap:8px; font-family:var(--mono); font-size:10.5px; color:var(--dim); letter-spacing:.04em; flex-wrap:wrap }
+.film .frame .badge { position:absolute; left:12px; top:22px; background:rgba(12,14,23,.75); backdrop-filter:blur(6px) }
+.new-card { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; min-height:300px; border:1px dashed rgba(242,181,68,.4); border-radius:20px; background:rgba(242,181,68,.03); color:var(--gold); text-align:center; padding:24px }
+.new-card:hover { background:rgba(242,181,68,.07); color:var(--gold) }
+.new-card .plus { width:56px; height:56px; border-radius:50%; border:1px solid rgba(242,181,68,.5); display:inline-flex; align-items:center; justify-content:center }
+.hero .frame .title { font-size:34px }
+.exec td { font-size:13px }
+{% endblock %}
 {% block body %}
+{% macro money_line(m) %}
+  <div class="small muted">Spent <b class="gold">{{ m.spent|money }}</b>{% if m.cap %} of {{ m.cap|money }} cap{% else %} · <b class="bad">no cap set</b>{% endif %}
+    {% if m.estimate %} · next paid step about {{ m.estimate.total_usd|money }}{% endif %}</div>
+  {% if m.cap %}<div class="bar {% if m.spent > m.cap %}over{% endif %}" style="margin-top:8px"><span style="width:{{ [100, (100 * m.spent / m.cap)|round]|min }}%"></span></div>{% endif %}
+{% endmacro %}
+{% macro gate_actions(f) %}
+  {% for g in f.gates %}
+    {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/approve"><input type="hidden" name="gate" value="{{ g }}"><button class="sm">Approve {{ g }}</button></form>
+    {% else %}<span class="badge awaiting">awaiting {{ g }}</span>{% endif %}
+  {% endfor %}
+  {% if f.state.startswith('blocked') and f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/retry"><button class="quiet sm">Retry</button></form>{% endif %}
+{% endmacro %}
+
+{% set waiting = films|selectattr('gates')|list %}
+{% set delivered = films|selectattr('state','equalto','done')|list %}
+{% set refs_done = refs|selectattr('state','equalto','done')|list %}
+{% set ns = namespace(featured=None) %}
+{% for f in films %}{% if ns.featured is none and f.gates %}{% set ns.featured = f %}{% endif %}{% endfor %}
+{% for f in films %}{% if ns.featured is none and f.state.split(':')[0] in ['producing','new','approved','retry'] %}{% set ns.featured = f %}{% endif %}{% endfor %}
+{% if ns.featured is none and films %}{% set ns.featured = films[0] %}{% endif %}
+{% set featured = ns.featured %}
+
+<div class="row between end" style="margin-bottom:24px">
+  <div>
+    <p class="eyebrow">{{ now.strftime('%A · %d %b %Y') }} · {{ now.strftime('%H:%M') }} UTC</p>
+    <h1 style="margin:0">Films in <em>orbit.</em></h1>
+  </div>
+  <a class="btn big" href="/new"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>New film</a>
+</div>
+
+{% if featured %}
+<section class="hero" aria-label="{{ 'Needs you' if featured.gates else 'Now in production' }}">
+  <a class="frame" href="/film/{{ featured.slug }}">
+    <span class="bars" aria-hidden="true"></span>
+    <span class="tag tl">{% if featured.gates %}<span style="color:#4FD8F0">●</span> WAITING AT THE {{ featured.gates[0]|upper }} GATE{% else %}<span style="color:#FF4757">●</span> {{ featured.state|upper }}{% endif %}</span>
+    {% if featured.runtime %}<span class="tag tr">{{ featured.runtime }} MIN</span>{% endif %}
+    <span class="tag br">{{ featured.slug }}</span>
+    <span class="title">{{ featured.title_te or featured.title }}</span>
+  </a>
+  <div class="info">
+    <div class="row">
+      <span class="badge {{ featured.state.split(':')[0] }} {% if featured.state.split(':')[0] in ['producing','new','approved','retry'] %}live{% endif %}">{{ featured.state }}</span>
+      {% if featured.has_film %}<span class="badge done">film</span>{% endif %}{% if featured.has_trailer %}<span class="badge done">trailer</span>{% endif %}
+      {% if featured.updated %}<span class="mono dim tiny">updated {{ featured.updated[:16]|replace('T',' ') }}</span>{% endif %}
+    </div>
+    <div>
+      <p class="eyebrow" style="margin-bottom:8px">{{ 'Needs you' if featured.gates else 'Now in production' }}</p>
+      <h2 style="margin:0;font-size:36px">{{ featured.title }}{% if featured.title_te %} <span class="muted" style="font-size:20px">· {{ featured.slug }}</span>{% endif %}</h2>
+      {% if featured.logline %}<p class="muted" style="margin-top:10px">{{ featured.logline }}</p>{% endif %}
+    </div>
+    <div>{{ money_line(featured.money) }}</div>
+    {% if featured.note %}<p class="small dim">{{ featured.note|short(160) }}</p>{% endif %}
+    <div class="actions" style="margin-top:auto">
+      <a class="btn" href="/film/{{ featured.slug }}">Open production desk</a>
+      {{ gate_actions(featured) }}
+    </div>
+  </div>
+</section>
+{% endif %}
+
+<section class="grid kpis" aria-label="Studio status" style="margin-bottom:18px">
+  <div class="kpi"><span class="label">Films</span><span class="value">{{ films|length }}<small>on the board</small></span><span class="mono tiny" style="color:var(--ok)">{{ delivered|length }} delivered</span></div>
+  <div class="kpi"><span class="label">Waiting on you</span><span class="value">{{ waiting|length }}<small>gate{{ '' if waiting|length == 1 else 's' }}</small></span><span class="mono tiny cyan">{% if waiting %}{{ waiting[0].slug }} · {{ waiting[0].gates[0] }}{% else %}nothing to approve{% endif %}</span></div>
+  <div class="kpi"><span class="label">Runner</span>
+    {% if runner.project and runner.job %}
+      {% set latest = runner.executions[0] if runner.executions else None %}
+      <span class="value" style="font-size:30px;padding:5px 0">{{ (latest.state if latest else 'idle')|upper }}</span>
+      <span class="mono tiny {% if latest and latest.state == 'failed' %}bad{% else %}dim{% endif %}">{% if latest %}{{ latest.name }} · {{ latest.created[11:16] }}{% elif runner.error %}executions unavailable{% else %}no executions yet{% endif %}</span>
+    {% else %}<span class="value" style="font-size:30px;padding:5px 0">LOCAL</span><span class="mono tiny dim">reads a local folder</span>{% endif %}
+  </div>
+  <div class="kpi"><span class="label">References</span><span class="value">{{ refs|length }}<small>queued</small></span><span class="mono tiny dim">{{ refs_done|length }} learned · <a href="/references">open the list</a></span></div>
+</section>
+
 <div class="grid g2">
   <div class="card">
-    <h2>Runner</h2>
+    <div class="row between"><h2 style="margin:0">Runner</h2>{% if runner.project and runner.job %}<span class="badge plain live" style="color:var(--ok)">online</span>{% endif %}</div>
     {% if runner.project and runner.job %}
-      <p class="small muted">Cloud Run job <span class="mono">{{ runner.job }}</span> in {{ runner.project }}, scheduled every 15 minutes. One tick does one unit of work per queue and exits.</p>
+      <p class="small muted" style="margin-top:10px">Cloud Run job <span class="mono gold">{{ runner.job }}</span> in {{ runner.project }}, scheduled every 15 minutes. One tick does one unit of work per queue and exits.</p>
       {% if runner.error %}<p class="small muted">Executions unavailable: {{ runner.error }}</p>{% endif %}
       {% if runner.executions %}
-      <table><tr><th>Execution</th><th>Started</th><th>State</th></tr>
-      {% for e in runner.executions %}<tr><td class="mono">{{ e.name }}</td><td class="small">{{ e.created }}</td><td><span class="badge {{ e.state }}">{{ e.state }}</span></td></tr>{% endfor %}
-      </table>{% endif %}
-      <form method="post" action="/tick" style="margin-top:10px"><input type="hidden" name="next" value="/"><button>Run a tick now</button></form>
-    {% else %}<p class="muted small">No runner configured: this control room reads a local folder.</p>{% endif %}
+      <div class="table-wrap"><table class="exec"><tr><th>Execution</th><th>Started</th><th>State</th></tr>
+      {% for e in runner.executions %}<tr><td class="mono">{{ e.name }}</td><td class="small muted">{{ e.created|replace('T',' ') }}</td><td><span class="badge {{ e.state }}">{{ e.state }}</span></td></tr>{% endfor %}
+      </table></div>{% endif %}
+      <form method="post" action="/tick" style="margin-top:14px"><input type="hidden" name="next" value="/"><button class="quiet"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>Run a tick now</button></form>
+    {% else %}<p class="muted small" style="margin-top:10px">No runner configured: this control room reads a local folder.</p>{% endif %}
   </div>
   <div class="card">
-    <h2>YouTube</h2>
+    <div class="row between"><h2 style="margin:0">YouTube</h2>{% if youtube.channel %}<span class="badge done">connected</span>{% endif %}</div>
+    <div style="margin-top:10px">
     {% if youtube.channel %}
       <p>Connected to <b>{{ youtube.channel }}</b> <span class="small muted">by {{ youtube.connected_by }} on {{ youtube.connected_at[:10] }}</span>. Films with a publish setting upload here, private by default.</p>
-      <div class="actions"><a class="btn quiet" href="/youtube/connect">Reconnect</a>
-        <form class="inline" method="post" action="/youtube/disconnect"><button class="quiet">Forget channel</button></form></div>
+      <div class="actions" style="margin-top:12px"><a class="btn quiet sm" href="/youtube/connect">Reconnect</a>
+        <form class="inline" method="post" action="/youtube/disconnect"><button class="quiet sm">Forget channel</button></form></div>
     {% elif youtube.can_connect %}
       <p class="small muted">No channel connected. The runner skips the upload step until one is.</p>
-      <a class="btn" href="/youtube/connect">Connect YouTube</a>
+      <a class="btn" href="/youtube/connect" style="margin-top:8px">Connect YouTube</a>
     {% else %}
       <p class="small muted">Connecting needs the Google OAuth client id and secret on this service.</p>
     {% endif %}
-  </div>
-  <div class="card">
-    <h2>References</h2>
-    <p class="small muted">Craft notes Gemini wrote from public films; the agents read them as examples.</p>
-    {% set done = refs|selectattr('state','equalto','done')|list %}
-    <p>{{ refs|length }} queued, {{ done|length }} learned. <a href="/references">Open the list</a></p>
+    </div>
+    <p class="small dim" style="margin-top:16px">References are craft notes Gemini wrote from public films; the agents read them as examples. <a href="/references">{{ refs|length }} queued, {{ refs_done|length }} learned.</a></p>
   </div>
 </div>
 
-<div class="card">
-  <div class="actions" style="justify-content:space-between"><h2 style="margin:0">Films</h2><a class="btn" href="/new">New film</a></div>
-  {% if not films %}<p class="muted">Nothing yet. Start with <a href="/new">a story</a>.</p>{% endif %}
-  {% for f in films %}
-  <div class="card" style="margin:12px 0 0">
-    <div class="actions" style="justify-content:space-between">
-      <div><a href="/film/{{ f.slug }}"><b class="te">{{ f.title_te or f.title }}</b></a> <span class="muted">{{ f.title }} · {{ f.slug }}{% if f.runtime %} · {{ f.runtime }} min{% endif %}</span></div>
-      <div><span class="badge {{ f.state.split(':')[0] }}">{{ f.state }}</span>
-        {% if f.has_film %}<span class="badge done">film</span>{% endif %}{% if f.has_trailer %}<span class="badge done">trailer</span>{% endif %}</div>
-    </div>
-    {% if f.logline %}<p class="small" style="margin:6px 0">{{ f.logline }}</p>{% endif %}
-    <div class="grid g2">
-      <div>
-        {% set m = f.money %}
-        <div class="small muted">Spent {{ m.spent|money }}{% if m.cap %} of {{ m.cap|money }} cap{% else %} · <b style="color:var(--bad)">no cap set</b>{% endif %}
-          {% if m.estimate %} · next paid step about {{ m.estimate.total_usd|money }}{% endif %}</div>
-        {% if m.cap %}<div class="bar {% if m.spent > m.cap %}over{% endif %}"><span style="width:{{ [100, (100 * m.spent / m.cap)|round]|min }}%"></span></div>{% endif %}
-      </div>
-      <div class="actions">
-        {% for g in f.gates %}
-          {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/approve"><input type="hidden" name="gate" value="{{ g }}"><button>Approve {{ g }}</button></form>
-          {% else %}<span class="badge awaiting">awaiting {{ g }}</span>{% endif %}
-        {% endfor %}
-        {% if f.state.startswith('blocked') and f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/retry"><button class="quiet">Retry</button></form>{% endif %}
-        <a class="btn quiet" href="/film/{{ f.slug }}">Open</a>
-        {% if f.note %}<span class="small muted">{{ f.note|short(120) }}</span>{% endif %}
-      </div>
-    </div>
+<section aria-label="All films">
+  <div class="row between" style="margin:10px 0 16px">
+    <h2 style="margin:0">All films <span class="mono dim" style="font-size:13px;margin-left:6px">{{ films|length }}</span></h2>
+    <span class="small dim">queue order first, then films made by hand</span>
   </div>
+  <div class="films">
+  {% for f in films %}
+    {% set hue = loop.index0 % 8 %}
+    <article class="film">
+      <a class="frame{% if hue %} hue{{ hue }}{% endif %}" href="/film/{{ f.slug }}" aria-label="Open {{ f.title }}">
+        <span class="bars" aria-hidden="true"></span>
+        <span class="badge {{ f.state.split(':')[0] }}">{{ f.state }}</span>
+        {% if f.runtime %}<span class="tag tr">{{ f.runtime }} MIN</span>{% endif %}
+        <span class="title" style="font-size:24px">{{ f.title_te or f.title }}</span>
+      </a>
+      <div class="body">
+        <div class="row between" style="gap:8px">
+          <h3><a href="/film/{{ f.slug }}" style="color:inherit">{{ f.title }}</a></h3>
+          <span class="mono tiny dim">{{ f.slug }}</span>
+        </div>
+        {% if f.logline %}<p class="logline">{{ f.logline }}</p>{% endif %}
+        <div>{{ money_line(f.money) }}</div>
+        <div class="meta">
+          {% if f.has_film %}<span class="badge done">film</span>{% endif %}{% if f.has_trailer %}<span class="badge done">trailer</span>{% endif %}
+          {% if f.updated %}<span>updated {{ f.updated[:16]|replace('T',' ') }}</span>{% endif %}
+          {% if f.note %}<span title="{{ f.note }}">· {{ f.note|short(70) }}</span>{% endif %}
+        </div>
+        <div class="actions" style="margin-top:4px">
+          {{ gate_actions(f) }}
+          <a class="btn quiet sm" href="/film/{{ f.slug }}">Open</a>
+        </div>
+      </div>
+    </article>
   {% endfor %}
-</div>
+    <a class="new-card" href="/new">
+      <span class="plus"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></span>
+      <span class="serif" style="font-size:24px">{% if films %}Start a new film{% else %}Nothing yet. Start with a story{% endif %}</span>
+      <span class="small muted">A story becomes a queue sheet; the runner picks it up within 15 minutes</span>
+    </a>
+  </div>
+</section>
 {% endblock %}

@@ -1,26 +1,150 @@
 {% extends "base.html" %}
+{% block title %}New film · {{ settings.title }}{% endblock %}
+{% block style %}
+.compose { display:flex; flex-wrap:wrap; gap:24px; align-items:flex-start }
+.compose .left { flex:999 1 600px; min-width:0; display:flex; flex-direction:column; gap:18px }
+.compose .left .card { margin:0 }
+.steps { display:flex; align-items:center; gap:8px; margin:0; padding:0; list-style:none; font-size:12px; font-weight:700; letter-spacing:.12em }
+.steps li { display:flex; align-items:center; gap:8px; color:var(--dim) } .steps li.on { color:var(--gold) }
+.steps .n { width:24px; height:24px; border-radius:50%; border:1px solid rgba(255,255,255,.25); display:inline-flex; align-items:center; justify-content:center; font-size:11px }
+.steps li.on .n { background:var(--gold); border-color:var(--gold); color:var(--gold-ink) } .steps .link { width:28px; height:1px; background:rgba(255,255,255,.18) }
+.sec-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:6px } .sec-head h2 { margin:0 }
+textarea.story { min-height:300px; font-size:16px; font-family:var(--te); border-radius:14px; padding:16px 18px }
+.chips { display:flex; flex-wrap:wrap; gap:6px } .chips button { height:36px; padding:0 14px; border-radius:999px; font-size:13px; font-family:var(--mono); font-weight:700 }
+.chips button.quiet.on { border-color:rgba(242,181,68,.6); background:var(--gold-soft); color:var(--gold) }
+.prefix { position:relative } .prefix input { padding-left:36px } .prefix > span { position:absolute; left:14px; top:50%; transform:translateY(-50%); color:var(--dim); font-family:var(--mono) }
+.toggle-row { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 16px; border-radius:14px; background:var(--well); border:1px solid var(--line); flex-wrap:wrap; margin-top:14px }
+.slate { flex:1 1 380px; max-width:440px; min-width:0; border-radius:22px; overflow:hidden; border:1px solid var(--line2); background:var(--card); box-shadow:0 30px 80px rgba(0,0,0,.45) }
+.slate .clap { height:26px; background:repeating-linear-gradient(135deg,#EEF0F6 0 18px,#0B0C12 18px 36px) }
+.slate .inner { padding:22px 24px 24px; display:flex; flex-direction:column; gap:16px }
+.slate .box { padding:14px 16px; border-radius:14px; background:var(--well); border:1px solid var(--line) }
+.slate .box .label { font-size:10px; letter-spacing:.2em } .slate .box .v { font-family:var(--mono); font-size:12.5px; margin-top:6px; color:var(--ink) }
+.slate .title { font-family:var(--serif); font-size:32px; line-height:1.05; margin-top:6px; text-transform:uppercase; word-break:break-word }
+.slate ol { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:7px; font-size:13px }
+.slate ol li { display:flex; justify-content:space-between; gap:10px } .slate ol li span:first-child { display:flex; align-items:center; gap:10px }
+.slate ol .d { width:6px; height:6px; border-radius:50%; background:var(--gold); flex:none } .slate ol .d.gate { background:transparent; border:1px solid var(--cyan) }
+.slate .total { display:flex; align-items:baseline; justify-content:space-between; border-top:1px solid var(--line); padding-top:14px }
+.slate .total b { font-family:var(--serif); font-weight:400; font-size:30px; color:var(--gold) }
+{% endblock %}
 {% block body %}
-<div class="card">
-  <h1>New film</h1>
-  <p class="muted small">The story goes to the bucket and a row to the queue. The runner plans the story bible, outline, scenes, cast and shots with Claude, then stops at each review gate for you. Nothing is paid without the cap below, and the paid steps are priced before they start.</p>
-  <form method="post" action="/new">
-    <div class="grid g2">
-      <div>
-        <label>Slug (the folder name: lowercase, digits, dashes)</label><input name="slug" required pattern="[a-z0-9][a-z0-9-]{1,40}" placeholder="rain-ferry">
-        <label>Runtime (minutes)</label><input name="runtime" type="number" min="1" max="60" value="10">
-        <label>Budget cap for this film (USD, the hard stop)</label><input name="budget" type="number" min="1" step="1" value="150" required>
-      </div>
-      <div>
-        <label>Review gates</label>
-        <select name="gates"><option value="ask">ask: stop at story, cast and first frames for my approval</option><option value="auto">auto: approve them as they come</option></select>
-        <label>YouTube</label>
-        <select name="publish"><option value="private">private upload when the film check passes</option><option value="unlisted">unlisted</option><option value="public">public</option><option value="none">none: deliver to the bucket only</option></select>
-        <label><input type="checkbox" name="start" value="1" checked style="width:auto"> start a tick right away (else within 15 minutes)</label>
-      </div>
-    </div>
-    <label>Story (Telugu or English; a page or two is plenty: who, where, what is at stake, how it ends)</label>
-    <textarea name="story" required placeholder="గోదావరి ఒడ్డున ఒక పడవ నడిపే యువకుడు..."></textarea>
-    <p><button>Queue this film</button></p>
-  </form>
+<div class="row between end" style="margin-bottom:24px">
+  <div>
+    <p class="eyebrow">New film</p>
+    <h1 style="margin:0">Write the <em>story.</em></h1>
+    <p class="muted" style="margin-top:12px;max-width:580px">The story goes to the bucket and a row to the queue. The runner plans the story bible, outline, scenes, cast and shots with Claude, then stops at each review gate for you. Nothing is paid without the cap below, and the paid steps are priced before they start.</p>
+  </div>
+  <ol class="steps" aria-label="Sections">
+    <li class="on"><span class="n">1</span>STORY</li><li class="link" aria-hidden="true"></li>
+    <li><span class="n">2</span>FILM</li><li class="link" aria-hidden="true"></li>
+    <li><span class="n">3</span>RUNNER</li>
+  </ol>
 </div>
+
+<div class="compose">
+  <form id="newfilm" method="post" action="/new" class="left">
+    <section class="card" aria-labelledby="s-story">
+      <div class="sec-head"><h2 id="s-story">Story</h2><span class="mono tiny dim">01 / 03</span></div>
+      <label for="story">Story · Telugu or English</label>
+      <textarea id="story" name="story" class="story" required placeholder="గోదావరి ఒడ్డున ఒక పడవ నడిపే యువకుడు..."></textarea>
+      <div class="row between" style="margin-top:8px"><span class="field-note" style="margin:0">A page or two is plenty: who, where, what is at stake, how it ends.</span><span class="mono tiny dim" id="story-count">0 words</span></div>
+    </section>
+
+    <section class="card" aria-labelledby="s-film">
+      <div class="sec-head"><h2 id="s-film">Film</h2><span class="mono tiny dim">02 / 03</span></div>
+      <div class="grid g2">
+        <div>
+          <label for="slug">Slug · the folder name</label>
+          <input id="slug" name="slug" required pattern="[a-z0-9][a-z0-9-]{1,40}" placeholder="rain-ferry" autocomplete="off" spellcheck="false" style="font-family:var(--mono)">
+          <div class="field-note">Lowercase letters, digits and dashes, 2 to 41 characters. It names <span class="mono">stories/&lt;slug&gt;.md</span> and the project folder.</div>
+        </div>
+        <div>
+          <label for="budget">Budget cap · USD, the hard stop</label>
+          <div class="prefix"><span>$</span><input id="budget" name="budget" type="number" min="1" step="1" value="150" required></div>
+          <div class="field-note">The runner stops before this line. Every paid step shows its price first.</div>
+        </div>
+      </div>
+      <label for="runtime">Runtime · minutes</label>
+      <div class="row" style="gap:10px">
+        <input id="runtime" name="runtime" type="number" min="1" max="60" value="10" style="width:110px">
+        <div class="chips" data-for="runtime" aria-label="Quick picks">
+          <button type="button" class="quiet" data-v="3">3 min</button><button type="button" class="quiet" data-v="5">5 min</button>
+          <button type="button" class="quiet on" data-v="10">10 min</button><button type="button" class="quiet" data-v="20">20 min</button><button type="button" class="quiet" data-v="45">45 min</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="s-runner">
+      <div class="sec-head"><h2 id="s-runner">Runner</h2><span class="mono tiny dim">03 / 03</span></div>
+      <div class="grid g2">
+        <div>
+          <label for="gates">Review gates</label>
+          <select id="gates" name="gates"><option value="ask">ask: stop at story, cast and first frames for my approval</option><option value="auto">auto: approve them as they come</option></select>
+        </div>
+        <div>
+          <label for="publish">YouTube</label>
+          <select id="publish" name="publish"><option value="private">private upload when the film check passes</option><option value="unlisted">unlisted</option><option value="public">public</option><option value="none">none: deliver to the bucket only</option></select>
+        </div>
+      </div>
+      <div class="toggle-row">
+        <label class="check" style="margin:0"><input type="checkbox" name="start" value="1" checked> Start a tick right away</label>
+        <span class="small dim">otherwise the scheduled tick picks it up within 15 minutes</span>
+      </div>
+    </section>
+  </form>
+
+  <aside class="slate" aria-label="Call sheet">
+    <div class="clap" aria-hidden="true"></div>
+    <div class="inner">
+      <div class="row between"><span class="eyebrow" style="margin:0">Call sheet</span><span class="mono tiny dim">queue/stories.csv</span></div>
+      <div class="box"><span class="label">Title</span><div class="title" id="sl-title">[slug]</div></div>
+      <div class="grid" style="grid-template-columns:repeat(2,minmax(0,1fr));gap:10px">
+        <div class="box"><span class="label">Runtime</span><div class="v" id="sl-runtime">10 min</div></div>
+        <div class="box"><span class="label">Cap</span><div class="v" id="sl-budget">$150</div></div>
+        <div class="box"><span class="label">Gates</span><div class="v" id="sl-gates">ask</div></div>
+        <div class="box"><span class="label">YouTube</span><div class="v" id="sl-publish">private</div></div>
+      </div>
+      <div>
+        <span class="label">What the runner will do</span>
+        <ol style="margin-top:10px">
+          <li><span><span class="d"></span>Story bible &amp; outline</span><span class="mono tiny dim">Claude</span></li>
+          <li><span><span class="d gate"></span>Story gate</span><span class="mono tiny cyan" data-gate>waits for you</span></li>
+          <li><span><span class="d"></span>Scenes &amp; dialogue, cast</span><span class="mono tiny dim">Claude</span></li>
+          <li><span><span class="d gate"></span>Cast gate</span><span class="mono tiny cyan" data-gate>waits for you</span></li>
+          <li><span><span class="d"></span>Shot lists &amp; first frames</span><span class="mono tiny dim">priced first</span></li>
+          <li><span><span class="d gate"></span>First-frames gate</span><span class="mono tiny cyan" data-gate>waits for you</span></li>
+          <li><span><span class="d"></span>Picture, voices, music, lips</span><span class="mono tiny dim">under the cap</span></li>
+          <li><span><span class="d"></span>Film, trailer, QA, delivery</span><span class="mono tiny dim">bucket</span></li>
+          <li><span><span class="d"></span>YouTube</span><span class="mono tiny dim" id="sl-publish2">private</span></li>
+        </ol>
+      </div>
+      <div class="total"><span class="small muted">Hard stop</span><b id="sl-total">$150</b></div>
+      <button class="big" form="newfilm" type="submit" style="width:100%"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>Queue this film</button>
+      <p class="mono tiny dim" style="line-height:1.7">Writes <span class="cyan">stories/<span data-slug>&lt;slug&gt;</span>.md</span>, <span class="cyan">stories/<span data-slug>&lt;slug&gt;</span>.overrides.yaml</span> and one row in <span class="cyan">queue/stories.csv</span>. The runner does every paid step under the cap.</p>
+    </div>
+  </aside>
+</div>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var slug = $('slug'), runtime = $('runtime'), budget = $('budget'), gates = $('gates'), publish = $('publish'), story = $('story');
+  function money(v) { var n = parseFloat(v); return isNaN(n) ? '$—' : '$' + n.toLocaleString('en-US', {maximumFractionDigits: 2}); }
+  function sync() {
+    var s = (slug.value || '').trim();
+    $('sl-title').textContent = s ? s.replace(/-/g, ' ') : '[slug]';
+    document.querySelectorAll('[data-slug]').forEach(function (el) { el.textContent = s || '<slug>'; });
+    $('sl-runtime').textContent = (runtime.value || '—') + ' min';
+    $('sl-budget').textContent = money(budget.value); $('sl-total').textContent = money(budget.value);
+    $('sl-gates').textContent = gates.value; $('sl-publish').textContent = publish.value; $('sl-publish2').textContent = publish.value;
+    document.querySelectorAll('[data-gate]').forEach(function (el) { el.textContent = gates.value === 'auto' ? 'auto-approved' : 'waits for you'; });
+    document.querySelectorAll('.chips[data-for=runtime] button').forEach(function (b) { b.classList.toggle('on', b.dataset.v === runtime.value); });
+    var words = (story.value.trim().match(/\S+/g) || []).length;
+    $('story-count').textContent = words + (words === 1 ? ' word' : ' words') + (story.value.trim().length < 40 && words ? ' · a little more' : '');
+  }
+  document.querySelectorAll('.chips[data-for=runtime] button').forEach(function (b) {
+    b.addEventListener('click', function () { runtime.value = b.dataset.v; sync(); });
+  });
+  [slug, runtime, budget, gates, publish, story].forEach(function (el) { el.addEventListener('input', sync); el.addEventListener('change', sync); });
+  sync();
+})();
+</script>
 {% endblock %}

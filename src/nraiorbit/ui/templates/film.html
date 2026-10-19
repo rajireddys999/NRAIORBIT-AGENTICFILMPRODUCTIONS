@@ -46,6 +46,9 @@
 {% set m = f.money %}
 {% set state0 = f.state.split(':')[0] %}
 {% set executing = f.live or (runner_running and state0 == 'producing') %}
+{# a stage's badge: "running" while the runner is on it (its live record, or the step under way during a run),
+   else its status #}
+{% macro run_badge(key, quiet=False) %}{% set s = f.stages[key] %}{% if s.status == 'executing' or (executing and f.next_stage == key) %}<span class="badge executing live"{% if quiet %} style="margin-left:10px;vertical-align:middle"{% endif %}>running</span>{% elif not quiet %}<span class="badge {{ s.status }}">{{ s.status }}</span>{% endif %}{% endmacro %}
 {% set hue = (f.slug|length) % 8 %}
 {% set shot_count = f.shots|map(attribute='shots')|map('length')|sum %}
 
@@ -123,7 +126,7 @@
   <div class="section-head">
     <h2>Pipeline</h2>
     <span class="mono tiny {% if f.gates %}cyan{% elif f.next_stage %}gold{% else %}dim{% endif %}">
-      {% if f.gates %}waiting on you · {{ f.gates|join(', ') }}{% elif f.next_stage %}{{ 'executing now' if executing else 'next up, on the next tick' }} · {{ f.next_stage }}{% else %}read from the plan files, never a second copy{% endif %}
+      {% if f.gates %}waiting on you · {{ f.gates|join(', ') }}{% elif f.next_stage %}{{ 'running now' if executing else 'next up, on the next tick' }} · {{ f.next_stage }}{% else %}read from the plan files, never a second copy{% endif %}
     </span>
   </div>
   <ol class="flow">
@@ -133,8 +136,8 @@
         <span class="n">{{ '%02d'|format(loop.index) }}</span>
         <b>{{ label }}</b>
         {% if gate %}<span class="badge awaiting">needs you</span>
-        {% elif s.status == 'executing' %}<span class="badge executing live">executing</span>
-        {% elif is_next %}<span class="badge next{% if executing %} live{% endif %}">{{ 'executing' if executing else 'next up' }}</span>
+        {% elif s.status == 'executing' %}<span class="badge executing live">running</span>
+        {% elif is_next %}<span class="badge next{% if executing %} live{% endif %}">{{ 'running' if executing else 'next up' }}</span>
         {% else %}<span class="badge {{ s.status }}">{{ s.status }}</span>{% endif %}
         {% if s.text %}<span class="txt muted">{{ s.text }}</span>{% endif %}
         <span class="details">Details <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m6 13 6 6 6-6"/></svg></span>
@@ -167,7 +170,7 @@
 
 <div class="grid g2">
   <div class="card money" id="money">
-    <div class="section-head"><h2>Money</h2><span class="mono tiny dim">reports/cost.jsonl · {{ m['items'] }} paid calls</span></div>
+    <div class="section-head"><h2>Money{{ run_badge('cost', quiet=True) }}</h2><span class="mono tiny dim">reports/cost.jsonl · {{ m['items'] }} paid calls</span></div>
     <p><span class="big gold">{{ m.spent|money }}<small>spent</small></span>{% if m.cap %} <span class="muted">of the <b>{{ m.cap|money }}</b> cap ({{ m.left|money }} left)</span>{% else %} · <b class="bad">no cap: nothing paid until one is set</b>{% endif %}</p>
     {% if m.cap %}<div class="bar {% if m.spent > m.cap %}over{% endif %}" style="margin:12px 0"><span style="width:{{ [100, (100 * m.spent / m.cap)|round]|min }}%"></span></div>{% endif %}
     {% if m.estimate %}<p class="small">Next paid run, one attempt per shot: about <b>{{ m.estimate.total_usd|money }}</b>
@@ -195,7 +198,7 @@
 </div>
 
 <div class="card" id="story">
-  <div class="section-head"><h2>Story bible</h2>{% if f.bible %}<span class="mono tiny dim">{{ f.bible.characters|length }} characters · {{ f.bible.acts|length }} acts</span>{% endif %}</div>
+  <div class="section-head"><h2>Story bible{{ run_badge('story', quiet=True) }}</h2>{% if f.bible %}<span class="mono tiny dim">{{ f.bible.characters|length }} characters · {{ f.bible.acts|length }} acts</span>{% endif %}</div>
   {% if f.bible %}
     <p><b class="te">{{ f.bible.title_te }}</b> · {{ f.bible.title_en }} · {{ f.bible.genres|join(', ') }} · {{ f.bible.tone }} · <span class="mono">{{ f.bible.structure_template }}</span></p>
     <p style="font-size:17px">{{ f.bible.logline }}</p>
@@ -207,14 +210,14 @@
 </div>
 
 <div class="card" id="outline">
-  <div class="section-head"><h2>Outline</h2>{% if f.outline %}<span class="mono tiny dim">{{ f.outline|length }} scenes</span>{% endif %}</div>
+  <div class="section-head"><h2>Outline{{ run_badge('outline', quiet=True) }}</h2>{% if f.outline %}<span class="mono tiny dim">{{ f.outline|length }} scenes</span>{% endif %}</div>
   {% if f.outline %}<div class="table-wrap"><table class="outline"><tr><th>Scene</th><th>Heading</th><th>Synopsis</th><th>Rasa</th><th>Int.</th><th>Set piece</th><th>Sec</th></tr>
   {% for o in f.outline %}<tr><td class="mono gold">{{ o.scene_id }}</td><td><b>{{ o.heading }}</b></td><td class="small muted">{{ o.synopsis }}</td><td class="small">{{ o.rasa_primary }}{% if o.rasa_secondary %}/{{ o.rasa_secondary }}{% endif %}</td><td class="mono">{{ o.intensity }}</td><td class="small">{{ o.set_piece }}</td><td class="mono">{{ o.target_seconds }}</td></tr>{% endfor %}</table></div>
   {% else %}<p class="muted">Not written yet.</p>{% endif %}
 </div>
 
 <div class="card" id="scenes">
-  <div class="section-head"><h2>Scenes &amp; dialogue</h2>{% if f.scenes %}<span class="mono tiny dim">{{ f.scenes|length }} written</span>{% endif %}</div>
+  <div class="section-head"><h2>Scenes &amp; dialogue{{ run_badge('scenes', quiet=True) }}</h2>{% if f.scenes %}<span class="mono tiny dim">{{ f.scenes|length }} written</span>{% endif %}</div>
   {% for sc in f.scenes %}
   <details {% if loop.index <= 2 %}open{% endif %}><summary><span class="mono gold">{{ sc.scene_id }}</span> {{ sc.heading }} <span class="badge plain" style="margin-left:auto">{{ sc.rasa_primary }} {{ sc.intensity }}</span></summary>
     <p class="small muted">{{ sc.synopsis }}</p>
@@ -229,7 +232,7 @@
 </div>
 
 <div class="card" id="cast">
-  <div class="section-head"><h2>Cast</h2>{% if f.cast %}<span class="mono tiny dim">{{ f.cast|selectattr('voice_asset')|list|length }} voices · {{ f.cast|selectattr('images')|list|length }} identity packs</span>{% endif %}</div>
+  <div class="section-head"><h2>Cast{{ run_badge('cast', quiet=True) }}</h2>{% if f.cast %}<span class="mono tiny dim">{{ f.cast|selectattr('voice_asset')|list|length }} voices · {{ f.cast|selectattr('images')|list|length }} identity packs</span>{% endif %}</div>
   <div class="grid g4">
   {% for c in f.cast %}
     <div class="cast-card">
@@ -244,7 +247,7 @@
 </div>
 
 <div class="card" id="shots">
-  <div class="section-head"><h2>Shot lists</h2>{% if shot_count %}<span class="mono tiny dim">{{ shot_count }} shots across {{ f.shots|length }} scenes</span>{% endif %}</div>
+  <div class="section-head"><h2>Shot lists{{ run_badge('shots', quiet=True) }}</h2>{% if shot_count %}<span class="mono tiny dim">{{ shot_count }} shots across {{ f.shots|length }} scenes</span>{% endif %}</div>
   {% for sl in f.shots %}
   <details><summary><span class="mono gold">{{ sl.scene_id }}</span> {{ sl.shots|length }} shots <span class="mono tiny dim" style="margin-left:auto">{{ sl.shots|selectattr('filmed')|list|length }} filmed</span></summary>
   <div class="table-wrap"><table><tr><th></th><th>Shot</th><th>Size · move</th><th>Who</th><th>Sec</th><th>Rasa</th><th>What we see</th><th>State</th></tr>
@@ -258,7 +261,7 @@
 </div>
 
 <div class="card" id="faces">
-  <div class="section-head"><h2>First frames</h2><span class="mono tiny dim">{{ f.keyframes|length }} frames</span></div>
+  <div class="section-head"><h2>First frames{{ run_badge('faces', quiet=True) }}</h2><span class="mono tiny dim">{{ f.keyframes|length }} frames</span></div>
   <p class="small muted">One still per shot with a lead, made before any video is bought. Faces that are wrong here would be wrong in the film.</p>
   <div class="frames" style="margin-top:14px">
   {% for k in f.keyframes %}
@@ -272,14 +275,14 @@
 </div>
 
 <div class="card" id="render">
-  <div class="section-head"><h2>Picture, voices, music, lips</h2><span class="badge {{ f.stages.render.status }}">{{ f.stages.render.status }}</span></div>
+  <div class="section-head"><h2>Picture, voices, music, lips</h2>{{ run_badge('render') }}</div>
   <p>{{ f.stages.render.text or 'Nothing rendered yet.' }}</p>
   {% if f.review_queue %}<details><summary>Review queue ({{ f.review_queue|length }} notes from the run)</summary>
     <table>{% for r in f.review_queue %}<tr><td class="mono gold">{{ r.shot_id }}</td><td class="small">{{ r.reason|join('; ') if r.reason is iterable and r.reason is not string else r.reason }}</td></tr>{% endfor %}</table></details>{% endif %}
 </div>
 
 <div class="card" id="assemble">
-  <div class="section-head"><h2>Film &amp; trailer</h2><span class="badge {{ f.stages.assemble.status }}">{{ f.stages.assemble.status }}</span></div>
+  <div class="section-head"><h2>Film &amp; trailer</h2>{{ run_badge('assemble') }}</div>
   <div class="grid g2">
     {% if f.media['movie.mp4'] %}<div><h3 style="margin-top:0">Film</h3><video controls preload="metadata" src="{{ f.media['movie.mp4'] }}"></video></div>{% endif %}
     {% if f.media['trailer.mp4'] %}<div><h3 style="margin-top:0">Trailer</h3><video controls preload="metadata" src="{{ f.media['trailer.mp4'] }}"></video></div>{% endif %}
@@ -288,7 +291,7 @@
 </div>
 
 <div class="card" id="qa">
-  <div class="section-head"><h2>QA</h2><span class="badge {{ f.stages.qa.status }}">{{ f.stages.qa.status }}</span></div>
+  <div class="section-head"><h2>QA</h2>{{ run_badge('qa') }}</div>
   {% if f.qa_film %}<p>Film check: <span class="badge {{ 'ok' if f.qa_film.ok else 'partial' }}">{{ 'ok' if f.qa_film.ok else 'needs a look' }}</span></p>
     <details><summary>Measurements</summary><pre>{{ f.qa_film|tojson(indent=1) }}</pre></details>{% endif %}
   {% if f.qa_md %}<details><summary>Lip-sync review</summary><pre>{{ f.qa_md }}</pre></details>{% endif %}
@@ -297,13 +300,13 @@
 </div>
 
 <div class="card" id="deliver">
-  <div class="section-head"><h2>Delivery</h2><span class="badge {{ f.stages.deliver.status }}">{{ f.stages.deliver.status }}</span></div>
+  <div class="section-head"><h2>Delivery</h2>{{ run_badge('deliver') }}</div>
   {% if f.delivery %}<table>{% for d in f.delivery %}<tr><td>{% if d.url %}<a href="{{ d.url }}">{{ d.name }}</a>{% else %}{{ d.name }}{% endif %}</td><td class="mono" style="text-align:right">{{ d.mb }} MB</td></tr>{% endfor %}</table>
   <p class="small muted" style="margin-top:10px">Links are time-limited; open this page again for fresh ones.</p>{% else %}<p class="muted">Not delivered yet.</p>{% endif %}
 </div>
 
 <div class="card" id="publish">
-  <div class="section-head"><h2>YouTube</h2><span class="badge {{ f.stages.publish.status }}">{{ f.stages.publish.status }}</span></div>
+  <div class="section-head"><h2>YouTube</h2>{{ run_badge('publish') }}</div>
   {% set pub = f.steps.publish %}
   {% if pub is mapping %}{% for k, v in pub.items() %}<p>{{ k }}: {% if v is mapping and v.id %}<a href="https://youtu.be/{{ v.id }}" target="_blank" rel="noopener">youtu.be/{{ v.id }}</a>{% elif v is string and v|length < 20 %}<a href="https://youtu.be/{{ v }}" target="_blank" rel="noopener">youtu.be/{{ v }}</a>{% else %}{{ v }}{% endif %}</p>{% endfor %}
   {% elif pub %}<p>{{ pub }}</p>{% else %}<p class="muted">Not published. Policy: {{ f.row.publish if f.row and f.row.publish else f.policy.publish or 'none' }}.</p>{% endif %}

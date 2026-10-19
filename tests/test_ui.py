@@ -308,7 +308,11 @@ def test_the_pipeline_flow_shows_the_gates_and_the_step_under_way(client, root, 
         {"name": "nraiorbit-runner-xyz", "created": "2026-10-17T10:00:00", "completed": "", "succeeded": 0, "failed": 0,
          "running": 1, "state": "running"}])
     html = client.get("/film/demo").text
-    assert "executing now" in html and 'class="badge next live">executing</span>' in html
+    assert "running now" in html and 'class="badge next live">running</span>' in html
+    from nraiorbit.ui import films
+    step = films.detail(Store(str(root)), "demo", rows(root)[0])["next_stage"]   # no progress record: the old runner
+    assert step and 'class="badge executing live"' in card(html, "money" if step == "cost" else step)
+    assert "todo</span>" not in card(html, "money" if step == "cost" else step)
 
 
 def test_new_story_writes_the_story_the_overrides_and_the_row(client, root):
@@ -526,6 +530,13 @@ def test_publish_paths_find_the_token_in_the_environment_or_secret_manager(tmp_p
     assert json.loads(youtube.stored_token())["token"] == "env"   # the environment wins over the secret
 
 
+
+def card(html: str, key: str) -> str:
+    """One stage's card on the film page, from its anchor to the next card."""
+    i = html.index(f'class="card" id="{key}"') if f'class="card" id="{key}"' in html else html.index(f'id="{key}"')
+    j = html.find('<div class="card', i + 1)
+    return html[i: j if j != -1 else len(html)]
+
 def running_exec(name, created="2026-10-19T06:46:02+00:00", state="running"):
     return {"name": name, "created": created, "completed": "" if state == "running" else "2026-10-19T07:30:00+00:00",
             "succeeded": int(state == "ok"), "failed": int(state == "failed"), "running": int(state == "running"),
@@ -569,8 +580,9 @@ def test_the_runners_progress_record_marks_the_stage_under_way(client, root, mon
     html = client.get("/film/demo").text
     assert "Running <b>Scenes &amp; dialogue</b> since 02:48 EDT · last: sc010: 3 lines (" in html
     assert "execution <span class=\"mono\">nraiorbit-runner-mfkkm</span>" in html
-    assert 'class="node executing"' in html and 'class="badge executing live">executing</span>' in html
-    assert 'class="stage executing"' in html and "executing now · scenes" in html
+    assert 'class="node executing"' in html and 'class="badge executing live">running</span>' in html
+    assert 'Scenes &amp; dialogue<span class="badge executing live"' in card(html, "scenes")
+    assert 'class="stage executing"' in html and "running now · scenes" in html
     assert '<noscript><meta http-equiv="refresh" content="20"></noscript>' in html and "sessionStorage" in html
     assert "location.reload()" in html and "pagehide" not in html             # only its own refresh keeps the place
     assert 'name="gate"' not in html                                           # a run under way offers no button
@@ -579,6 +591,11 @@ def test_the_runners_progress_record_marks_the_stage_under_way(client, root, mon
     (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
     html = client.get("/film/demo").text
     assert 'name="gate"' not in html and "Approve" not in html and "Running <b>" in html
+    # QA under way: its card says running, never todo (the owner watched QA read TODO while it ran)
+    (root / "demo" / "reports" / "progress.json").write_text(json.dumps({**PROGRESS, "phase": "qa", "updated": now_iso(5)}))
+    html = client.get("/film/demo").text
+    assert '<span class="badge executing live">running</span>' in card(html, "qa") and "todo</span>" not in card(html, "qa")
+    assert "running now · qa" in html
     # the music plan is drawn on the render stage and says so
     (root / "demo" / "reports" / "progress.json").write_text(json.dumps({**PROGRESS, "phase": "music_plan"}))
     d = films.detail(store, "demo", rows(root)[0], {"nraiorbit-runner-mfkkm"})
@@ -590,7 +607,7 @@ def test_the_runners_progress_record_marks_the_stage_under_way(client, root, mon
         assert d["live"]["stage_key"] is None and "executing" not in {s["status"] for s in d["stages"].values()}
     html = client.get("/film/demo").text
     assert "Running since 02:48 EDT · last: sc010" in html
-    assert "executing now · " in html and "on the next tick" not in html      # a run is on the film: never "next tick"
+    assert "running now · " in html and "on the next tick" not in html      # a run is on the film: never "next tick"
     # the execution has ended, or the record says it finished: not live, today's inference stands
     (root / "demo" / "reports" / "progress.json").write_text(json.dumps(PROGRESS))
     before = films.detail(store, "demo", rows(root)[0])

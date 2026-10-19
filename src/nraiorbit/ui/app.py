@@ -34,8 +34,26 @@ class Settings:
     job: str | None = "nraiorbit-runner"
     title: str = "NRAIORBIT control room"
     google_client_id: str | None = None      # "Sign in with Google" (an OAuth web client's public id; no secret)
+    passphrase: str | None = None            # a second way in: a long passphrase from Secret Manager (UI_PASSPHRASE)
     session_secret: str | None = None        # signs the session cookie; random per deployment when unset
     session_days: int = 7
+
+
+class Throttle:
+    """Failed passphrase attempts per address: after `limit` in `window` seconds the address waits."""
+
+    def __init__(self, limit: int = 8, window: int = 900):
+        self.limit, self.window, self.hits = limit, window, {}
+
+    def blocked(self, who: str) -> bool:
+        import time
+        now = time.time()
+        self.hits[who] = [t for t in self.hits.get(who, []) if now - t < self.window]
+        return len(self.hits[who]) >= self.limit
+
+    def failed(self, who: str) -> None:
+        import time
+        self.hits.setdefault(who, []).append(time.time())
 
 
 SESSION_COOKIE = "nraiorbit_session"
@@ -135,12 +153,18 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
     templates.env.filters["money"] = lambda v: "" if v is None else f"${float(v):,.2f}"
     templates.env.filters["short"] = lambda v, n=90: (v if len(v) <= n else v[:n - 1] + "…") if isinstance(v, str) else v
 
+    throttle = Throttle()
+
     def guard(request: Request) -> str:
-        """Who may act: the session cookie set by "Sign in with Google", or Identity-Aware Proxy's assertion when the
-        service sits behind IAP. Anyone else is sent to the sign-in page (or told no, on a form post)."""
+        """Who may act: a session cookie this app minted (after "Sign in with Google" or the passphrase), or
+        Identity-Aware Proxy's assertion when the service sits behind IAP. Anyone else is sent to the sign-in page
+        (or told no, on a form post)."""
         if not settings.auth:
             return "local"
-        email = read_session(settings.session_secret, request.cookies.get(SESSION_COOKIE)) or user_email(request)
+        session = read_session(settings.session_secret, request.cookies.get(SESSION_COOKIE))
+        if session:
+            return session
+        email = user_email(request)
         if email and email in settings.allowed_emails:
             return email
         if email:
@@ -179,7 +203,32 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         return templates.TemplateResponse(request, "login.html", {
             "request": request, "settings": settings, "email": None, "root": store.root,
             "msg": request.query_params.get("msg"), "client_id": settings.google_client_id,
-            "origin": str(request.base_url).rstrip("/")})
+            "passphrase": bool(settings.passphrase), "origin": str(request.base_url).rstrip("/")})
+
+    def _session_response(identity: str, request: Request) -> RedirectResponse:
+        resp = RedirectResponse("/", status_code=303)
+        resp.set_cookie(SESSION_COOKIE, sign_session(settings.session_secret, identity, settings.session_days),
+                        max_age=settings.session_days * 86400, httponly=True, secure=request.url.scheme == "https",
+                        samesite="lax", path="/")
+        print(f"control room: {identity} signed in", flush=True)
+        return resp
+
+    @app.post("/auth/passphrase")
+    def auth_passphrase(request: Request, passphrase: str = Form("")):
+        import hmac
+        import time
+        if not settings.passphrase:
+            raise HTTPException(404, "passphrase sign-in is not enabled")
+        who = request.headers.get("x-forwarded-for", request.client.host if request.client else "?").split(",")[0]
+        if throttle.blocked(who):
+            raise HTTPException(429, "too many attempts; wait fifteen minutes")
+        if not hmac.compare_digest(passphrase.strip().encode(), settings.passphrase.encode()):
+            throttle.failed(who)
+            print(f"control room: wrong passphrase from {who}", flush=True)
+            time.sleep(1.0)
+            return RedirectResponse("/login?msg=wrong+passphrase", status_code=303)
+        label = next(iter(sorted(settings.allowed_emails)), "owner")
+        return _session_response(f"{label} (passphrase)", request)
 
     @app.post("/auth/callback")
     def auth_callback(request: Request, credential: str = Form(...), g_csrf_token: str = Form("")):
@@ -194,12 +243,7 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         if email not in settings.allowed_emails:
             print(f"control room: denied {email} at sign-in", flush=True)
             raise HTTPException(status_code=403, detail=denied_page(email, settings.allowed_emails))
-        resp = RedirectResponse("/", status_code=303)
-        resp.set_cookie(SESSION_COOKIE, sign_session(settings.session_secret, email, settings.session_days),
-                        max_age=settings.session_days * 86400, httponly=True, secure=request.url.scheme == "https",
-                        samesite="lax", path="/")
-        print(f"control room: {email} signed in", flush=True)
-        return resp
+        return _session_response(email, request)
 
     @app.get("/logout")
     def logout():

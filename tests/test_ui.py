@@ -252,3 +252,27 @@ def test_sign_in_with_google_sets_a_session_and_keeps_strangers_out(root, monkey
     assert app_mod.read_session("s3cret", app_mod.sign_session("s3cret", "a@b.c", 1)) == "a@b.c"
     assert app_mod.read_session("other", app_mod.sign_session("s3cret", "a@b.c", 1)) is None
 
+
+def test_passphrase_sign_in_is_throttled_and_mints_the_same_session(root, monkeypatch):
+    monkeypatch.setattr(app_mod.time, "sleep", lambda *_: None, raising=False) if hasattr(app_mod, "time") else None
+    import time as _time
+    monkeypatch.setattr(_time, "sleep", lambda *_: None)
+    app = create_app(Store(str(root)), Settings(allowed_emails={"owner@example.com"}, auth=True,
+                                                 passphrase="correct horse battery staple", session_secret="s3cret"))
+    c = TestClient(app)
+    assert 'action="/auth/passphrase"' in c.get("/login").text
+    r = c.post("/auth/passphrase", data={"passphrase": "wrong"}, follow_redirects=False)
+    assert r.status_code == 303 and "wrong" in r.headers["location"] and not c.cookies.get(app_mod.SESSION_COOKIE)
+    r = c.post("/auth/passphrase", data={"passphrase": " correct horse battery staple "}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/" and c.cookies.get(app_mod.SESSION_COOKIE)
+    page = c.get("/").text
+    assert "owner@example.com (passphrase)" in page
+    assert c.post("/film/demo/retry", follow_redirects=False).status_code == 303
+    c.get("/logout")
+    for _ in range(8):
+        c.post("/auth/passphrase", data={"passphrase": "nope"}, follow_redirects=False)
+    assert c.post("/auth/passphrase", data={"passphrase": "correct horse battery staple"}).status_code == 429
+    # without a passphrase configured the route does not exist
+    plain = TestClient(create_app(Store(str(root)), Settings(allowed_emails={"owner@example.com"}, auth=True)))
+    assert plain.post("/auth/passphrase", data={"passphrase": "x"}).status_code == 404
+

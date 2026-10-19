@@ -15,7 +15,10 @@ under the row's cap. There is no database: the page can never disagree with what
   session cookie (`UI_SESSION_SECRET`, a Secret Manager secret) keeps them in for a week. Nothing else is ever
   trusted; without a session every page redirects to `/login` and every button answers 403. The client id is public
   and needs no secret: make it once under Google Auth Platform → Clients → Web application, with the service URL as
-  an authorized JavaScript origin. (Identity-Aware Proxy also works in front, and the app accepts its signed
+  an authorized JavaScript origin. A second way in, for the days before that client exists or for a phone without
+  the account: a long passphrase in the Secret Manager secret `UI_PASSPHRASE` (`--update-secrets
+  UI_PASSPHRASE=UI_PASSPHRASE:latest` on the service); wrong tries are throttled per address, and removing the secret
+  from the service removes the form. (Identity-Aware Proxy also works in front, and the app accepts its signed
   assertion too, but IAP needs a custom OAuth client that only the console can make in a project without an
   organization, so the in-page sign-in is the default.) It runs as the runner's service account with the runner's
   key secret, so signed links, bucket reads and "run a tick now" work the same way they do in the job.

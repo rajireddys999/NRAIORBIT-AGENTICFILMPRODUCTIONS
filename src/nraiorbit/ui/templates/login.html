@@ -9,7 +9,15 @@
     <div id="g_id_onload" data-client_id="{{ client_id }}" data-login_uri="{{ origin }}/auth/callback" data-ux_mode="redirect" data-auto_prompt="false"></div>
     <div class="g_id_signin" data-type="standard" data-size="large" data-theme="outline" data-text="signin_with" data-shape="pill" style="display:flex;justify-content:center"></div>
     <p class="small muted" style="margin-top:16px">Allowed: {{ settings.allowed_emails|sort|join(', ') }}</p>
-  {% else %}
+  {% endif %}
+  {% if passphrase %}
+    <form method="post" action="/auth/passphrase" style="margin-top:{{ '22px' if client_id else '6px' }}">
+      {% if client_id %}<p class="small muted">or with the studio passphrase</p>{% endif %}
+      <input type="password" name="passphrase" autocomplete="current-password" placeholder="passphrase" required style="width:100%;max-width:360px">
+      <p><button>Enter</button></p>
+    </form>
+  {% endif %}
+  {% if not client_id and not passphrase %}
     <p><b>Sign-in is not configured yet.</b> The service needs the Google OAuth client id (UI_GOOGLE_CLIENT_ID) for this origin: <span class="mono">{{ origin }}</span>.</p>
   {% endif %}
 </div>

@@ -72,6 +72,7 @@ class Settings:
     session_secret: str | None = None        # signs the session cookie; random per deployment when unset
     session_days: int = 7
     public_url: str | None = None            # how the browser reaches us (https://...), for OAuth redirects
+    timezone: str = "America/New_York"       # the studio's clock: every time on the page, the runner log included
 
 
 def public_base(request: Request, settings: "Settings") -> str:
@@ -237,8 +238,9 @@ def duplicates(executions: list[dict], doings: dict) -> set[str]:
     return {n for names in by_slug.values() if len(names) > 1 for n in names}
 
 
-def log_time(lines: list[str], started: str | None = None, now=None) -> str | None:
-    """The ISO moment of the last timed log line. A line carries only HH:MM:SS UTC, so the date comes from the
+def log_time(lines: list[str], started: str | None = None, now=None, tz=datetime.timezone.utc) -> str | None:
+    """The ISO moment of the last timed log line. A line carries only HH:MM:SS on the studio's clock (`tz`, as
+    runner.logs stamps it), so the date comes from the
     execution's start (a line is never earlier than that; past midnight it is the next day), else from today: an
     execution three days old must read as three days old. None when no line has a time ("log unavailable")."""
     m = next((m for m in (re.match(r"^(\d\d):(\d\d):(\d\d)\b", ln or "") for ln in reversed(lines)) if m), None)
@@ -247,11 +249,11 @@ def log_time(lines: list[str], started: str | None = None, now=None) -> str | No
     hms = {"hour": int(m[1]), "minute": int(m[2]), "second": int(m[3]), "microsecond": 0}
     start = films.when(started)
     if start:
-        t = start.astimezone(datetime.timezone.utc).replace(**hms)
+        t = start.astimezone(tz).replace(**hms)
         if t < start - datetime.timedelta(minutes=1):
             t += datetime.timedelta(days=1)
     else:
-        now = now or datetime.datetime.now(datetime.timezone.utc)
+        now = (now or datetime.datetime.now(datetime.timezone.utc)).astimezone(tz)
         t = now.replace(**hms)
         if t > now + datetime.timedelta(minutes=1):
             t -= datetime.timedelta(days=1)
@@ -286,8 +288,32 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.filters["money"] = lambda v: "" if v is None else f"${float(v):,.2f}"
     templates.env.filters["short"] = lambda v, n=90: (v if len(v) <= n else v[:n - 1] + "…") if isinstance(v, str) else v
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(settings.timezone or "UTC")
+    except Exception:                                    # an unknown zone name: the page still renders, in UTC
+        print(f"control room: unknown UI_TIMEZONE {settings.timezone!r}; times shown in UTC", flush=True)
+        tz = datetime.timezone.utc
+
+    def local(v, fmt: str = "%Y-%m-%d %H:%M") -> str:
+        """A timestamp (ISO text from the sheets, the API or a report; UTC when it carries no zone) on the
+        studio's clock, with the zone's name."""
+        if not v:
+            return ""
+        if isinstance(v, datetime.datetime):
+            d = v
+        else:
+            try:
+                d = datetime.datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+            except ValueError:
+                return str(v)
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=datetime.timezone.utc)
+        d = d.astimezone(tz)
+        return f"{d.strftime(fmt)} {d.tzname() or ''}".strip()
+    templates.env.filters["local"] = local
     templates.env.filters["ago"] = films.ago
-    templates.env.filters["clock"] = films.clock
+    templates.env.filters["clock"] = lambda v: films.clock(v, tz)
 
     throttle = Throttle()
 
@@ -312,7 +338,7 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
 
     def page(name: str, request: Request, email: str, **kw):
         ctx = {"request": request, "settings": settings, "email": email, "root": store.root, "is_gs": store.is_gs,
-               "msg": request.query_params.get("msg"), "now": datetime.datetime.now(datetime.timezone.utc), **kw}
+               "msg": request.query_params.get("msg"), "now": datetime.datetime.now(tz), **kw}
         return templates.TemplateResponse(request, name, ctx)
 
     def back(url: str, msg: str) -> RedirectResponse:
@@ -558,15 +584,15 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, f"no film called {slug}")
         panel, doings = runner_panel(), runner_mod.doings(store)
         running = {e["name"] for e in panel["executions"] if e["state"] == "running"}
-        d = films.detail(store, slug, row, running)
+        d = films.detail(store, slug, row, running, tz=tz)
         log_lines, latest, last_log_at = [], None, None
         if panel["executions"]:
             latest = dict(panel["executions"][0])
             try:
-                log_lines = runner_mod.logs(settings.project, latest["name"])
+                log_lines = runner_mod.logs(settings.project, latest["name"], tz=tz)
             except Exception as exc:
                 log_lines = [f"(log unavailable: {type(exc).__name__})"]
-            last_log_at = log_time(log_lines, latest.get("created"))
+            last_log_at = log_time(log_lines, latest.get("created"), tz=tz)
             latest["minutes"] = int((films.seconds_since(latest.get("created")) or 0) // 60)
         return page("film.html", request, email, f=d, stages=films.STAGES, runner=panel, log_lines=log_lines,
                     latest=latest, last_log_at=last_log_at, runner_running=bool(running), youtube=youtube_status(),

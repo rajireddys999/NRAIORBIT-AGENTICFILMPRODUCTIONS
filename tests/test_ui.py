@@ -61,6 +61,7 @@ def root(tmp_path):
     outline = Outline.model_validate(OUTLINE)
     (proj / "project" / "02_outline.json").write_text(outline.model_dump_json(indent=1), encoding="utf-8")
     (proj / "project" / "pipeline.yaml").write_text(yaml.safe_dump({"film": {"runtime_minutes": 3}, "budget": {"max_usd": 40},
+                                                                     "providers": {"video": "veo", "music": "lyria"},
                                                                      "policy": {"gates": "ask", "publish": "private"}}))
     (proj / "project" / "input" / "story.md").write_text("A ferryman and a flood.", encoding="utf-8")
     (proj / "project" / "cast.lock.yaml").write_text(yaml.safe_dump({"lock_version": 1, "characters": {
@@ -212,6 +213,48 @@ def test_approve_retry_and_row_edits_write_only_the_sheet(client, root):
     assert r.status_code == 303 and client.started == ["nraiorbit-runner", "nraiorbit-runner"]
 
 
+def test_a_cut_from_before_the_shots_is_stale_and_a_film_without_providers_is_an_animatic(client, root):
+    """Steps are read in order: a movie.mp4 that exists while the first frames are still open is from an earlier run
+    and shows as stale, never done. A film whose project names no providers runs on the mock ones; the page says
+    so, skips the first-frames and cost steps, and the board badges it."""
+    proj = root / "demo"
+    (proj / "reviews" / "faces.pending").unlink()
+    rs = rows(root)
+    rs[0].update(state="producing", updated=queue.now())
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    (proj / "11_master").mkdir()
+    (proj / "11_master" / "movie.mp4").write_bytes(b"")
+    html = client.get("/film/demo").text
+    assert 'class="badge stale">stale' in html and "from an earlier run; redone after first frames" in html
+    assert "Animatic" not in html and "2026-10-17 06:00 EDT" in html         # the runner's 10:00 UTC, on the studio's clock
+    (proj / "project" / "pipeline.yaml").write_text(yaml.safe_dump({"film": {"runtime_minutes": 3}, "budget": {"max_usd": 40}}))
+    html = client.get("/film/demo").text
+    assert "<b>Animatic.</b>" in html and "no first frames: mock video" in html and "nothing to pay: mock providers" in html
+    assert 'class="badge skipped">skipped' in html and "film (animatic)" in html and 'class="badge stale">' not in html
+    assert 'class="badge held">animatic' in client.get("/").text
+    # a delivered, uploaded film whose QA flagged something or never ran: QA is advisory, nothing after it is stale
+    (proj / "project" / "pipeline.yaml").write_text(yaml.safe_dump({"film": {"runtime_minutes": 3}, "budget": {"max_usd": 40},
+                                                                     "providers": {"video": "veo", "music": "lyria"}}))
+    (proj / "11_master" / "deliver").mkdir()
+    (proj / "11_master" / "deliver" / "delivery.json").write_text(json.dumps([{"name": "demo_720p.mp4", "mb": 9.0}]))
+    rep = json.loads((proj / "reports" / "produce.json").read_text())
+    rep.update(state="done", steps={"plan": "done", "cost": "approved", "faces": "approved", "render": "done",
+                                    "qa": "skipped: no speaking shots", "publish": {"film": {"id": "vid1"}}})
+    (proj / "reports" / "produce.json").write_text(json.dumps(rep))
+    for sh in (proj / "04_shots").glob("*.json"):                       # every shot filmed: render and faces done
+        for s in json.loads(sh.read_text())["shots"]:
+            (proj / "inbox" / "video" / f"{s['shot_id']}.mp4").write_bytes(b"")
+    rs = rows(root)
+    rs[0]["state"] = "done"
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    html = client.get("/film/demo").text
+    assert 'class="badge stale">' not in html and html.count('class="badge done">done') >= 10
+    (proj / "reports" / "qa").mkdir()
+    (proj / "reports" / "qa" / "film.json").write_text(json.dumps({"ok": False}))
+    html = client.get("/film/demo").text
+    assert 'class="badge partial">partial' in html and 'class="badge stale">' not in html
+
+
 def test_a_run_under_way_offers_no_button_and_a_stale_click_changes_nothing(client, root):
     """While a tick renders, the bucket still holds the previous stop's report and marker (awaiting:faces,
     faces.pending). The page must not offer that gate again, the board neither, and a click from a stale page must
@@ -328,6 +371,12 @@ def test_reference_queue(client, root):
         csv_text([{**ref, "state": "blocked:LearnCostError"}], queue.REFERENCE_COLUMNS))
     client.post("/references/retry", data={"url": ref["url"]})
     assert rows(root, queue.REFERENCE_COLUMNS, "references.csv")[0]["state"] == "retry"
+    # times on the studio's clock: a Z-suffixed stamp converts, a malformed one is shown as it is, escaped
+    (root / "queue" / "references.csv").write_text(csv_text([
+        {**ref, "updated": "2026-10-17T10:00:00Z"}, {**ref, "url": "https://youtu.be/x2", "updated": "<yesterday>"}],
+        queue.REFERENCE_COLUMNS))
+    page = client.get("/references").text
+    assert "2026-10-17 06:00 EDT" in page and "&lt;yesterday&gt;" in page
 
 
 def test_sign_in_with_google_sets_a_session_and_keeps_strangers_out(root, monkeypatch):
@@ -518,7 +567,7 @@ def test_the_runners_progress_record_marks_the_stage_under_way(client, root, mon
     assert d["gates"] == [] and d["gate_for"] == {}
     monkeypatch.setattr(runner_mod, "executions", lambda *a, **k: [running_exec("nraiorbit-runner-mfkkm")])
     html = client.get("/film/demo").text
-    assert "Running <b>Scenes &amp; dialogue</b> since 06:48 UTC · last: sc010: 3 lines (" in html
+    assert "Running <b>Scenes &amp; dialogue</b> since 02:48 EDT · last: sc010: 3 lines (" in html
     assert "execution <span class=\"mono\">nraiorbit-runner-mfkkm</span>" in html
     assert 'class="node executing"' in html and 'class="badge executing live">executing</span>' in html
     assert 'class="stage executing"' in html and "executing now · scenes" in html
@@ -540,7 +589,7 @@ def test_the_runners_progress_record_marks_the_stage_under_way(client, root, mon
         d = films.detail(store, "demo", rows(root)[0], {"nraiorbit-runner-mfkkm"})
         assert d["live"]["stage_key"] is None and "executing" not in {s["status"] for s in d["stages"].values()}
     html = client.get("/film/demo").text
-    assert "Running since 06:48 UTC · last: sc010" in html
+    assert "Running since 02:48 EDT · last: sc010" in html
     assert "executing now · " in html and "on the next tick" not in html      # a run is on the film: never "next tick"
     # the execution has ended, or the record says it finished: not live, today's inference stands
     (root / "demo" / "reports" / "progress.json").write_text(json.dumps(PROGRESS))
@@ -575,7 +624,7 @@ def test_the_runner_table_says_what_each_execution_is_doing(client, root, monkey
     monkeypatch.setattr(runner_mod, "executions", lambda *a, **k: execs)
     for page in ("/", "/film/demo"):
         html = client.get(page).text
-        assert "<th>Doing</th>" in html and '<a href="/film/demo">demo</a> · music plan · tick started 06:46 UTC' in html
+        assert "<th>Doing</th>" in html and '<a href="/film/demo">demo</a> · music plan · tick started 02:46 EDT' in html
         assert "nothing to do" in html and "left behind" in html and "duplicate" not in html
         assert ('<a href="https://console.cloud.google.com/run/jobs/executions/details/r/nraiorbit-runner-a?project=p" '
                 'target="_blank" rel="noopener">nraiorbit-runner-a</a>') in html
@@ -620,7 +669,7 @@ def test_the_log_header_says_when_the_execution_ran_and_spoke(client, root, monk
     monkeypatch.setattr(runner_mod, "executions", lambda *a, **k: [running_exec("nraiorbit-runner-x", state="ok")])
     monkeypatch.setattr(runner_mod, "logs", lambda *a, **k: ["06:46:03  restore", "07:29:58  backup done", ""])
     html = client.get("/film/demo").text
-    assert "execution <a href=" in html and "started 2026-10-19 06:46:02 UTC · finished 07:30:00" in html
+    assert "execution <a href=" in html and "started 2026-10-19 02:46:02 EDT · finished 03:30:00 EDT" in html
     assert "last line 07:29:58 (" in html and " ago)" in html
     monkeypatch.setattr(runner_mod, "executions", lambda *a, **k: [running_exec("nraiorbit-runner-x",
                                                                                 created=now_iso(125))])

@@ -471,3 +471,65 @@ def test_a_failed_restore_on_a_resumed_claim_goes_to_retry_not_back_to_producing
     row = queue.load(str(st), queue.STORY_COLUMNS)[0]
     assert row["state"] == "retry" and row["note"].startswith("restore failed (1)")
     assert queue.ready_story([row]) is row                               # the next tick tries again at once
+
+
+def test_a_film_is_never_made_without_the_template_and_the_runner_finds_the_packaged_one(tmp_path, monkeypatch):
+    """On Cloud Run the work volume holds films only and the image holds the template: a film made from scratch
+    would name no providers and run as a free mock animatic. The tick refuses, and the CLI falls back to the
+    template shipped with the package."""
+    from nraiorbit import cli
+    from nraiorbit.service import queue
+    st, rf = tmp_path / "stories.csv", tmp_path / "references.csv"
+    queue.save(str(st), [{**_ROW, "slug": "rain", "story_uri": str(tmp_path / "rain.md"), "state": "new"}],
+               queue.STORY_COLUMNS)
+    queue.save(str(rf), [], queue.REFERENCE_COLUMNS)
+    (tmp_path / "rain.md").write_text("A ferryman and a flood.", encoding="utf-8")
+    ran = []
+    queue.tick(str(st), str(rf), tmp_path / "work", bucket=None, produce_fn=lambda r, b: ran.append(1),
+               learn_fn=None, template=tmp_path / "work" / "_template", log=lambda *_: None)
+    row = queue.load(str(st), queue.STORY_COLUMNS)[0]
+    assert ran == [] and row["state"] == "blocked:FileNotFoundError" and "template" in row["note"]
+    assert not (tmp_path / "work" / "rain" / "pipeline.yaml").exists()
+    monkeypatch.setattr(cli, "PROJECTS", tmp_path / "work")                   # no _template there, as on the runner
+    packaged = cli.project_template()
+    assert packaged.name == "_template" and (packaged / "pipeline.yaml").exists()
+    assert "providers" in (packaged / "pipeline.yaml").read_text(encoding="utf-8")
+    (tmp_path / "work" / "_template").mkdir(parents=True)
+    assert cli.project_template() == tmp_path / "work" / "_template"          # the folder's own wins when present
+
+
+def test_assembly_masters_again_when_the_trailers_source_was_not_restored(tmp_path):
+    """A fresh container restores the finished master but not 10_edit (never backed up): the trailer is cut from
+    10_edit/film_dialogue.mp4, so assembly masters again from the timeline instead of letting ffmpeg fail."""
+    from nraiorbit.ops import backup
+    calls = []
+    paths = ProjectPaths(tmp_path)
+
+    def master(movie):
+        # by the time the film is mastered again, no old clean copy is left for the cards pass to re-card
+        assert not (paths.edit / "movie_nocards.mp4").exists()
+        calls.append(("master", movie.name))
+
+    p = SimpleNamespace(p=paths, log=lambda *_: None, _animatic=lambda: True, _master=master,
+                        _place_cards=lambda movie: calls.append(("cards", movie.name)),
+                        gate=lambda name: calls.append(("gate", name)))
+    p.p.master.mkdir(parents=True)
+    p.p.edit.mkdir(parents=True)
+    (p.p.master / "movie.mp4").write_bytes(b"cut")
+    Pipeline._assemble(p)
+    assert calls == [("master", "movie.mp4"), ("cards", "movie.mp4"), ("gate", "pacing")]
+    assert not (p.p.master / "movie.mp4").exists()                        # the stale master is dropped first
+    calls.clear()
+    (p.p.master / "movie.mp4").write_bytes(b"carded")                     # a local disk: an old clean copy is
+    (p.p.edit / "movie_nocards.mp4").write_bytes(b"old clean copy")        # still there, the trailer's source gone
+    Pipeline._assemble(p)
+    assert calls == [("master", "movie.mp4"), ("cards", "movie.mp4"), ("gate", "pacing")]
+    assert not (p.p.edit / "movie_nocards.mp4").exists()                  # dropped before the re-master (see stub)
+    calls.clear()
+    (p.p.master / "movie.mp4").write_bytes(b"cut")
+    (p.p.edit / "film_dialogue.mp4").write_bytes(b"dialogue cut")
+    Pipeline._assemble(p)
+    assert calls == [("cards", "movie.mp4"), ("gate", "pacing")]           # everything there: no re-master
+    # 10_edit stays out of the backup on purpose: its timeline points at clips and takes that are not backed up
+    # either, and a restored timeline without them would make the render step skip and the trailer fail
+    assert "edit" not in backup.FOLDERS and not any("10_edit" in str(local) for _, local, _ in backup.pairs(tmp_path, "b"))

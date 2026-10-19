@@ -38,19 +38,22 @@ from .providers.google_ai import GoogleAPIError, GoogleSetupError
 PROJECTS = Path(__import__("os").environ.get("NRAIORBIT_PROJECTS", "projects"))   # the runner mounts its own
 
 
+def project_template() -> Path:
+    """The project template: the projects folder's own `_template`, else the one shipped with the package. The
+    runner's work volume holds films only; its image holds the template, and a film made without one would run on
+    the default (mock) providers as a free animatic."""
+    own = PROJECTS / "_template"
+    if own.exists():
+        return own
+    from .config import REPO_ROOT
+    return REPO_ROOT / "projects" / "_template"
+
+
 def _project(slug: str) -> Path:
     path = PROJECTS / slug
     if not path.exists():
         sys.exit(f"no project '{slug}' in {PROJECTS.resolve()} (create it with `nraiorbit new {slug}`)")
     return path
-
-
-def template_dir() -> Path:
-    """The projects folder's own template, else the repository's. The runner's projects live on its work volume
-    while the image carries the template in the repository, and a film made without it renders on the mock
-    defaults of config/pipeline.yaml."""
-    own = PROJECTS / "_template"
-    return own if own.exists() else REPO_ROOT / "projects" / "_template"
 
 
 def cmd_new(args) -> None:
@@ -61,7 +64,7 @@ def cmd_new(args) -> None:
     text = Path(args.story).read_text(encoding="utf-8") if args.story else args.prompt
     if not text:
         sys.exit("give --story FILE or --prompt TEXT")
-    template = template_dir()
+    template = project_template()
     if template.exists() and not args.bare:                 # the choices the last film settled on, as data
         shutil.copytree(template, root, dirs_exist_ok=True)
     paths.story_input.parent.mkdir(parents=True, exist_ok=True)
@@ -524,7 +527,7 @@ def cmd_service(args) -> None:
                                minutes=float(minutes) if minutes else None, pricing=load_pricing(None))
 
         out = queue.tick(args.stories, args.references, PROJECTS, bucket=args.bucket, produce_fn=produce_fn,
-                         learn_fn=learn_fn, template=template_dir())
+                         learn_fn=learn_fn, template=project_template())
         print(out)
         return
     if args.action == "add-story":
@@ -561,7 +564,8 @@ def cmd_ui(args) -> None:
                         google_client_secret=os.environ.get("UI_GOOGLE_CLIENT_SECRET") or None,
                         passphrase=(os.environ.get("UI_PASSPHRASE") or "").strip() or None,
                         session_secret=os.environ.get("UI_SESSION_SECRET") or None,
-                        public_url=os.environ.get("UI_PUBLIC_URL") or None)
+                        public_url=os.environ.get("UI_PUBLIC_URL") or None,
+                        timezone=os.environ.get("UI_TIMEZONE") or "America/New_York")
     if auth and not settings.google_client_id and not settings.passphrase:
         print("ui: no UI_GOOGLE_CLIENT_ID and no UI_PASSPHRASE; sign-in works only behind Identity-Aware Proxy")
     print(f"control room on http://{args.host}:{args.port} over {root}"
@@ -780,7 +784,8 @@ def _main(argv: list[str] | None = None) -> None:
         p = sub.add_parser(name, help=f"{name} a project's media, caches, reports and plan files {where} the bucket")
         p.add_argument("slug")
         p.add_argument("--bucket")
-        p.add_argument("--sets", nargs="*", help="inbox cache keyframes music reports master scenes shots post files")
+        p.add_argument("--sets", nargs="*",
+                       help="inbox cache keyframes music reports master scenes shots post reviews files")
         p.set_defaults(fn=cmd_backup)
 
     args = ap.parse_args(argv)

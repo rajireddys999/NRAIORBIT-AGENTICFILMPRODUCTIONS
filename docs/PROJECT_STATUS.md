@@ -271,8 +271,9 @@ _Last updated: 2026-10-15. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
   last line was; pages refresh every 20 s while a stage runs and keep the reader's place. **Run a tick now** refuses
   while one is running or just starting. Found on the way: the runner image looked for the project template under
   its work volume, so a queued film was made without it and rendered on the mock defaults (monkey-saves-man's first
-  cut at the pacing gate is a mock render made for free). `cli.template_dir()` now falls back to the repository's
-  template, which a film made from now on uses; the existing project keeps its pipeline.yaml until the owner decides.
+  cut at the pacing gate is a mock render made for free). PR #5 fixed it the same day: `cli.project_template()` falls
+  back to the template the image ships and `make_project` refuses to make a film without one; the existing project
+  keeps its pipeline.yaml until the owner decides.
 
 ### Verified vs. not verified
 

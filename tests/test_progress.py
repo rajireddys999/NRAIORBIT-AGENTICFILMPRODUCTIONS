@@ -8,8 +8,7 @@ import os
 import pytest
 import yaml
 
-from nraiorbit import cli
-from nraiorbit.config import REPO_ROOT, load_pipeline_config
+from nraiorbit.config import load_pipeline_config
 from nraiorbit.demo import DEMO_CONFIG, DEMO_PLOT, demo_llm
 from nraiorbit.pipeline import STAGES, Pipeline, ProjectPaths
 from nraiorbit.service import produce, progress, queue
@@ -432,14 +431,3 @@ def test_pipeline_run_calls_on_stage_once_per_stage_in_order(tmp_path):
 
 # ------------------------------------------------------------------------------------------ the template
 
-def test_the_runner_makes_films_from_the_repository_template_when_its_projects_have_none(tmp_path, monkeypatch):
-    projects = tmp_path / "work" / "projects"
-    projects.mkdir(parents=True)
-    monkeypatch.setattr(cli, "PROJECTS", projects)
-    assert cli.template_dir() == REPO_ROOT / "projects" / "_template"
-    row = {"slug": "rain", "budget_usd": "40", "gates": "ask", "publish": "none"}
-    root = queue.make_project(projects, cli.template_dir(), row, "A ferryman and a flood.")
-    expected = yaml.safe_load((REPO_ROOT / "projects" / "_template" / "pipeline.yaml").read_text())["providers"]
-    assert yaml.safe_load((root / "pipeline.yaml").read_text())["providers"]["video"] == expected["video"]
-    (projects / "_template").mkdir()
-    assert cli.template_dir() == projects / "_template"                     # a projects folder's own template wins

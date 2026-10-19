@@ -28,6 +28,43 @@ PHASES = {"story_bible": "story", "outline": "outline", "scenes": "scenes", "cas
           "music_plan": "render", "render": "render", "assemble": "assemble", "trailer": "assemble", "cost": "cost",
           "faces": "faces", "qa": "qa", "deliver": "deliver", "publish": "publish"}
 RUNNING = {"new", "approved", "retry", "producing"}       # row states in which the runner is, or is about to be, on it
+SETTLED = {"done", "skipped", "held"}                     # statuses that let the next step count
+
+
+def _base_providers() -> dict:
+    """The providers the base config supplies for whatever a project leaves out (all mock, today)."""
+    try:
+        from ..config import load_pipeline_config
+        return dict(load_pipeline_config(None).get("providers") or {})
+    except Exception:
+        return {}
+
+
+BASE_PROVIDERS = _base_providers()
+ADVISORY = {"qa"}                                         # steps that never stop the run: no later step waits on them
+
+
+def animatic(cfg: dict) -> bool:
+    """A film whose providers are all mock or none runs as an animatic: placeholder picture, silent voices, mock
+    music, nothing paid (the pipeline's own rule, with the base config's defaults for what the project leaves out).
+    A film queued without a template looks exactly like this: its pipeline.yaml names no providers."""
+    prov = {**BASE_PROVIDERS, **(cfg.get("providers") or {})}
+    return all(prov.get(k, "mock") in ("mock", "none") for k in ("keyframe", "video", "tts", "music"))
+
+
+def in_order(stage: dict) -> None:
+    """A later step never counts as done while an earlier one is open: a cut that exists before every shot is filmed
+    is from an earlier run (an animatic, a previous take) and is remade after the open step, so it shows as stale.
+    QA is advisory, so a flagged or skipped check opens nothing: the delivery it sits before is real."""
+    first_open = None
+    for key, label in STAGES:
+        st = stage[key]["status"]
+        if key in ADVISORY:
+            continue
+        if first_open is None and st not in SETTLED:
+            first_open = label.lower()
+        elif first_open is not None and st == "done":
+            stage[key] = {"status": "stale", "text": f"from an earlier run; redone after {first_open}"}
 NOT_FILMS = {"queue", "library", "lipsync", "stories", "_template", "final"}
 
 
@@ -67,13 +104,16 @@ def ago(iso, now=None) -> str:
     return f"{secs // 86400} d ago"
 
 
-def clock(iso) -> str:
-    """"07:05 UTC" for an ISO time, "" when it cannot be read."""
+def clock(iso, tz=None) -> str:
+    """"03:05 EDT" for an ISO time on the studio's clock (`tz`; UTC when none), "" when it cannot be read."""
     t = when(iso)
-    return t.astimezone(datetime.timezone.utc).strftime("%H:%M UTC") if t else ""
+    if t is None:
+        return ""
+    t = t.astimezone(tz or datetime.timezone.utc)
+    return f"{t.strftime('%H:%M')} {t.tzname() or ''}".strip()
 
 
-def live_progress(record, running) -> dict | None:
+def live_progress(record, running, tz=None) -> dict | None:
     """The progress record as the page shows it, only while its execution is still running: a finished record, or
     one left behind by a crash, must never mark a stage as under way. Adds the stage it lands on, the clock time its
     phase began and how long ago it last spoke."""
@@ -82,7 +122,7 @@ def live_progress(record, running) -> dict | None:
     phase = str(record.get("phase") or "")
     key = PHASES.get(phase)
     return {**record, "stage_key": key, "stage_label": dict(STAGES).get(key) or phase.replace("_", " "),
-            "since": clock(record.get("phase_started") or record.get("started")), "ago": ago(record.get("updated"))}
+            "since": clock(record.get("phase_started") or record.get("started"), tz), "ago": ago(record.get("updated"))}
 
 
 def _json(store: Store, rel: str):
@@ -198,10 +238,11 @@ def summary(store: Store, slug: str, row: dict | None) -> dict:
         "has_trailer": any(n.endswith("/trailer.mp4") for n in master),
         "updated": (row or {}).get("updated") or (produce or {}).get("finished"),
         "note": (row or {}).get("note"), "hint": explain_note((row or {}).get("note")), "produce": produce,
+        "animatic": animatic(cfg),
     }
 
 
-def detail(store: Store, slug: str, row: dict | None, running=()) -> dict:
+def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> dict:
     """Everything the film page shows. `running` is the set of execution names Cloud Run reports as running: the
     runner's progress record counts as live only while its execution is among them."""
     cfg = _yaml(store, f"{slug}/project/pipeline.yaml") or {}
@@ -261,21 +302,27 @@ def detail(store: Store, slug: str, row: dict | None, running=()) -> dict:
     framed = sum(1 for sh in with_leads if sh.get("shot_id") in keyframes)
     filmed = sum(1 for sh in shots if sh.get("shot_id") in clips)
     all_filmed = bool(shots) and filmed >= len(shots)
+    mock = animatic(cfg)
     est = cash["estimate"]
     cost_step = str(steps.get("cost") or "")
-    if cost_step in ("approved", "not needed") or filmed or steps.get("render") == "done":
+    if mock:
+        cost_status = "skipped"
+    elif cost_step in ("approved", "not needed") or filmed or steps.get("render") == "done":
         cost_status = "done"
     elif str(steps.get("render", "")).startswith("estimate") or str(steps.get("render", "")).startswith("the paid"):
         cost_status = "blocked"
     else:
         cost_status = "todo"
-    cost_text = (f"about ${est['total_usd']:,.2f} for the paid stages" if est and est.get("total_usd") else
+    cost_text = ("nothing to pay: mock providers" if mock else
+                 f"about ${est['total_usd']:,.2f} for the paid stages" if est and est.get("total_usd") else
                  ("nothing to pay" if cost_step == "not needed" else ""))
-    if cash["cap"]:
+    if cash["cap"] and not mock:
         cost_text += f"{' · ' if cost_text else ''}cap ${cash['cap']:,.2f}, ${cash['spent']:,.2f} spent"
     put("cost", cost_status, cost_text)
     if "faces" in gates:
         faces_status = "awaiting"
+    elif mock:
+        faces_status = "skipped"                        # no video is bought, so no frame guards anything
     elif with_leads and framed >= len(with_leads):
         faces_status = "done"
     elif all_filmed or steps.get("render") == "done":
@@ -285,6 +332,8 @@ def detail(store: Store, slug: str, row: dict | None, running=()) -> dict:
     faces_text = f"{framed} of {len(with_leads)} shots with a lead have a first frame" if with_leads else ""
     if faces_status == "done" and with_leads and framed < len(with_leads):
         faces_text = f"{framed} first frames; {len(with_leads) - framed} shots were filmed without one"
+    if mock:
+        faces_text = "no first frames: mock video"
     put("faces", faces_status, faces_text)
     cues = [c for c in cue_sheet.get("cues", []) if c.get("instruments")]
     cue_ids = {c.get("cue_id") for c in cues}
@@ -300,11 +349,15 @@ def detail(store: Store, slug: str, row: dict | None, running=()) -> dict:
         "partial" if filmed or music_files else "todo")
     if str(steps.get("render", "")).startswith("blocked") or str(steps.get("render", "")).startswith("estimate"):
         render_status = "blocked"
-    put("render", render_status, "; ".join(render_bits))
     has_film = any(n.endswith("/movie.mp4") for n in master)
     has_trailer = any(n.endswith("/trailer.mp4") for n in master)
+    if mock and render_status != "blocked":             # placeholder clips are made on the fly and never backed up
+        render_status = "done" if has_film or str(steps.get("render", "")) not in ("", "todo") else render_status
+        render_bits = ["placeholder picture and voices (mock providers)"] + [b for b in render_bits if "music" in b]
+    put("render", render_status, "; ".join(render_bits))
+    cut = ", ".join(x for x, ok in (("film", has_film), ("trailer", has_trailer)) if ok)
     put("assemble", "awaiting" if any(g in gates for g in ("pacing", "final_cut", "trailer")) else
-        ("done" if has_film else "todo"), ", ".join(x for x, ok in (("film", has_film), ("trailer", has_trailer)) if ok))
+        ("done" if has_film else "todo"), cut + (" (animatic)" if mock and has_film else ""))
     qa_bits = []
     if qa_film is not None:
         qa_bits.append("film check " + ("ok" if qa_film.get("ok") else "needs a look"))
@@ -327,12 +380,13 @@ def detail(store: Store, slug: str, row: dict | None, running=()) -> dict:
         if key in stage:
             stage[key]["status"] = "awaiting"
             gate_for[key] = g
+    in_order(stage)
     # the step the runner is on (or about to pick up): the first unfinished stage while nothing waits on the owner
     next_stage = None
     if state.split(":")[0] in RUNNING and not gates:
-        next_stage = next((k for k, _ in STAGES if stage[k]["status"] in ("todo", "partial")), None)
+        next_stage = next((k for k, _ in STAGES if stage[k]["status"] in ("todo", "partial", "stale")), None)
     # the runner's own word beats that inference: while its execution runs, the phase it reports is the one under way
-    live = live_progress(_json(store, f"{slug}/reports/progress.json"), running)
+    live = live_progress(_json(store, f"{slug}/reports/progress.json"), running, tz)
     if live and live["stage_key"]:
         text = f"{live['phase'].replace('_', ' ')} since {live['since']}"
         if live.get("last_line"):
@@ -398,7 +452,7 @@ def detail(store: Store, slug: str, row: dict | None, running=()) -> dict:
     return {
         "slug": slug, "row": row, "cfg": cfg, "bible": bible, "outline": scenes_out, "cast": cast_cards,
         "scenes": scene_views, "shots": shot_views, "keyframes": keyframe_cards, "stages": stage, "gates": gates,
-        "gate_for": gate_for, "next_stage": next_stage, "live": live,
+        "gate_for": gate_for, "next_stage": next_stage, "live": live, "animatic": mock,
         "money": cash, "produce": produce, "steps": steps,
         "review_queue": review_queue[-30:], "qa_film": qa_film, "qa_md": qa_md,
         "strips": [{"shot_id": n.rsplit("/", 1)[-1].replace("_strip.jpg", ""), "url": img(n)} for n in strips],

@@ -164,10 +164,32 @@ def write_story(uri: str, row: dict) -> None:
     _write_row(uri, row, STORY_COLUMNS, "slug", TICK_COLUMNS)
 
 
+REFERENCE_OWNER_COLUMNS = ("url", "title", "learn", "minutes")
+
+
 def write_reference(uri: str, row: dict) -> None:
-    """The same for one reference row, by its url: a learned profile must never be reverted to `new` by a stale
-    copy of the sheet, or it is watched (and paid for) again."""
-    _write_row(uri, row, REFERENCE_COLUMNS, "url", REFERENCE_TICK_COLUMNS)
+    """The same for one reference row. The same link may be queued twice with different focuses, so the result goes
+    to the row the tick picked: the first row with the owner's columns and a state the tick acts on (what
+    ready_reference chose), else the first pending row with that url, else that very reference wherever it is; a
+    row that vanished gets its result appended rather than lost. Never the wrong row: the picked one would stay
+    `new` and be watched, and paid for, every tick."""
+    def change(text: str) -> str:
+        rows = rows_of(text, REFERENCE_COLUMNS)
+
+        def same(r: dict) -> bool:
+            return all(r[c] == row.get(c, "") for c in REFERENCE_OWNER_COLUMNS)
+
+        def pending(r: dict) -> bool:
+            return r["state"] in ("new", "retry")
+        target = (next((r for r in rows if same(r) and pending(r)), None)
+                  or next((r for r in rows if r["url"] == row["url"] and pending(r)), None)
+                  or next((r for r in rows if same(r)), None))
+        if target is None:
+            rows.append({c: row.get(c, "") for c in REFERENCE_COLUMNS})
+        else:
+            target.update({c: row.get(c, "") for c in REFERENCE_TICK_COLUMNS})
+        return csv_of(rows, REFERENCE_COLUMNS)
+    update_text(uri, change)
 
 
 def restore_strikes(note: str) -> int:
@@ -349,7 +371,8 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
                 backup.backup(root, bucket, log=lambda *_: None, mirror_reviews=mirror_reviews)
         except RestoreFailed as exc:                      # not the film's fault: the row goes back as it was, with a
             strikes = restore_strikes(s.get("note", "")) + 1       # strike; three in a row and the owner is told
-            s.update(state="blocked:restore" if strikes >= 3 else prior,
+            back_to = "retry" if prior == "producing" else prior   # never a fresh claim nobody is working under
+            s.update(state="blocked:restore" if strikes >= 3 else back_to,
                      note=f"restore failed ({strikes}): {exc}"[:200], updated=now())
         except Exception as exc:
             s.update(state=f"blocked:{type(exc).__name__}", note=str(exc)[:200], updated=now())

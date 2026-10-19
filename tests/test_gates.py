@@ -430,7 +430,7 @@ def test_a_sheet_rewritten_between_the_lookup_and_the_read_is_read_again(monkeyp
     assert hits == [key] and row["state"] == "producing" and row["note"] == "claimed" and objects[key].generation == 3
 
 
-def test_a_reference_row_is_written_by_its_url_without_touching_the_owners_columns(tmp_path):
+def test_a_reference_result_lands_on_the_row_the_tick_picked_even_when_a_link_is_queued_twice(tmp_path):
     from nraiorbit.service import queue
     rf = tmp_path / "references.csv"
     ref = {"url": "https://youtu.be/x", "title": "Ref", "learn": "score", "minutes": "", "state": "new",
@@ -442,3 +442,32 @@ def test_a_reference_row_is_written_by_its_url_without_touching_the_owners_colum
     queue.write_reference(str(rf), {**ref, "state": "done", "profile_uri": "p.json"})
     row = queue.load(str(rf), queue.REFERENCE_COLUMNS)[0]
     assert row["state"] == "done" and row["profile_uri"] == "p.json" and row["minutes"] == "150"
+    # the same link queued again for another focus: the tick picks the pending row, and only that row is written
+    again = {**ref, "learn": "trailer"}
+    queue.save(str(rf), [row, again], queue.REFERENCE_COLUMNS)
+    st = tmp_path / "stories.csv"
+    queue.save(str(st), [], queue.STORY_COLUMNS)
+    paid = []
+    for _ in range(3):
+        queue.tick(str(st), str(rf), tmp_path / "projects", bucket=None, produce_fn=None,
+                   learn_fn=lambda url, title, what, minutes: paid.append(what) or tmp_path / f"{what}.json",
+                   log=lambda *_: None)
+    rows = queue.load(str(rf), queue.REFERENCE_COLUMNS)
+    assert paid == ["trailer"]                                           # one watch, paid once
+    assert rows[0]["profile_uri"] == "p.json" and rows[1]["state"] == "done" and rows[1]["profile_uri"].endswith("trailer.json")
+
+
+def test_a_failed_restore_on_a_resumed_claim_goes_to_retry_not_back_to_producing(tmp_path, monkeypatch):
+    from nraiorbit.ops import backup
+    from nraiorbit.service import queue
+    st, rf = tmp_path / "stories.csv", tmp_path / "references.csv"
+    queue.save(str(st), [{**_ROW, "slug": "rain", "story_uri": str(tmp_path / "rain.md"), "state": "producing",
+                          "updated": "2026-01-01T00:00:00+00:00"}], queue.STORY_COLUMNS)   # an expired claim
+    queue.save(str(rf), [], queue.REFERENCE_COLUMNS)
+    monkeypatch.setattr(backup, "sync_library", lambda *a, **k: None)
+    monkeypatch.setattr(backup, "restore_report", lambda root, b, log=None: (0, ["cache"]))
+    queue.tick(str(st), str(rf), tmp_path / "projects", bucket="b", produce_fn=None, learn_fn=None,
+               log=lambda *_: None)
+    row = queue.load(str(st), queue.STORY_COLUMNS)[0]
+    assert row["state"] == "retry" and row["note"].startswith("restore failed (1)")
+    assert queue.ready_story([row]) is row                               # the next tick tries again at once

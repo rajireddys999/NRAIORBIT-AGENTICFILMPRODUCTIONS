@@ -563,8 +563,13 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(400, "minutes must be a number") from None
         new = {"url": url, "title": title.strip(), "learn": learn, "minutes": minutes, "state": "new",
                "profile_uri": "", "note": "", "updated": queue.now()}
-        store.update_text(REFERENCES, lambda text: queue.csv_of(
-            queue.rows_of(text, queue.REFERENCE_COLUMNS) + [new], queue.REFERENCE_COLUMNS), "text/csv")
+
+        def add(text: str) -> str:
+            refs = queue.rows_of(text, queue.REFERENCE_COLUMNS)
+            if any(r["url"] == url and r["learn"] == learn for r in refs):   # the same watch twice is paid twice
+                raise HTTPException(400, f"that link is already queued to learn {learn}; set it to retry instead")
+            return queue.csv_of(refs + [new], queue.REFERENCE_COLUMNS)
+        store.update_text(REFERENCES, add, "text/csv")
         return back("/references", "queued; the next tick watches it (the cost guard applies)")
 
     @app.post("/references/retry")

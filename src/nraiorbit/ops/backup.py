@@ -75,13 +75,24 @@ NO_MATCH = ("did not find existing container at",     # gcloud storage rsync: a 
             "matched no objects or files")             # gcloud storage cp: a file that is not there
 
 
-def present(remote: str, kind: str) -> bool | None:
+def storage_client():
+    """The storage client, or None where none can be made (no credentials on this machine)."""
+    try:
+        return gcs.client()
+    except Exception:
+        return None
+
+
+def present(remote: str, kind: str, client=None) -> bool | None:
     """Whether the bucket holds the set at all, asked with the storage client: the file exists, or one object sits
     under the folder's prefix. None when the client cannot answer here (no credentials on this machine); the caller
     then falls back to gcloud's own no-match messages, and nothing else counts as 'nothing there'."""
+    client = client or storage_client()
+    if client is None:
+        return None
     try:
         bucket_name, _, key = remote[5:].partition("/")
-        bucket = gcs.client().bucket(bucket_name)
+        bucket = client.bucket(bucket_name)
         if kind == "file":
             return bool(bucket.blob(key).exists())
         return next(iter(bucket.list_blobs(prefix=key.rstrip("/") + "/", max_results=1)), None) is not None
@@ -95,9 +106,10 @@ def restore_report(project_root: Path, bucket: str | None = None, sets=None, log
     on a half-restored project: it would pay again for clips it already has, or pass gates nobody looked at."""
     bucket = bucket or gcs.default_bucket()
     done, failed = 0, []
+    client = storage_client()                                 # one client for the whole restore
     for name, kind, local, remote in named_pairs(project_root, bucket, sets):
         local.parent.mkdir(parents=True, exist_ok=True)
-        there = present(remote, kind)
+        there = present(remote, kind, client)
         if there is False:
             log(f"  {remote}: nothing there")
             continue

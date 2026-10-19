@@ -553,12 +553,14 @@ def cmd_ui(args) -> None:
                         google_client_id=os.environ.get("UI_GOOGLE_CLIENT_ID") or None,
                         google_client_secret=os.environ.get("UI_GOOGLE_CLIENT_SECRET") or None,
                         passphrase=(os.environ.get("UI_PASSPHRASE") or "").strip() or None,
-                        session_secret=os.environ.get("UI_SESSION_SECRET") or None)
+                        session_secret=os.environ.get("UI_SESSION_SECRET") or None,
+                        public_url=os.environ.get("UI_PUBLIC_URL") or None)
     if auth and not settings.google_client_id and not settings.passphrase:
         print("ui: no UI_GOOGLE_CLIENT_ID and no UI_PASSPHRASE; sign-in works only behind Identity-Aware Proxy")
     print(f"control room on http://{args.host}:{args.port} over {root}"
           + ("" if auth else "  (no sign-in: local use only)"))
-    uvicorn.run(create_app(Store(root), settings), host=args.host, port=int(args.port), log_level="warning")
+    uvicorn.run(create_app(Store(root), settings), host=args.host, port=int(args.port), log_level="warning",
+                proxy_headers=True, forwarded_allow_ips="*")      # Cloud Run's front door terminates TLS
 
 
 def cmd_backup(args) -> None:

@@ -38,6 +38,17 @@ class Settings:
     passphrase: str | None = None            # a second way in: a long passphrase from Secret Manager (UI_PASSPHRASE)
     session_secret: str | None = None        # signs the session cookie; random per deployment when unset
     session_days: int = 7
+    public_url: str | None = None            # how the browser reaches us (https://...), for OAuth redirects
+
+
+def public_base(request: Request, settings: "Settings") -> str:
+    """The address Google must send the browser back to: the configured public URL, else the request's own host
+    with the scheme the proxy in front reports (Cloud Run speaks plain HTTP to the container)."""
+    if settings.public_url:
+        return settings.public_url.rstrip("/")
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
+    host = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.netloc)).split(",")[0].strip()
+    return f"{scheme}://{host}"
 
 
 class Throttle:
@@ -253,13 +264,13 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         return templates.TemplateResponse(request, "login.html", {
             "request": request, "settings": settings, "email": None, "root": store.root,
             "msg": request.query_params.get("msg"), "client_id": settings.google_client_id,
-            "passphrase": bool(settings.passphrase), "origin": str(request.base_url).rstrip("/")})
+            "passphrase": bool(settings.passphrase), "origin": public_base(request, settings)})
 
     def _session_response(identity: str, request: Request) -> RedirectResponse:
         resp = RedirectResponse("/", status_code=303)
         resp.set_cookie(SESSION_COOKIE, sign_session(settings.session_secret, identity, settings.session_days),
-                        max_age=settings.session_days * 86400, httponly=True, secure=request.url.scheme == "https",
-                        samesite="lax", path="/")
+                        max_age=settings.session_days * 86400, httponly=True,
+                        secure=public_base(request, settings).startswith("https"), samesite="lax", path="/")
         print(f"control room: {identity} signed in", flush=True)
         return resp
 
@@ -313,7 +324,7 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         return info
 
     def _redirect_uri(request: Request) -> str:
-        return str(request.base_url).rstrip("/") + "/youtube/callback"
+        return public_base(request, settings) + "/youtube/callback"
 
     @app.get("/youtube/connect")
     def youtube_connect(request: Request, email: str = Depends(guard)):
@@ -326,7 +337,7 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         url = oauth_url(settings.google_client_id, _redirect_uri(request), state, youtube.SCOPES)
         resp = RedirectResponse(url, status_code=303)
         resp.set_cookie("yt_state", sign_session(settings.session_secret, state, 1), max_age=600, httponly=True,
-                        secure=request.url.scheme == "https", samesite="lax", path="/youtube")
+                        secure=public_base(request, settings).startswith("https"), samesite="lax", path="/youtube")
         return resp
 
     @app.get("/youtube/callback")

@@ -303,10 +303,20 @@ def test_connect_youtube_stores_the_channel_token_and_shows_the_channel(root, mo
     c = TestClient(app, headers={IAP: "owner@example.com"})
     home = c.get("/").text
     assert "Connect YouTube" in home and "No channel connected" in home
+    from urllib.parse import parse_qs, urlparse
+    # behind a TLS-terminating proxy the redirect must still say https, and a configured public URL wins outright
+    r2 = c.get("/youtube/connect", headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "room.example"},
+               follow_redirects=False)
+    assert parse_qs(urlparse(r2.headers["location"]).query)["redirect_uri"][0] == "https://room.example/youtube/callback"
+    pinned = create_app(Store(str(root)), Settings(allowed_emails={"owner@example.com"}, auth=True,
+                                                    google_client_id="cid", google_client_secret="shh",
+                                                    session_secret="s3cret", public_url="https://pinned.example/"))
+    r3 = TestClient(pinned, headers={IAP: "owner@example.com"}).get("/youtube/connect", follow_redirects=False)
+    assert parse_qs(urlparse(r3.headers["location"]).query)["redirect_uri"][0] == "https://pinned.example/youtube/callback"
+    assert 'data-login_uri="https://pinned.example/auth/callback"' in TestClient(pinned).get("/login").text
     r = c.get("/youtube/connect", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"].startswith("https://accounts.google.com/o/oauth2/v2/auth?")
     assert "access_type=offline" in r.headers["location"] and "youtube.upload" in r.headers["location"]
-    from urllib.parse import parse_qs, urlparse
     q = parse_qs(urlparse(r.headers["location"]).query)
     state = q["state"][0]
     assert q["redirect_uri"][0].endswith("/youtube/callback")

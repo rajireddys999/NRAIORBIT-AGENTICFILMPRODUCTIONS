@@ -192,10 +192,6 @@ def load_rows(store: Store, rel: str, columns: list[str]) -> list[dict]:
     return queue.rows_of(store.read_text(rel) or "", columns)
 
 
-def save_rows(store: Store, rel: str, rows: list[dict], columns: list[str]) -> None:
-    store.write_text(rel, queue.csv_of(rows, columns), "text/csv")
-
-
 def edit_row(store: Store, slug: str, change) -> dict:
     """Change one film's row in the queue sheet under the store's write precondition, so an edit here and a tick's
     claim seconds apart never lose each other. `change(row)` edits the row in place; returning False leaves the sheet
@@ -438,9 +434,15 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         store.write_text(f"stories/{slug}.md", story.strip() + "\n", "text/markdown")
         store.write_text(f"stories/{slug}.overrides.yaml",
                          yaml.safe_dump({"film": {"runtime_minutes": max(1, min(int(runtime), 60))}}), "text/yaml")
-        rows.append({"slug": slug, "story_uri": store.uri(f"stories/{slug}.md"), "budget_usd": f"{budget:g}",
-                     "gates": gates, "publish": publish, "state": "new", "note": "", "updated": queue.now()})
-        save_rows(store, STORIES, rows, queue.STORY_COLUMNS)
+
+        def add(text: str) -> str:                        # under the precondition: a tick's claim lands beside it
+            rows = queue.rows_of(text, queue.STORY_COLUMNS)
+            if any(r["slug"] == slug for r in rows):
+                raise HTTPException(400, f"{slug} exists already; pick another slug")
+            rows.append({"slug": slug, "story_uri": store.uri(f"stories/{slug}.md"), "budget_usd": f"{budget:g}",
+                         "gates": gates, "publish": publish, "state": "new", "note": "", "updated": queue.now()})
+            return queue.csv_of(rows, queue.STORY_COLUMNS)
+        store.update_text(STORIES, add, "text/csv")
         msg = f"{slug} queued; the runner picks it up within 15 minutes"
         if start and settings.project and settings.job:
             try:
@@ -559,19 +561,21 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                 minutes = f"{float(minutes):g}"
             except ValueError:
                 raise HTTPException(400, "minutes must be a number") from None
-        refs = load_rows(store, REFERENCES, queue.REFERENCE_COLUMNS)
-        refs.append({"url": url, "title": title.strip(), "learn": learn, "minutes": minutes, "state": "new",
-                     "profile_uri": "", "note": "", "updated": queue.now()})
-        save_rows(store, REFERENCES, refs, queue.REFERENCE_COLUMNS)
+        new = {"url": url, "title": title.strip(), "learn": learn, "minutes": minutes, "state": "new",
+               "profile_uri": "", "note": "", "updated": queue.now()}
+        store.update_text(REFERENCES, lambda text: queue.csv_of(
+            queue.rows_of(text, queue.REFERENCE_COLUMNS) + [new], queue.REFERENCE_COLUMNS), "text/csv")
         return back("/references", "queued; the next tick watches it (the cost guard applies)")
 
     @app.post("/references/retry")
     def retry_reference(email: str = Depends(guard), url: str = Form(...)):
-        refs = load_rows(store, REFERENCES, queue.REFERENCE_COLUMNS)
-        for r in refs:
-            if r["url"] == url:
-                r.update(state="retry", updated=queue.now())
-        save_rows(store, REFERENCES, refs, queue.REFERENCE_COLUMNS)
+        def change(text: str) -> str:
+            refs = queue.rows_of(text, queue.REFERENCE_COLUMNS)
+            for r in refs:
+                if r["url"] == url:
+                    r.update(state="retry", updated=queue.now())
+            return queue.csv_of(refs, queue.REFERENCE_COLUMNS)
+        store.update_text(REFERENCES, change, "text/csv")
         return back("/references", "set to retry")
 
     if not store.is_gs:

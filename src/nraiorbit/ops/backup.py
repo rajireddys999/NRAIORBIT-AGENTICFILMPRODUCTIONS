@@ -71,20 +71,36 @@ def backup(project_root: Path, bucket: str | None = None, sets=None, log=print, 
     return done
 
 
-def _missing(error: Exception) -> bool:
-    """A restore that found nothing to copy (a project's first run) is not a failure."""
-    text = str(error).lower()
-    return any(s in text for s in ("did not find", "not found", "no urls matched", "404", "does not exist"))
+NO_MATCH = ("did not find existing container at",     # gcloud storage rsync: a prefix with nothing under it
+            "matched no objects or files")             # gcloud storage cp: a file that is not there
+
+
+def present(remote: str, kind: str) -> bool | None:
+    """Whether the bucket holds the set at all, asked with the storage client: the file exists, or one object sits
+    under the folder's prefix. None when the client cannot answer here (no credentials on this machine); the caller
+    then falls back to gcloud's own no-match messages, and nothing else counts as 'nothing there'."""
+    try:
+        bucket_name, _, key = remote[5:].partition("/")
+        bucket = gcs.client().bucket(bucket_name)
+        if kind == "file":
+            return bool(bucket.blob(key).exists())
+        return next(iter(bucket.list_blobs(prefix=key.rstrip("/") + "/", max_results=1)), None) is not None
+    except Exception:
+        return None
 
 
 def restore_report(project_root: Path, bucket: str | None = None, sets=None, log=print) -> tuple[int, list[str]]:
-    """Restore every set; returns (sets restored, names of sets that FAILED for a reason other than 'nothing there').
-    The runner refuses to produce when the reviews or the reports failed: running on a half-restored project would
-    skip approvals or pay for work the bucket already holds."""
+    """Restore every set; returns (sets restored, names of sets that FAILED). A set the bucket does not hold is
+    skipped, not failed: a project's first run, a plan file this project never had. The runner refuses to produce
+    on a half-restored project: it would pay again for clips it already has, or pass gates nobody looked at."""
     bucket = bucket or gcs.default_bucket()
     done, failed = 0, []
     for name, kind, local, remote in named_pairs(project_root, bucket, sets):
         local.parent.mkdir(parents=True, exist_ok=True)
+        there = present(remote, kind)
+        if there is False:
+            log(f"  {remote}: nothing there")
+            continue
         log(f"  {remote} -> {local.relative_to(Path(project_root))}")
         try:
             if kind == "folder":
@@ -94,8 +110,11 @@ def restore_report(project_root: Path, bucket: str | None = None, sets=None, log
                 gcs.copy(remote, local)
             done += 1
         except gcs.BucketError as e:
-            log(f"    skipped ({str(e).splitlines()[-1][:120]})")
-            if not _missing(e) and name not in failed:
+            if there is None and any(s in str(e).lower() for s in NO_MATCH):   # no client to ask: gcloud's words
+                log("    nothing there")
+                continue
+            log(f"    failed ({str(e).splitlines()[-1][:120]})")
+            if name not in failed:
                 failed.append(name)
     return done, failed
 

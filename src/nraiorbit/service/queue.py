@@ -115,7 +115,7 @@ def update_text(uri: str, change, content_type: str = "text/csv", attempts: int 
             p.write_text(new, encoding="utf-8")
             return new
         return text
-    from google.api_core.exceptions import PreconditionFailed
+    from google.api_core.exceptions import NotFound, PreconditionFailed
 
     from ..release import gcs
     bucket_name, _, key = uri[5:].partition("/")
@@ -125,7 +125,10 @@ def update_text(uri: str, change, content_type: str = "text/csv", attempts: int 
         if blob is None:                                   # absent: create it, and only if still absent
             text, generation, blob = "", 0, bucket.blob(key)
         else:
-            text, generation = blob.download_as_text(), blob.generation
+            try:
+                text, generation = blob.download_as_text(), blob.generation
+            except NotFound:                               # rewritten between the look-up and the read: again
+                continue
         new = change(text)
         if new is None or new == text:
             return text
@@ -138,22 +141,40 @@ def update_text(uri: str, change, content_type: str = "text/csv", attempts: int 
 
 
 TICK_COLUMNS = ("state", "note", "updated")           # what a tick writes; the cap, gates and publish are the owner's
+REFERENCE_TICK_COLUMNS = ("state", "profile_uri", "note", "updated")
+
+
+def _write_row(uri: str, row: dict, columns: list[str], key: str, owned: tuple) -> None:
+    def change(text: str) -> str:
+        rows = rows_of(text, columns)
+        for i, r in enumerate(rows):
+            if r[key] == row[key]:
+                rows[i] = {**r, **{c: row.get(c, "") for c in owned}}
+                break
+        else:
+            rows.append({c: row.get(c, "") for c in columns})
+        return csv_of(rows, columns)
+    update_text(uri, change)
 
 
 def write_story(uri: str, row: dict) -> None:
     """Write one film's state into the sheet as it is now, not as it was when this tick began: in the hours a run
     takes the owner may have lowered this film's cap or changed its visibility, and another tick or the owner may
     have changed other rows; all of that survives. Only the columns a tick owns are written, under a precondition."""
-    def change(text: str) -> str:
-        rows = rows_of(text, STORY_COLUMNS)
-        for i, r in enumerate(rows):
-            if r["slug"] == row["slug"]:
-                rows[i] = {**r, **{c: row.get(c, "") for c in TICK_COLUMNS}}
-                break
-        else:
-            rows.append({c: row.get(c, "") for c in STORY_COLUMNS})
-        return csv_of(rows, STORY_COLUMNS)
-    update_text(uri, change)
+    _write_row(uri, row, STORY_COLUMNS, "slug", TICK_COLUMNS)
+
+
+def write_reference(uri: str, row: dict) -> None:
+    """The same for one reference row, by its url: a learned profile must never be reverted to `new` by a stale
+    copy of the sheet, or it is watched (and paid for) again."""
+    _write_row(uri, row, REFERENCE_COLUMNS, "url", REFERENCE_TICK_COLUMNS)
+
+
+def restore_strikes(note: str) -> int:
+    """How many ticks in a row the restore has failed, as the row's note records it."""
+    import re
+    m = re.match(r"restore failed \((\d+)\)", note or "")
+    return int(m.group(1)) if m else 0
 
 
 # -------------------------------------------------------------------------------------------------- the work
@@ -287,7 +308,7 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
             r.update(state="done", profile_uri=str(profile), note="", updated=now())
         except Exception as exc:
             r.update(state=f"blocked:{type(exc).__name__}", note=str(exc)[:200], updated=now())
-        save(references_uri, refs, REFERENCE_COLUMNS)
+        write_reference(references_uri, r)
         summary["reference"] = {"url": r["url"], "state": r["state"]}
         log(f"  reference {r['url']}: {r['state']}")
     # one story step
@@ -295,7 +316,7 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
     s = ready_story(rows)
     if s:
         root = projects_dir / s["slug"]
-        was_approved = s["state"] == "approved"
+        prior, was_approved = s["state"], s["state"] == "approved"
         s.update(state="producing", updated=now())        # the claim, before the slow restore: no second tick joins in
         write_story(stories_uri, s)
         mirror_reviews = False
@@ -303,9 +324,8 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
             if bucket and not (root / "pipeline.yaml").exists():
                 from ..ops import backup
                 _, failed = backup.restore_report(root, bucket, log=lambda *_: None)
-                bad = sorted(set(failed) & {"reviews", "reports"})
-                if bad:                                   # approvals or the ledger unread: produce would skip or pay twice
-                    raise RestoreFailed(f"the bucket could not be read for {', '.join(bad)}; the next tick tries again")
+                if failed:                                # a half-restored project would pay again or skip a gate
+                    raise RestoreFailed(f"the bucket could not be read for {', '.join(sorted(failed))}")
                 mirror_reviews = True                     # this run saw every marker the bucket holds: it may mirror them
             if not (root / "pipeline.yaml").exists():
                 story = fetch_story(s["story_uri"]) if s.get("story_uri") else ""
@@ -327,8 +347,10 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
             if bucket:
                 from ..ops import backup
                 backup.backup(root, bucket, log=lambda *_: None, mirror_reviews=mirror_reviews)
-        except RestoreFailed as exc:                      # not the film's fault: the row goes back to be picked up
-            s.update(state="retry", note=str(exc)[:200], updated=now())
+        except RestoreFailed as exc:                      # not the film's fault: the row goes back as it was, with a
+            strikes = restore_strikes(s.get("note", "")) + 1       # strike; three in a row and the owner is told
+            s.update(state="blocked:restore" if strikes >= 3 else prior,
+                     note=f"restore failed ({strikes}): {exc}"[:200], updated=now())
         except Exception as exc:
             s.update(state=f"blocked:{type(exc).__name__}", note=str(exc)[:200], updated=now())
         write_story(stories_uri, s)

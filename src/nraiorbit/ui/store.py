@@ -114,14 +114,17 @@ class Store:
                 self.write_text(rel, new, content_type)
                 return new
             return text
-        from google.api_core.exceptions import PreconditionFailed
+        from google.api_core.exceptions import NotFound, PreconditionFailed
         ct = content_type or mimetypes.guess_type(rel)[0] or "text/plain"
         for _ in range(attempts):
             blob = self.bucket.get_blob(self._key(rel))
             if blob is None:
                 text, generation, blob = "", 0, self.bucket.blob(self._key(rel))
             else:
-                text, generation = blob.download_as_text(), blob.generation
+                try:
+                    text, generation = blob.download_as_text(), blob.generation
+                except NotFound:                           # rewritten between the look-up and the read: again
+                    continue
             new = change(text)
             if new is None or new == text:
                 return text

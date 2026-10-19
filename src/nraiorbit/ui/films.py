@@ -92,6 +92,17 @@ def pending_gates(store: Store, slug: str, produce: dict | None, row: dict | Non
     return gates
 
 
+def explain_note(note: str | None) -> str | None:
+    """A plain sentence for the runner's blocked notes that have one fix."""
+    text = note or ""
+    if "Could not resolve authentication method" in text or "ANTHROPIC_API_KEY" in text:
+        return ("The runner has no Anthropic API key, so the story and screenplay agents cannot sign in to Claude. "
+                "Store a key as the Secret Manager secret ANTHROPIC_API_KEY, attach it to the runner job, then Retry.")
+    if "insufficient_credits" in text or "402" in text:
+        return "A paid service answered 402: its prepaid credit is used up. Top it up, then Retry."
+    return None
+
+
 def summary(store: Store, slug: str, row: dict | None) -> dict:
     """The board row: title, state, gates, money. Cheap: a handful of reads."""
     cfg = _yaml(store, f"{slug}/project/pipeline.yaml") or {}
@@ -108,7 +119,7 @@ def summary(store: Store, slug: str, row: dict | None) -> dict:
         "has_film": any(n.endswith("/movie.mp4") for n in master),
         "has_trailer": any(n.endswith("/trailer.mp4") for n in master),
         "updated": (row or {}).get("updated") or (produce or {}).get("finished"),
-        "note": (row or {}).get("note"), "produce": produce,
+        "note": (row or {}).get("note"), "hint": explain_note((row or {}).get("note")), "produce": produce,
     }
 
 
@@ -279,6 +290,7 @@ def detail(store: Store, slug: str, row: dict | None) -> dict:
         "strips": [{"shot_id": n.rsplit("/", 1)[-1].replace("_strip.jpg", ""), "url": img(n)} for n in strips],
         "media": media, "delivery": deliver_links, "title": bible.get("title_en") or slug, "title_te": bible.get("title_te"),
         "state": (row or {}).get("state") or (produce or {}).get("state") or ("made by hand" if bible else "new"),
+        "hint": explain_note((row or {}).get("note")),
         "policy": cfg.get("policy") or {}, "runtime": (cfg.get("film") or {}).get("runtime_minutes"),
         "story_text": store.read_text(f"{slug}/project/input/story.md") or "",
     }

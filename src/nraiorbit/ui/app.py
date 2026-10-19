@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import datetime
 import io
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,14 +28,19 @@ def slugify(text: str) -> str:
     """A folder name from whatever was typed: lowercase ASCII letters, digits and dashes, 2 to 41 characters;
     "" when nothing usable is left (a Telugu-only title, for one)."""
     import unicodedata
-    plain = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode("ascii").lower()
-    plain = re.sub(r"[^a-z0-9]+", "-", plain).strip("-")[:41].strip("-")
+    plain = re.sub(r"[\u0300-\u036f]", "", unicodedata.normalize("NFKD", text or "")).lower()
+    plain = re.sub(r"[^a-z0-9]+", "-", plain).strip("-")[:41].strip("-")     # same steps as the page's preview
     return plain if len(plain) >= 2 else ""
 
 
 RESERVED_SLUGS = {"queue", "library", "lipsync", "stories", "settings", "final", "cache", "reports", "projects",
                   "_template", "template", "new", "film", "login", "logout", "auth", "youtube", "references", "file",
                   "healthz", "privacy", "terms", "tick"}      # bucket prefixes the runner uses, and this app's routes
+
+
+def money_text(cap: float) -> str:
+    """Dollars for the sheet, exact to the cent: 150 -> "150", 99999.99 -> "99999.99"."""
+    return f"{cap:.2f}".rstrip("0").rstrip(".")
 
 
 def pick_slug(wanted: str, story: str, taken) -> str:
@@ -457,22 +463,22 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
             cap = float(budget)
         except ValueError:
             return again("The budget cap must be a number.")
-        if cap <= 0:
-            return again("The budget cap must be above zero: nothing is paid without one.")
+        if not math.isfinite(cap) or cap <= 0:
+            return again("The budget cap must be a real number above zero: nothing is paid without one.")
         try:
             minutes = max(1, min(int(float(runtime or 10)), 60))
-        except ValueError:
+        except (ValueError, OverflowError):
             return again("Runtime must be a number of minutes.")
         if gates not in ("ask", "auto") or publish not in ("none", "private", "unlisted", "public"):
             return again("Gates must be ask or auto; YouTube none, private, unlisted or public.")
         rows = load_rows(store, STORIES, queue.STORY_COLUMNS)
         used = {r["slug"] for r in rows}
         slug = pick_slug(slug, story, lambda s: s in used or store.exists(f"{s}/project/pipeline.yaml")
-                         or store.exists(f"stories/{s}.md"))
+                         or store.exists(f"{s}/project/01_story_bible.json") or store.exists(f"stories/{s}.md"))
         store.write_text(f"stories/{slug}.md", story.strip() + "\n", "text/markdown")
         store.write_text(f"stories/{slug}.overrides.yaml",
                          yaml.safe_dump({"film": {"runtime_minutes": minutes}}), "text/yaml")
-        rows.append({"slug": slug, "story_uri": store.uri(f"stories/{slug}.md"), "budget_usd": f"{cap:g}",
+        rows.append({"slug": slug, "story_uri": store.uri(f"stories/{slug}.md"), "budget_usd": money_text(cap),
                      "gates": gates, "publish": publish, "state": "new", "note": "", "updated": queue.now()})
         save_rows(store, STORIES, rows, queue.STORY_COLUMNS)
         msg = f"{slug} queued; the runner picks it up within 15 minutes"
@@ -533,11 +539,12 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         rows, row = _row(slug)
         if budget:
             try:
-                if float(budget) <= 0:
+                cap = float(budget)
+                if not math.isfinite(cap) or cap <= 0:
                     raise ValueError
             except ValueError:
-                raise HTTPException(400, "the budget cap must be a number above zero") from None
-            row["budget_usd"] = f"{float(budget):g}"
+                raise HTTPException(400, "the budget cap must be a real number above zero") from None
+            row["budget_usd"] = money_text(cap)
         if gates in ("ask", "auto"):
             row["gates"] = gates
         if publish in ("none", "private", "unlisted", "public"):

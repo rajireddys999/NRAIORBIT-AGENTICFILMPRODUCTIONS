@@ -100,6 +100,23 @@ def test_story_overrides_row_sync_reference_minutes_and_library_sync(tmp_path, m
     assert queue.overrides_uri("rain") == "rain.overrides.yaml"
 
 
+def test_the_queued_story_replaces_the_template_placeholder(tmp_path):
+    projects = tmp_path / "projects"
+    (projects / "_template" / "input").mkdir(parents=True)
+    (projects / "_template" / "pipeline.yaml").write_text("film: {runtime_minutes: 10}\n")
+    (projects / "_template" / "input" / "story.md").write_text("# Your story goes here\n")
+    row = {"slug": "rain", "budget_usd": "40", "gates": "", "publish": ""}
+    root = queue.make_project(projects, projects / "_template", row, "A ferryman and a flood.")
+    assert (root / "input" / "story.md").read_text() == "A ferryman and a flood."
+    # a second call (the project exists) keeps whatever is there now
+    (root / "input" / "story.md").write_text("edited by hand")
+    queue.make_project(projects, projects / "_template", row, "A ferryman and a flood.")
+    assert (root / "input" / "story.md").read_text() == "edited by hand"
+    # a nan or inf cap in the sheet never reaches the project
+    queue.apply_row(root, {"budget_usd": "inf"})
+    assert yaml.safe_load((root / "pipeline.yaml").read_text())["budget"]["max_usd"] == 40.0
+
+
 def test_tick_records_failures_as_blocked(tmp_path):
     st, rf = _queues(tmp_path)
 

@@ -32,3 +32,12 @@ credentials → save. The script's IAP bindings stay valid; nothing else changes
 
 Deployed 2026-10-17: service `nraiorbit-ui` in `nraiorbit-agentic-film-product` (us-central1), allow-list
 nraiorbit.cinematic.universe@gmail.com. The link is in docs/PROJECT_STATUS.md.
+
+**Connect YouTube.** The board's YouTube card starts Google's authorization for the channel's account with the same
+OAuth web client (its secret goes on the service as `UI_GOOGLE_CLIENT_SECRET`; the client needs
+`<service url>/youtube/callback` among its authorized redirect URIs). The refresh token is stored as a new version
+of the Secret Manager secret `YOUTUBE_TOKEN_JSON` (the service account holds `secretVersionAdder` on that secret
+only), the channel's name goes to `settings/youtube.json` in the bucket, and the runner reads the secret when it
+publishes, so no token file ever travels. Publish the consent screen (Audience → In production) before connecting:
+a project left in Testing gets refresh tokens that die after seven days.
+

@@ -15,6 +15,19 @@
     {% else %}<p class="muted small">No runner configured: this control room reads a local folder.</p>{% endif %}
   </div>
   <div class="card">
+    <h2>YouTube</h2>
+    {% if youtube.channel %}
+      <p>Connected to <b>{{ youtube.channel }}</b> <span class="small muted">by {{ youtube.connected_by }} on {{ youtube.connected_at[:10] }}</span>. Films with a publish setting upload here, private by default.</p>
+      <div class="actions"><a class="btn quiet" href="/youtube/connect">Reconnect</a>
+        <form class="inline" method="post" action="/youtube/disconnect"><button class="quiet">Forget channel</button></form></div>
+    {% elif youtube.can_connect %}
+      <p class="small muted">No channel connected. The runner skips the upload step until one is.</p>
+      <a class="btn" href="/youtube/connect">Connect YouTube</a>
+    {% else %}
+      <p class="small muted">Connecting needs the Google OAuth client id and secret on this service.</p>
+    {% endif %}
+  </div>
+  <div class="card">
     <h2>References</h2>
     <p class="small muted">Craft notes Gemini wrote from public films; the agents read them as examples.</p>
     {% set done = refs|selectattr('state','equalto','done')|list %}

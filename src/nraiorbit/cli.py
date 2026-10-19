@@ -551,6 +551,7 @@ def cmd_ui(args) -> None:
                         region=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"),
                         job=os.environ.get("UI_JOB", "nraiorbit-runner") if os.environ.get("GOOGLE_CLOUD_PROJECT") else None,
                         google_client_id=os.environ.get("UI_GOOGLE_CLIENT_ID") or None,
+                        google_client_secret=os.environ.get("UI_GOOGLE_CLIENT_SECRET") or None,
                         passphrase=(os.environ.get("UI_PASSPHRASE") or "").strip() or None,
                         session_secret=os.environ.get("UI_SESSION_SECRET") or None)
     if auth and not settings.google_client_id and not settings.passphrase:

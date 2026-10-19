@@ -168,6 +168,7 @@
   {% set pub = f.steps.publish %}
   {% if pub is mapping %}{% for k, v in pub.items() %}<p>{{ k }}: {% if v is mapping and v.id %}<a href="https://youtu.be/{{ v.id }}" target="_blank" rel="noopener">youtu.be/{{ v.id }}</a>{% elif v is string and v|length < 20 %}<a href="https://youtu.be/{{ v }}" target="_blank" rel="noopener">youtu.be/{{ v }}</a>{% else %}{{ v }}{% endif %}</p>{% endfor %}
   {% elif pub %}<p>{{ pub }}</p>{% else %}<p class="muted">Not published. Policy: {{ f.row.publish if f.row and f.row.publish else f.policy.publish or 'none' }}.</p>{% endif %}
+  {% if youtube.channel %}<p class="small muted">Channel: {{ youtube.channel }}</p>{% elif youtube.can_connect %}<p class="small"><a href="/youtube/connect">Connect YouTube</a> first; the runner uploads on its next pass over a finished film whose publish setting is not none.</p>{% endif %}
 </div>
 
 <div class="card" id="report">

@@ -65,17 +65,34 @@ def build_metadata(bible: StoryBible, outline: Outline, *, privacy: str = "priva
     }
 
 
-def credentials(client_secrets: Path, token_cache: Path, interactive: bool = True):
-    """The stored OAuth token (refreshed when needed). With interactive=False, as on a server, a missing or dead
-    token is an error with the fix in it instead of a browser window. YOUTUBE_TOKEN_JSON (a secret) seeds the
-    token file when there is none."""
+TOKEN_SECRET = "YOUTUBE_TOKEN_JSON"
+
+
+def stored_token() -> str | None:
+    """The channel's token as the control room stored it: the YOUTUBE_TOKEN_JSON environment variable, else the
+    Secret Manager secret of that name (what "Connect YouTube" writes)."""
     import os
 
+    seeded = os.environ.get(TOKEN_SECRET, "").strip()
+    if seeded:
+        return seeded
+    from ..ops import secrets
+    return (secrets.read(TOKEN_SECRET) or "").strip() or None
+
+
+def token_available(token_cache: Path) -> bool:
+    return token_cache.exists() or stored_token() is not None
+
+
+def credentials(client_secrets: Path, token_cache: Path, interactive: bool = True):
+    """The stored OAuth token (refreshed when needed). With interactive=False, as on a server, a missing or dead
+    token is an error with the fix in it instead of a browser window. A token stored by the control room
+    (YOUTUBE_TOKEN_JSON in the environment or Secret Manager) seeds the token file when there is none."""
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
 
-    seeded = os.environ.get("YOUTUBE_TOKEN_JSON", "").strip()
-    if seeded and not token_cache.exists():
+    seeded = stored_token() if not token_cache.exists() else None
+    if seeded:
         token_cache.parent.mkdir(parents=True, exist_ok=True)
         token_cache.write_text(seeded, encoding="utf-8")
     creds = Credentials.from_authorized_user_file(str(token_cache), SCOPES) if token_cache.exists() else None
@@ -85,9 +102,8 @@ def credentials(client_secrets: Path, token_cache: Path, interactive: bool = Tru
     if creds and creds.valid:
         return creds
     if not interactive:
-        raise RuntimeError(f"no valid YouTube token at {token_cache}: run `nraiorbit release youtube <slug> --auth` "
-                           "once on a computer with a browser (it stores the token), or put that token's JSON in "
-                           "the YOUTUBE_TOKEN_JSON secret")
+        raise RuntimeError(f"no valid YouTube token at {token_cache}: press Connect YouTube in the control room, or "
+                           "run `nraiorbit release youtube <slug> --auth` once on a computer with a browser")
     from google_auth_oauthlib.flow import InstalledAppFlow
 
     creds = InstalledAppFlow.from_client_secrets_file(str(client_secrets), SCOPES).run_local_server(port=0)
@@ -117,3 +133,15 @@ def upload(video: Path, metadata: dict, creds, *, captions: dict[str, Path] | No
     if thumbnail:
         yt.thumbnails().set(videoId=video_id, media_body=MediaFileUpload(str(thumbnail))).execute()
     return video_id
+
+
+def channel(creds) -> dict | None:
+    """The signed-in account's channel: {"id", "title"}; None when the account has no channel."""
+    from googleapiclient.discovery import build
+
+    yt = build("youtube", "v3", credentials=creds, cache_discovery=False)
+    items = yt.channels().list(part="snippet", mine=True).execute().get("items") or []
+    if not items:
+        return None
+    return {"id": items[0]["id"], "title": items[0]["snippet"]["title"]}
+

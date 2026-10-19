@@ -210,8 +210,8 @@ def publish_youtube(root: Path, privacy: str) -> dict:
 
     secrets = Path(os.environ.get("YOUTUBE_CLIENT_SECRETS", "client_secret.json"))
     token = Path(os.environ.get("YOUTUBE_TOKEN", str(root / ".youtube_token.json")))
-    if not secrets.exists() and not token.exists():
-        raise FileNotFoundError("no YouTube credentials (YOUTUBE_CLIENT_SECRETS / YOUTUBE_TOKEN)")
+    if not secrets.exists() and not youtube.token_available(token):
+        raise FileNotFoundError("no YouTube token: press Connect YouTube in the control room")
     bible = StoryBible.model_validate_json((root / "01_story_bible.json").read_text(encoding="utf-8"))
     outline = Outline.model_validate_json((root / "02_outline.json").read_text(encoding="utf-8"))
     creds = youtube.credentials(secrets, token, interactive=False)

@@ -256,7 +256,10 @@ _Last updated: 2026-10-15. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
   and restored around every tick (a fresh container no longer pays for identity images again), the sheet's cap,
   gates and publish reach the project on every tick, `<story>.overrides.yaml` sets runtime and cast, and a
   reference row carries its minutes for the cost guard. Still needed for a film queued from the page to plan itself:
-  an Anthropic API key as the secret ANTHROPIC_API_KEY attached to the runner job.
+  an Anthropic API key as the secret ANTHROPIC_API_KEY attached to the runner job. Sign-in moved from IAP (no
+  Google-managed OAuth client in a project without an organization) to "Sign in with Google" in the page plus a
+  Secret Manager passphrase; **Connect YouTube** on the board stores the channel's upload token in Secret Manager
+  (YOUTUBE_TOKEN_JSON) and the runner reads it when publishing (2026-10-19).
 
 ### Verified vs. not verified
 

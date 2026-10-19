@@ -276,3 +276,80 @@ def test_passphrase_sign_in_is_throttled_and_mints_the_same_session(root, monkey
     plain = TestClient(create_app(Store(str(root)), Settings(allowed_emails={"owner@example.com"}, auth=True)))
     assert plain.post("/auth/passphrase", data={"passphrase": "x"}).status_code == 404
 
+
+
+def test_connect_youtube_stores_the_channel_token_and_shows_the_channel(root, monkeypatch):
+    import json
+    calls = {}
+
+    def exchange(code, cid, sec, uri):
+        calls["exchange"] = (code, cid, uri)
+        return {"access_token": "at", "refresh_token": "rt", "expires_in": 3599,
+                "scope": "https://www.googleapis.com/auth/youtube.upload"}
+
+    def channel(tj):
+        calls["token"] = json.loads(tj)
+        return {"id": "UC123", "title": "NRAIORBIT Cinematic Universe"}
+
+    def store(tj):
+        calls["stored"] = tj
+        return True
+    monkeypatch.setattr(app_mod, "exchange_code", exchange)
+    monkeypatch.setattr(app_mod, "channel_info", channel)
+    monkeypatch.setattr(app_mod, "store_token", store)
+    app = create_app(Store(str(root)), Settings(allowed_emails={"owner@example.com"}, auth=True,
+                                                 google_client_id="cid.apps.googleusercontent.com",
+                                                 google_client_secret="shh", session_secret="s3cret"))
+    c = TestClient(app, headers={IAP: "owner@example.com"})
+    home = c.get("/").text
+    assert "Connect YouTube" in home and "No channel connected" in home
+    r = c.get("/youtube/connect", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("https://accounts.google.com/o/oauth2/v2/auth?")
+    assert "access_type=offline" in r.headers["location"] and "youtube.upload" in r.headers["location"]
+    from urllib.parse import parse_qs, urlparse
+    q = parse_qs(urlparse(r.headers["location"]).query)
+    state = q["state"][0]
+    assert q["redirect_uri"][0].endswith("/youtube/callback")
+    # a callback with another state is refused; the right one stores the token and the channel record
+    assert c.get("/youtube/callback", params={"code": "c0de", "state": "other"}).status_code == 400
+    r = c.get("/youtube/callback", params={"code": "c0de", "state": state}, follow_redirects=False)
+    assert r.status_code == 303 and "NRAIORBIT" in r.headers["location"]
+    assert calls["exchange"][0] == "c0de" and calls["exchange"][1] == "cid.apps.googleusercontent.com"
+    assert calls["token"]["refresh_token"] == "rt" and calls["token"]["client_secret"] == "shh"
+    assert calls["token"]["type"] == "authorized_user" and json.loads(calls["stored"])["refresh_token"] == "rt"
+    rec = json.loads((root / "settings" / "youtube.json").read_text())
+    assert rec["channel"] == "NRAIORBIT Cinematic Universe" and rec["connected_by"] == "owner@example.com"
+    home = c.get("/").text
+    assert "Connected to <b>NRAIORBIT Cinematic Universe</b>" in home
+    assert "Channel: NRAIORBIT Cinematic Universe" in c.get("/film/demo").text
+    # Google declining, and no refresh token, both come back as a message, not a crash
+    r = c.get("/youtube/callback", params={"error": "access_denied"}, follow_redirects=False)
+    assert r.status_code == 303 and "access_denied" in r.headers["location"]
+    monkeypatch.setattr(app_mod, "exchange_code", lambda *a: {"access_token": "at", "expires_in": 10})
+    r = c.get("/youtube/connect", follow_redirects=False)
+    state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+    r = c.get("/youtube/callback", params={"code": "x", "state": state}, follow_redirects=False)
+    from urllib.parse import unquote
+    assert "no refresh token" in unquote(r.headers["location"])
+    # without the client secret the button is not offered
+    (root / "settings" / "youtube.json").unlink()
+    plain = TestClient(create_app(Store(str(root)), Settings(auth=False)))
+    assert "Connecting needs the Google OAuth client" in plain.get("/").text
+
+
+def test_publish_paths_find_the_token_in_the_environment_or_secret_manager(tmp_path, monkeypatch):
+    pytest.importorskip("google.oauth2.credentials")
+    from nraiorbit.ops import secrets
+    from nraiorbit.publish import youtube
+    token = tmp_path / ".youtube_token.json"
+    monkeypatch.delenv("YOUTUBE_TOKEN_JSON", raising=False)
+    monkeypatch.setattr(secrets, "read", lambda name, project_id=None: None)
+    assert youtube.stored_token() is None and not youtube.token_available(token)
+    seed = json.dumps({"token": "t", "refresh_token": "r", "client_id": "c", "client_secret": "s",
+                       "scopes": youtube.SCOPES, "type": "authorized_user", "expiry": "2099-01-01T00:00:00Z"})
+    monkeypatch.setattr(secrets, "read", lambda name, project_id=None: seed if name == "YOUTUBE_TOKEN_JSON" else None)
+    assert youtube.token_available(token)
+    creds = youtube.credentials(tmp_path / "client_secret.json", token, interactive=False)
+    assert creds.valid and token.exists()                      # seeded from Secret Manager, no browser
+    monkeypatch.setenv("YOUTUBE_TOKEN_JSON", seed.replace('"t"', '"env"'))
+    assert json.loads(youtube.stored_token())["token"] == "env"   # the environment wins over the secret

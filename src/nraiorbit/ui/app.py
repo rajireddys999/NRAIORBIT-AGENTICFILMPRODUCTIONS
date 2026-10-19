@@ -34,6 +34,7 @@ class Settings:
     job: str | None = "nraiorbit-runner"
     title: str = "NRAIORBIT control room"
     google_client_id: str | None = None      # "Sign in with Google" (an OAuth web client's public id; no secret)
+    google_client_secret: str | None = None  # the same client's secret: only for Connect YouTube (code exchange)
     passphrase: str | None = None            # a second way in: a long passphrase from Secret Manager (UI_PASSPHRASE)
     session_secret: str | None = None        # signs the session cookie; random per deployment when unset
     session_days: int = 7
@@ -57,6 +58,55 @@ class Throttle:
 
 
 SESSION_COOKIE = "nraiorbit_session"
+YOUTUBE_SETTINGS = "settings/youtube.json"        # in the store: which channel is connected, by whom, when
+GOOGLE_AUTH = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN = "https://oauth2.googleapis.com/token"
+
+
+def oauth_url(client_id: str, redirect_uri: str, state: str, scopes: list[str]) -> str:
+    from urllib.parse import urlencode
+    return GOOGLE_AUTH + "?" + urlencode({
+        "client_id": client_id, "redirect_uri": redirect_uri, "response_type": "code", "scope": " ".join(scopes),
+        "access_type": "offline", "prompt": "consent", "include_granted_scopes": "true", "state": state})
+
+
+def exchange_code(code: str, client_id: str, client_secret: str, redirect_uri: str) -> dict:
+    """The token endpoint's answer for an authorization code: access_token, refresh_token, expires_in, scope."""
+    import requests
+    r = requests.post(GOOGLE_TOKEN, data={"code": code, "client_id": client_id, "client_secret": client_secret,
+                                          "redirect_uri": redirect_uri, "grant_type": "authorization_code"}, timeout=30)
+    if r.status_code != 200:
+        raise RuntimeError(f"token exchange failed: {r.status_code} {r.text[:200]}")
+    return r.json()
+
+
+def authorized_user_json(tokens: dict, client_id: str, client_secret: str, scopes: list[str]) -> str:
+    """The token in the shape google-auth reads back (Credentials.from_authorized_user_info)."""
+    import datetime
+    import json
+    expiry = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=int(tokens.get("expires_in", 3600)))
+    return json.dumps({"type": "authorized_user", "token": tokens.get("access_token"),
+                       "refresh_token": tokens.get("refresh_token"), "client_id": client_id,
+                       "client_secret": client_secret, "token_uri": GOOGLE_TOKEN,
+                       "scopes": tokens.get("scope", " ").split() or scopes,
+                       "expiry": expiry.strftime("%Y-%m-%dT%H:%M:%SZ")})
+
+
+def channel_info(token_json: str) -> dict | None:
+    """Which channel the token belongs to, looked up with it."""
+    import json
+
+    from google.oauth2.credentials import Credentials
+
+    from ..publish import youtube
+    creds = Credentials.from_authorized_user_info(json.loads(token_json), youtube.SCOPES)
+    return youtube.channel(creds)
+
+
+def store_token(token_json: str) -> bool:
+    from ..ops import secrets
+    from ..publish import youtube
+    return secrets.add_version(youtube.TOKEN_SECRET, token_json)
 
 
 def verify_google_token(token: str, client_id: str) -> dict | None:
@@ -251,13 +301,82 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         resp.delete_cookie(SESSION_COOKIE, path="/")
         return resp
 
+    # ------------------------------------------------------------------ Connect YouTube (the channel's upload token)
+    def youtube_status() -> dict:
+        import json
+        text = store.read_text(YOUTUBE_SETTINGS)
+        try:
+            info = json.loads(text) if text else {}
+        except ValueError:
+            info = {}
+        info["can_connect"] = bool(settings.google_client_id and settings.google_client_secret)
+        return info
+
+    def _redirect_uri(request: Request) -> str:
+        return str(request.base_url).rstrip("/") + "/youtube/callback"
+
+    @app.get("/youtube/connect")
+    def youtube_connect(request: Request, email: str = Depends(guard)):
+        import secrets as _secrets
+
+        from ..publish import youtube
+        if not (settings.google_client_id and settings.google_client_secret):
+            raise HTTPException(503, "Connect YouTube needs the Google OAuth client id and secret on the service")
+        state = _secrets.token_urlsafe(24)
+        url = oauth_url(settings.google_client_id, _redirect_uri(request), state, youtube.SCOPES)
+        resp = RedirectResponse(url, status_code=303)
+        resp.set_cookie("yt_state", sign_session(settings.session_secret, state, 1), max_age=600, httponly=True,
+                        secure=request.url.scheme == "https", samesite="lax", path="/youtube")
+        return resp
+
+    @app.get("/youtube/callback")
+    def youtube_callback(request: Request, email: str = Depends(guard), code: str = "", state: str = "",
+                         error: str = ""):
+        import datetime
+        import json
+
+        from ..publish import youtube
+        if error:
+            return back("/", f"YouTube was not connected: Google said {error}")
+        expected = read_session(settings.session_secret, request.cookies.get("yt_state"))
+        if not code or not state or state != expected:
+            raise HTTPException(400, "the sign-in did not start from this page (state mismatch); try Connect again")
+        tokens = exchange_code(code, settings.google_client_id, settings.google_client_secret, _redirect_uri(request))
+        if not tokens.get("refresh_token"):
+            return back("/", "Google returned no refresh token; remove the app's access at myaccount.google.com/permissions "
+                             "and connect again")
+        token_json = authorized_user_json(tokens, settings.google_client_id, settings.google_client_secret, youtube.SCOPES)
+        try:
+            ch = channel_info(token_json)
+        except Exception as exc:
+            return back("/", f"the token works but the channel could not be read: {type(exc).__name__}: {str(exc)[:120]}")
+        if ch is None:
+            return back("/", "that Google account has no YouTube channel; connect with the channel's account")
+        if not store_token(token_json):
+            return back("/", "the token could not be stored in Secret Manager (YOUTUBE_TOKEN_JSON); check the "
+                             "service account's secretVersionAdder role")
+        store.write_text(YOUTUBE_SETTINGS, json.dumps({
+            "channel_id": ch["id"], "channel": ch["title"], "connected_by": email,
+            "connected_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+            "scopes": youtube.SCOPES}, indent=1), "application/json")
+        print(f"control room: YouTube connected to channel {ch['title']} by {email}", flush=True)
+        resp = back("/", f"YouTube connected: {ch['title']}")
+        resp.delete_cookie("yt_state", path="/youtube")
+        return resp
+
+    @app.post("/youtube/disconnect")
+    def youtube_disconnect(email: str = Depends(guard)):
+        store.write_text(YOUTUBE_SETTINGS, "{}", "application/json")
+        return back("/", "channel record cleared; to revoke the token itself, remove the app at "
+                         "myaccount.google.com/permissions")
+
     @app.get("/", response_class=HTMLResponse)
     def home(request: Request, email: str = Depends(guard)):
         rows = load_rows(store, STORIES, queue.STORY_COLUMNS)
         by_slug = {r["slug"]: r for r in rows}
         cards = [films.summary(store, slug, by_slug.get(slug)) for slug in films.film_slugs(store, rows)]
         refs = load_rows(store, REFERENCES, queue.REFERENCE_COLUMNS)
-        return page("home.html", request, email, films=cards, refs=refs, runner=runner_panel())
+        return page("home.html", request, email, films=cards, refs=refs, runner=runner_panel(), youtube=youtube_status())
 
     @app.get("/new", response_class=HTMLResponse)
     def new_form(request: Request, email: str = Depends(guard)):
@@ -313,7 +432,7 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
             except Exception as exc:
                 log_lines = [f"(log unavailable: {type(exc).__name__})"]
         return page("film.html", request, email, f=d, stages=films.STAGES, runner=panel, log_lines=log_lines,
-                    latest=latest)
+                    latest=latest, youtube=youtube_status())
 
     # ------------------------------------------------------------------ actions (the queue sheet only)
     def _row(slug: str):

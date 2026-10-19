@@ -141,7 +141,7 @@
         <div class="meta">
           {% if f.has_film %}<span class="badge done">film</span>{% endif %}{% if f.has_trailer %}<span class="badge done">trailer</span>{% endif %}
           {% if f.updated %}<span>updated {{ f.updated[:16]|replace('T',' ') }}</span>{% endif %}
-          {% if f.note %}<span title="{{ f.note }}">· {{ f.note|short(70) }}</span>{% endif %}
+          {% if f.hint %}<span class="bad" title="{{ f.note }}">· {{ f.hint }}</span>{% elif f.note %}<span title="{{ f.note }}">· {{ f.note|short(70) }}</span>{% endif %}
         </div>
         <div class="actions" style="margin-top:4px">
           {{ gate_actions(f) }}

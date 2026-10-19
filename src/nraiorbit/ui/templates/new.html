@@ -40,12 +40,13 @@ textarea.story { min-height:300px; font-size:16px; font-family:var(--te); border
   </ol>
 </div>
 
+{% if error %}<div class="msg" role="alert" style="border-color:var(--bad);margin-bottom:18px"><b>Not queued.</b> {{ error }}</div>{% endif %}
 <div class="compose">
   <form id="newfilm" method="post" action="/new" class="left">
     <section class="card" aria-labelledby="s-story">
       <div class="sec-head"><h2 id="s-story">Story</h2><span class="mono tiny dim">01 / 03</span></div>
       <label for="story">Story · Telugu or English</label>
-      <textarea id="story" name="story" class="story" required placeholder="గోదావరి ఒడ్డున ఒక పడవ నడిపే యువకుడు..."></textarea>
+      <textarea id="story" name="story" class="story" required placeholder="గోదావరి ఒడ్డున ఒక పడవ నడిపే యువకుడు...">{{ form.story }}</textarea>
       <div class="row between" style="margin-top:8px"><span class="field-note" style="margin:0">A page or two is plenty: who, where, what is at stake, how it ends.</span><span class="mono tiny dim" id="story-count">0 words</span></div>
     </section>
 
@@ -53,19 +54,19 @@ textarea.story { min-height:300px; font-size:16px; font-family:var(--te); border
       <div class="sec-head"><h2 id="s-film">Film</h2><span class="mono tiny dim">02 / 03</span></div>
       <div class="grid g2">
         <div>
-          <label for="slug">Slug · the folder name</label>
-          <input id="slug" name="slug" required pattern="[a-z0-9][a-z0-9-]{1,40}" placeholder="rain-ferry" autocomplete="off" spellcheck="false" style="font-family:var(--mono)">
-          <div class="field-note">Lowercase letters, digits and dashes, 2 to 41 characters. It names <span class="mono">stories/&lt;slug&gt;.md</span> and the project folder.</div>
+          <label for="slug">Film name · optional</label>
+          <input id="slug" name="slug" placeholder="Rain Ferry" autocomplete="off" value="{{ form.slug }}">
+          <div class="field-note">Any name, any script. The folder name is made from it in lowercase letters, digits and dashes (<span class="mono" data-slug>&lt;slug&gt;</span>). Left empty, the first words of the story are used; a name already taken gets -2.</div>
         </div>
         <div>
           <label for="budget">Budget cap · USD, the hard stop</label>
-          <div class="prefix"><span>$</span><input id="budget" name="budget" type="number" min="1" step="1" value="150" required></div>
+          <div class="prefix"><span>$</span><input id="budget" name="budget" type="number" min="1" step="1" value="{{ form.budget }}" required></div>
           <div class="field-note">The runner stops before this line. Every paid step shows its price first.</div>
         </div>
       </div>
       <label for="runtime">Runtime · minutes</label>
       <div class="row" style="gap:10px">
-        <input id="runtime" name="runtime" type="number" min="1" max="60" value="10" style="width:110px">
+        <input id="runtime" name="runtime" type="number" min="1" max="60" value="{{ form.runtime }}" style="width:110px">
         <div class="chips" data-for="runtime" aria-label="Quick picks">
           <button type="button" class="quiet" data-v="3">3 min</button><button type="button" class="quiet" data-v="5">5 min</button>
           <button type="button" class="quiet on" data-v="10">10 min</button><button type="button" class="quiet" data-v="20">20 min</button><button type="button" class="quiet" data-v="45">45 min</button>
@@ -78,15 +79,15 @@ textarea.story { min-height:300px; font-size:16px; font-family:var(--te); border
       <div class="grid g2">
         <div>
           <label for="gates">Review gates</label>
-          <select id="gates" name="gates"><option value="ask">ask: stop at story, cast and first frames for my approval</option><option value="auto">auto: approve them as they come</option></select>
+          <select id="gates" name="gates"><option value="ask" {% if form.gates != 'auto' %}selected{% endif %}>ask: stop at story, cast and first frames for my approval</option><option value="auto" {% if form.gates == 'auto' %}selected{% endif %}>auto: approve them as they come</option></select>
         </div>
         <div>
           <label for="publish">YouTube</label>
-          <select id="publish" name="publish"><option value="private">private upload when the film check passes</option><option value="unlisted">unlisted</option><option value="public">public</option><option value="none">none: deliver to the bucket only</option></select>
+          <select id="publish" name="publish">{% for v, t in [('private', 'private upload when the film check passes'), ('unlisted', 'unlisted'), ('public', 'public'), ('none', 'none: deliver to the bucket only')] %}<option value="{{ v }}" {% if form.publish == v %}selected{% endif %}>{{ t }}</option>{% endfor %}</select>
         </div>
       </div>
       <div class="toggle-row">
-        <label class="check" style="margin:0"><input type="checkbox" name="start" value="1" checked> Start a tick right away</label>
+        <label class="check" style="margin:0"><input type="checkbox" name="start" value="1" {% if form.start %}checked{% endif %}> Start a tick right away</label>
         <span class="small dim">otherwise the scheduled tick picks it up within 15 minutes</span>
       </div>
     </section>
@@ -128,10 +129,16 @@ textarea.story { min-height:300px; font-size:16px; font-family:var(--te); border
   var $ = function (id) { return document.getElementById(id); };
   var slug = $('slug'), runtime = $('runtime'), budget = $('budget'), gates = $('gates'), publish = $('publish'), story = $('story');
   function money(v) { var n = parseFloat(v); return isNaN(n) ? '$—' : '$' + n.toLocaleString('en-US', {maximumFractionDigits: 2}); }
+  function slugify(t) {
+    var plain = (t || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 41).replace(/-+$/g, '');
+    return plain.length >= 2 ? plain : '';
+  }
   function sync() {
-    var s = (slug.value || '').trim();
-    $('sl-title').textContent = s ? s.replace(/-/g, ' ') : '[slug]';
-    document.querySelectorAll('[data-slug]').forEach(function (el) { el.textContent = s || '<slug>'; });
+    var name = (slug.value || '').trim();
+    var firstLine = (story.value.split('\n').map(function (l) { return l.trim(); }).filter(Boolean)[0] || '').split(/\s+/).slice(0, 6).join(' ');
+    var s = slugify(name) || slugify(firstLine) || 'film-<date>';
+    $('sl-title').textContent = name || (s !== 'film-<date>' ? s.replace(/-/g, ' ') : '[title]');
+    document.querySelectorAll('[data-slug]').forEach(function (el) { el.textContent = s; });
     $('sl-runtime').textContent = (runtime.value || '—') + ' min';
     $('sl-budget').textContent = money(budget.value); $('sl-total').textContent = money(budget.value);
     $('sl-gates').textContent = gates.value; $('sl-publish').textContent = publish.value; $('sl-publish2').textContent = publish.value;

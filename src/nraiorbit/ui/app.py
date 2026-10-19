@@ -6,6 +6,7 @@ import csv
 import datetime
 import html as _html
 import io
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,6 +23,39 @@ from .store import Store
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,40}$")
+
+
+def slugify(text: str) -> str:
+    """A folder name from whatever was typed: lowercase ASCII letters, digits and dashes, 2 to 41 characters;
+    "" when nothing usable is left (a Telugu-only title, for one)."""
+    import unicodedata
+    plain = re.sub(r"[\u0300-\u036f]", "", unicodedata.normalize("NFKD", text or "")).lower()
+    plain = re.sub(r"[^a-z0-9]+", "-", plain).strip("-")[:41].strip("-")     # same steps as the page's preview
+    return plain if len(plain) >= 2 else ""
+
+
+RESERVED_SLUGS = {"queue", "library", "lipsync", "stories", "settings", "final", "cache", "reports", "projects",
+                  "_template", "template", "new", "film", "login", "logout", "auth", "youtube", "references", "file",
+                  "healthz", "privacy", "terms", "tick"}      # bucket prefixes the runner uses, and this app's routes
+
+
+def money_text(cap: float) -> str:
+    """Dollars for the sheet, exact to the cent: 150 -> "150", 99999.99 -> "99999.99"."""
+    return f"{cap:.2f}".rstrip("0").rstrip(".")
+
+
+def pick_slug(wanted: str, story: str, taken) -> str:
+    """The slug for a new film: from the name typed, else the story's first words, else the date; never a reserved
+    name; unique among `taken` (a callable: slug -> bool) by a -2, -3 suffix."""
+    import datetime
+    first_line = next((ln for ln in story.splitlines() if ln.strip()), "")
+    base = slugify(wanted) or slugify(" ".join(first_line.split()[:6])) or \
+        f"film-{datetime.datetime.now(datetime.timezone.utc):%Y%m%d}"
+    slug, n = base, 2
+    while slug in RESERVED_SLUGS or taken(slug):
+        tail = f"-{n}"
+        slug, n = base[:41 - len(tail)].rstrip("-") + tail, n + 1
+    return slug
 STORIES = "queue/stories.csv"
 REFERENCES = "queue/references.csv"
 
@@ -405,30 +439,47 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         refs = load_rows(store, REFERENCES, queue.REFERENCE_COLUMNS)
         return page("home.html", request, email, films=cards, refs=refs, runner=runner_panel(), youtube=youtube_status())
 
+    FORM_DEFAULTS = {"slug": "", "story": "", "budget": "150", "runtime": "10", "gates": "ask", "publish": "private",
+                     "start": "1"}
+
     @app.get("/new", response_class=HTMLResponse)
     def new_form(request: Request, email: str = Depends(guard)):
-        return page("new.html", request, email)
+        return page("new.html", request, email, form=dict(FORM_DEFAULTS), error=None)
 
     @app.post("/new")
-    def new_story(request: Request, email: str = Depends(guard), slug: str = Form(...), story: str = Form(...),
-                  budget: float = Form(...), runtime: int = Form(10), gates: str = Form("ask"),
+    def new_story(request: Request, email: str = Depends(guard), slug: str = Form(""), story: str = Form(""),
+                  budget: str = Form(""), runtime: str = Form("10"), gates: str = Form("ask"),
                   publish: str = Form("private"), start: str = Form("")):
-        slug = slug.strip().lower()
-        if not SLUG_RE.match(slug):
-            raise HTTPException(400, "slug: lowercase letters, digits and dashes, 2 to 41 characters")
+        form = {"slug": slug, "story": story, "budget": budget, "runtime": runtime, "gates": gates,
+                "publish": publish, "start": start}
+
+        def again(error: str):
+            resp = page("new.html", request, email, form=form, error=error)
+            resp.status_code = 400
+            return resp
+
         if len(story.strip()) < 40:
-            raise HTTPException(400, "the story is too short to plan a film from")
-        if budget <= 0:
-            raise HTTPException(400, "the budget cap must be above zero: nothing is paid without one")
+            return again("The story is too short to plan a film from. A paragraph is the least; a page is better.")
+        try:
+            cap = float(budget)
+        except ValueError:
+            return again("The budget cap must be a number.")
+        if not math.isfinite(cap) or cap <= 0:
+            return again("The budget cap must be a real number above zero: nothing is paid without one.")
+        try:
+            minutes = max(1, min(int(float(runtime or 10)), 60))
+        except (ValueError, OverflowError):
+            return again("Runtime must be a number of minutes.")
         if gates not in ("ask", "auto") or publish not in ("none", "private", "unlisted", "public"):
-            raise HTTPException(400, "gates must be ask or auto; publish none, private, unlisted or public")
+            return again("Gates must be ask or auto; YouTube none, private, unlisted or public.")
         rows = load_rows(store, STORIES, queue.STORY_COLUMNS)
-        if any(r["slug"] == slug for r in rows) or store.exists(f"{slug}/project/pipeline.yaml"):
-            raise HTTPException(400, f"{slug} exists already; pick another slug")
+        used = {r["slug"] for r in rows}
+        slug = pick_slug(slug, story, lambda s: s in used or store.exists(f"{s}/project/pipeline.yaml")
+                         or store.exists(f"{s}/project/01_story_bible.json") or store.exists(f"stories/{s}.md"))
         store.write_text(f"stories/{slug}.md", story.strip() + "\n", "text/markdown")
         store.write_text(f"stories/{slug}.overrides.yaml",
-                         yaml.safe_dump({"film": {"runtime_minutes": max(1, min(int(runtime), 60))}}), "text/yaml")
-        rows.append({"slug": slug, "story_uri": store.uri(f"stories/{slug}.md"), "budget_usd": f"{budget:g}",
+                         yaml.safe_dump({"film": {"runtime_minutes": minutes}}), "text/yaml")
+        rows.append({"slug": slug, "story_uri": store.uri(f"stories/{slug}.md"), "budget_usd": money_text(cap),
                      "gates": gates, "publish": publish, "state": "new", "note": "", "updated": queue.now()})
         save_rows(store, STORIES, rows, queue.STORY_COLUMNS)
         msg = f"{slug} queued; the runner picks it up within 15 minutes"
@@ -509,11 +560,12 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         rows, row = _row(slug)
         if budget:
             try:
-                if float(budget) <= 0:
+                cap = float(budget)
+                if not math.isfinite(cap) or cap <= 0:
                     raise ValueError
             except ValueError:
-                raise HTTPException(400, "the budget cap must be a number above zero") from None
-            row["budget_usd"] = f"{float(budget):g}"
+                raise HTTPException(400, "the budget cap must be a real number above zero") from None
+            row["budget_usd"] = money_text(cap)
         if gates in ("ask", "auto"):
             row["gates"] = gates
         if publish in ("none", "private", "unlisted", "public"):

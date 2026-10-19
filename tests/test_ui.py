@@ -151,6 +151,17 @@ def test_policy_pages_are_public(root):
         assert r.status_code == 200 and word in r.text and "owner@example.com" in r.text and "room.example" in r.text
 
 
+def test_blocked_for_want_of_a_key_is_explained_in_plain_words(client, root):
+    import csv as _csv
+    import io as _io
+    text = (root / "queue" / "stories.csv").read_text()
+    rows_ = list(_csv.DictReader(_io.StringIO(text)))
+    rows_[0].update(state="blocked:TypeError", note="Could not resolve authentication method. Expected one of api_key…")
+    (root / "queue" / "stories.csv").write_text(csv_text(rows_, queue.STORY_COLUMNS))
+    assert "no Anthropic API key" in client.get("/").text
+    assert "secret ANTHROPIC_API_KEY" in client.get("/film/demo").text
+
+
 def test_board_shows_the_film_its_gate_and_its_money(client):
     html = client.get("/").text
     assert "demo" in html and STORY_BIBLE["title_en"] in html
@@ -268,12 +279,41 @@ def test_new_story_writes_the_story_the_overrides_and_the_row(client, root):
     assert new["slug"] == "rain-ferry" and new["state"] == "new" and new["budget_usd"] == "120"
     assert new["story_uri"].endswith("stories/rain-ferry.md") and client.started == ["nraiorbit-runner"]
     assert client.get("/film/rain-ferry").status_code == 200                    # a queued film with no plan yet
-    # guards: a bad slug, a tiny story, no cap, a duplicate
-    bad = dict(slug="Rain Ferry", story=story, budget="10")
-    assert client.post("/new", data=bad).status_code == 400
-    assert client.post("/new", data={**bad, "slug": "ok-slug", "story": "short"}).status_code == 400
-    assert client.post("/new", data={**bad, "slug": "ok-slug", "budget": "0"}).status_code == 400
-    assert client.post("/new", data={**bad, "slug": "demo"}).status_code == 400
+    # any name works: it is turned into the folder name; a taken name gets -2; an empty one comes from the story
+    r = client.post("/new", data={"slug": "Rain Ferry!", "story": story, "budget": "10"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/film/rain-ferry-2")
+    r = client.post("/new", data={"slug": "demo", "story": story, "budget": "10"}, follow_redirects=False)
+    assert r.headers["location"].startswith("/film/demo-2")                     # demo is a film already
+    english = "The ferryman of Godavari saves the village in a flood. " * 3
+    r = client.post("/new", data={"slug": "", "story": english, "budget": "10"}, follow_redirects=False)
+    assert r.headers["location"].startswith("/film/the-ferryman-of-godavari-saves-the")
+    r = client.post("/new", data={"slug": "గోదావరి సింహం", "story": story, "budget": "10"}, follow_redirects=False)
+    assert r.headers["location"].startswith("/film/film-20")                    # nothing Latin to use: the date
+    # real mistakes come back as the form with the message and the text kept, never a bare error page
+    r = client.post("/new", data={"slug": "ok", "story": "short", "budget": "10"})
+    assert r.status_code == 400 and "too short" in r.text and 'name="story"' in r.text
+    r = client.post("/new", data={"slug": "ok", "story": story, "budget": "0", "publish": "unlisted"})
+    assert r.status_code == 400 and "above zero" in r.text and story[:20] in r.text and 'value="unlisted" selected' in r.text
+    assert app_mod.slugify("Rain Ferry!") == "rain-ferry" and app_mod.slugify("ఆ") == "" and app_mod.slugify("Café-7") == "cafe-7"
+    # the cap must be a real number: nan and inf would switch the hard stop off; a huge runtime is a form error
+    for bad_cap in ("nan", "inf", "1e999", "-inf"):
+        r = client.post("/new", data={"slug": "capless", "story": story, "budget": bad_cap})
+        assert r.status_code == 400 and "real number above zero" in r.text, bad_cap
+    assert not any(row["slug"] == "capless" for row in rows(root))
+    r = client.post("/new", data={"slug": "longrun", "story": story, "budget": "10", "runtime": "1e999"})
+    assert r.status_code == 400 and "Runtime must be a number" in r.text
+    assert client.post("/film/demo/row", data={"budget": "inf"}).status_code == 400
+    # cents survive the sheet; the preview on the page and the server agree on punctuation and accents
+    client.post("/film/demo/row", data={"budget": "99999.99"})
+    assert rows(root)[0]["budget_usd"] == "99999.99"
+    assert app_mod.money_text(150) == "150" and app_mod.money_text(1234567.5) == "1234567.5"
+    assert app_mod.slugify("Ferryman\u2019s Daughter") == "ferryman-s-daughter"
+    assert app_mod.slugify("Rain\u2014Ferry") == "rain-ferry" and app_mod.slugify("Stra\u00dfe") == "stra-e"
+    # a name that is a bucket prefix or a route of this app never becomes a film folder
+    r = client.post("/new", data={"slug": "queue", "story": story, "budget": "10"}, follow_redirects=False)
+    assert r.headers["location"].startswith("/film/queue-2")
+    assert app_mod.pick_slug("library", story, lambda s: False) == "library-2"
+    assert app_mod.pick_slug("x" * 60, story, lambda s: s == "x" * 41) == "x" * 39 + "-2"
 
 
 def test_reference_queue(client, root):

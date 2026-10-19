@@ -69,9 +69,14 @@ class ClaudeClient:
     @property
     def client(self):
         if self._client is None:
+            import os
+
             import anthropic
 
-            self._client = anthropic.Anthropic()
+            # An organization-level key (one not made inside a workspace) must name the workspace on every request;
+            # ANTHROPIC_WORKSPACE_ID (wrkspc_...) does that. A workspace-scoped key needs nothing.
+            workspace = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
+            self._client = anthropic.Anthropic(default_headers={"anthropic-workspace-id": workspace} if workspace else None)
         return self._client
 
     def generate(self, *, schema, system, context, task, effort="high", agent="agent"):

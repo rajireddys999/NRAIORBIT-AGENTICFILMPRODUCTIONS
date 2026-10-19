@@ -55,7 +55,7 @@
         <div class="row" style="gap:10px"><span class="learn">learn · {{ r.learn }}</span><a class="mono tiny dim" href="{{ href }}" target="_blank" rel="noopener">{{ r.url|short(44) }}</a></div>
         {% if r.note %}<p class="note">{{ r.note|short(160) }}</p>{% endif %}
         <div class="row between" style="margin-top:4px">
-          <span class="mono tiny dim">{% if r.updated %}{{ r.updated[:16]|replace('T',' ') }}{% endif %}</span>
+          <span class="mono tiny dim">{% if r.updated %}{{ r.updated|local }}{% endif %}</span>
           {% if r.state.startswith('blocked') %}<form class="inline" method="post" action="/references/retry"><input type="hidden" name="url" value="{{ r.url }}"><button class="quiet sm">Retry</button></form>{% endif %}
         </div>
       </div>

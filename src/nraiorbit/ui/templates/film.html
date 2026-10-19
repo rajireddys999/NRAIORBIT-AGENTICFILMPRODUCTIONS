@@ -30,7 +30,7 @@
 .node.awaiting { border-color:rgba(79,216,240,.6); background:var(--cyan-soft); box-shadow:0 0 0 4px rgba(79,216,240,.12) }
 .node.next { border-color:rgba(242,181,68,.55); background:rgba(242,181,68,.06) } .node.running { box-shadow:0 0 0 4px rgba(242,181,68,.14) }
 .node.blocked { border-color:rgba(255,107,107,.5); background:rgba(255,107,107,.06) }
-.node.held, .node.partial { border-color:rgba(242,181,68,.35) }
+.node.held, .node.partial, .node.stale { border-color:rgba(242,181,68,.35) }
 .node .node-act { padding:0 14px 14px; display:flex; flex-direction:column; gap:8px } .node .node-act form { display:block } .node .node-act button, .node .node-act .btn { width:100% }
 .badge.next { background:var(--gold-soft); color:var(--gold) }
 .arrow { flex:0 0 26px; display:flex; align-items:center; justify-content:center; color:rgba(255,255,255,.25) } .node.done + .arrow { color:var(--ok) } .node.awaiting + .arrow, .node.next + .arrow { color:var(--gold) }
@@ -49,7 +49,7 @@
   <div style="min-width:0">
     <div class="row" style="margin-bottom:12px">
       <span class="badge {{ state0 }} {% if state0 in ['producing','new','approved','retry'] %}live{% endif %}">{{ f.state }}</span>
-      {% if f.row %}<span class="mono tiny dim">queue row · gates {{ f.row.gates or f.policy.gates or 'ask' }} · youtube {{ f.row.publish or f.policy.publish or 'none' }}{% if f.row.updated %} · updated {{ f.row.updated[:16]|replace('T',' ') }}{% endif %}</span>
+      {% if f.row %}<span class="mono tiny dim">queue row · gates {{ f.row.gates or f.policy.gates or 'ask' }} · youtube {{ f.row.publish or f.policy.publish or 'none' }}{% if f.row.updated %} · updated {{ f.row.updated|local }}{% endif %}</span>
       {% else %}<span class="mono tiny dim">made by hand · driven from Claude Code</span>{% endif %}
     </div>
     <h1 style="margin:0">{{ f.title_te or f.title }}{% if f.title_te %}<span class="en">{{ f.title }}</span>{% endif %}</h1>
@@ -100,6 +100,7 @@
       {% elif f.state == 'approved' %}<p><span class="live-dot" style="margin-right:8px"></span>Approved. The runner takes it up on its next tick{% if runner_running %} (one is running now){% endif %}; this page refreshes by itself.</p>
       {% elif f.state in ['new','retry','producing'] %}<p><span class="live-dot" style="margin-right:8px"></span>The runner is on it (state <b>{{ f.state }}</b>). This page refreshes by itself.</p>
       {% else %}<p class="muted">Nothing is waiting on you.</p>{% endif %}
+      {% if f.animatic %}<p class="small" style="color:var(--warn);margin-top:10px"><b>Animatic.</b> This film's project names no providers, so it runs on the mock ones: placeholder picture and voices, nothing paid. Queue it again once the runner ships its template, or add the providers to its pipeline.yaml.</p>{% endif %}
     </div>
     {% if f.bible.logline %}<p class="muted">{{ f.bible.logline }}</p>{% endif %}
     <div class="stages" style="grid-template-columns:repeat(auto-fit,minmax(84px,1fr));gap:6px;margin-top:auto">
@@ -176,7 +177,7 @@
     {% if runner.project and runner.job %}
       <p class="small muted">Cloud Run job <span class="mono gold">{{ runner.job }}</span>, one tick every 15 minutes; an approval starts one at once. Each tick does one step and stops at the next gate.</p>
       {% if runner.executions %}<div class="table-wrap"><table><tr><th>Execution</th><th>Started</th><th>State</th></tr>
-      {% for e in runner.executions[:4] %}<tr><td class="mono">{{ e.name }}</td><td class="small muted">{{ e.created|replace('T',' ') }}</td><td><span class="badge {{ e.state }}">{{ e.state }}</span></td></tr>{% endfor %}</table></div>{% endif %}
+      {% for e in runner.executions[:4] %}<tr><td class="mono">{{ e.name }}</td><td class="small muted">{{ e.created|local }}</td><td><span class="badge {{ e.state }}">{{ e.state }}</span></td></tr>{% endfor %}</table></div>{% endif %}
       {% if runner.error %}<p class="small muted">Executions unavailable: {{ runner.error }}</p>{% endif %}
     {% else %}<p class="small muted">No runner configured: this control room reads a local folder, so approvals wait for a manual run.</p>{% endif %}
     <p class="small dim" style="margin-top:12px">Gates in order: {% for g in ['story','outline','scenes','cast','shots','cost','faces','render','pacing','trailer','publish'] %}<span class="mono">{{ g }}</span>{% if not loop.last %} · {% endif %}{% endfor %}</p>
@@ -300,14 +301,14 @@
 </div>
 
 <div class="card report" id="report">
-  <div class="section-head"><h2>Last run report</h2>{% if f.produce %}<span class="mono tiny dim">{{ f.produce.started }} → {{ f.produce.finished }} · state {{ f.produce.state }} · ledger {{ f.produce.ledger_usd|money }}</span>{% endif %}</div>
+  <div class="section-head"><h2>Last run report</h2>{% if f.produce %}<span class="mono tiny dim">{{ f.produce.started|local }} → {{ f.produce.finished|local }} · state {{ f.produce.state }} · ledger {{ f.produce.ledger_usd|money }}</span>{% endif %}</div>
   {% if f.produce %}
   <table>{% for k, v in f.steps.items() %}<tr><td class="mono gold" style="width:140px">{{ k }}</td><td class="small">{% if v is mapping %}<pre>{{ v|tojson(indent=1) }}</pre>{% else %}{{ v }}{% endif %}</td></tr>{% endfor %}</table>
   {% else %}<p class="muted">The runner has not reported on this film yet.</p>{% endif %}
 </div>
 
 <div class="card" id="log">
-  <div class="section-head"><h2>Runner log</h2>{% if latest %}<span class="mono tiny dim">latest execution <span class="gold">{{ latest }}</span></span>{% endif %}</div>
+  <div class="section-head"><h2>Runner log</h2><span class="mono tiny dim">{% if latest %}latest execution <span class="gold">{{ latest }}</span> · {% endif %}times in {{ now.tzname() }}</span></div>
   {% if log_lines %}<pre class="log">{{ log_lines|join('\n') }}</pre>{% else %}<p class="muted">No log to show.</p>{% endif %}
 </div>
 {% endblock %}

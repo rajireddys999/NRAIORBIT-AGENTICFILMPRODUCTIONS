@@ -61,6 +61,7 @@ def root(tmp_path):
     outline = Outline.model_validate(OUTLINE)
     (proj / "project" / "02_outline.json").write_text(outline.model_dump_json(indent=1), encoding="utf-8")
     (proj / "project" / "pipeline.yaml").write_text(yaml.safe_dump({"film": {"runtime_minutes": 3}, "budget": {"max_usd": 40},
+                                                                     "providers": {"video": "veo", "music": "lyria"},
                                                                      "policy": {"gates": "ask", "publish": "private"}}))
     (proj / "project" / "input" / "story.md").write_text("A ferryman and a flood.", encoding="utf-8")
     (proj / "project" / "cast.lock.yaml").write_text(yaml.safe_dump({"lock_version": 1, "characters": {
@@ -210,6 +211,27 @@ def test_approve_retry_and_row_edits_write_only_the_sheet(client, root):
     assert not (root / "demo" / "reviews" / "faces.approved").exists()          # the runner does the file work
     r = client.post("/tick", data={"next": "/film/demo"}, follow_redirects=False)
     assert r.status_code == 303 and client.started == ["nraiorbit-runner", "nraiorbit-runner"]
+
+
+def test_a_cut_from_before_the_shots_is_stale_and_a_film_without_providers_is_an_animatic(client, root):
+    """Steps are read in order: a movie.mp4 that exists while the first frames are still open is from an earlier run
+    and shows as stale, never done. A film whose project names no providers runs on the mock ones; the page says
+    so, skips the first-frames and cost steps, and the board badges it."""
+    proj = root / "demo"
+    (proj / "reviews" / "faces.pending").unlink()
+    rs = rows(root)
+    rs[0].update(state="producing", updated=queue.now())
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    (proj / "11_master").mkdir()
+    (proj / "11_master" / "movie.mp4").write_bytes(b"")
+    html = client.get("/film/demo").text
+    assert 'class="badge stale">stale' in html and "from an earlier run; redone after first frames" in html
+    assert "Animatic" not in html and "2026-10-17 06:00 EDT" in html         # the runner's 10:00 UTC, on the studio's clock
+    (proj / "project" / "pipeline.yaml").write_text(yaml.safe_dump({"film": {"runtime_minutes": 3}, "budget": {"max_usd": 40}}))
+    html = client.get("/film/demo").text
+    assert "<b>Animatic.</b>" in html and "no first frames: mock video" in html and "nothing to pay: mock providers" in html
+    assert 'class="badge skipped">skipped' in html and "film (animatic)" in html and 'class="badge stale">' not in html
+    assert 'class="badge held">animatic' in client.get("/").text
 
 
 def test_a_run_under_way_offers_no_button_and_a_stale_click_changes_nothing(client, root):

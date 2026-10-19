@@ -36,7 +36,7 @@
 
 <div class="row between end" style="margin-bottom:24px">
   <div>
-    <p class="eyebrow">{{ now.strftime('%A · %d %b %Y') }} · {{ now.strftime('%H:%M') }} UTC</p>
+    <p class="eyebrow">{{ now.strftime('%A · %d %b %Y') }} · {{ now.strftime('%H:%M') }} {{ now.tzname() }}</p>
     <h1 style="margin:0">Films in <em>orbit.</em></h1>
   </div>
   <a class="btn big" href="/new"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>New film</a>
@@ -55,7 +55,8 @@
     <div class="row">
       <span class="badge {{ featured.state.split(':')[0] }} {% if featured.state.split(':')[0] in ['producing','new','approved','retry'] %}live{% endif %}">{{ featured.state }}</span>
       {% if featured.has_film %}<span class="badge done">film</span>{% endif %}{% if featured.has_trailer %}<span class="badge done">trailer</span>{% endif %}
-      {% if featured.updated %}<span class="mono dim tiny">updated {{ featured.updated[:16]|replace('T',' ') }}</span>{% endif %}
+      {% if featured.animatic %}<span class="badge held">animatic</span>{% endif %}
+      {% if featured.updated %}<span class="mono dim tiny">updated {{ featured.updated|local }}</span>{% endif %}
     </div>
     <div>
       <p class="eyebrow" style="margin-bottom:8px">{{ 'Needs you' if featured.gates else 'Now in production' }}</p>
@@ -79,7 +80,7 @@
     {% if runner.project and runner.job %}
       {% set latest = runner.executions[0] if runner.executions else None %}
       <span class="value" style="font-size:30px;padding:5px 0">{{ (latest.state if latest else 'idle')|upper }}</span>
-      <span class="mono tiny {% if latest and latest.state == 'failed' %}bad{% else %}dim{% endif %}">{% if latest %}{{ latest.name }} · {{ latest.created[11:16] }}{% elif runner.error %}executions unavailable{% else %}no executions yet{% endif %}</span>
+      <span class="mono tiny {% if latest and latest.state == 'failed' %}bad{% else %}dim{% endif %}">{% if latest %}{{ latest.name }} · {{ latest.created|local('%H:%M') }}{% elif runner.error %}executions unavailable{% else %}no executions yet{% endif %}</span>
     {% else %}<span class="value" style="font-size:30px;padding:5px 0">LOCAL</span><span class="mono tiny dim">reads a local folder</span>{% endif %}
   </div>
   <div class="kpi"><span class="label">References</span><span class="value">{{ refs|length }}<small>queued</small></span><span class="mono tiny dim">{{ refs_done|length }} learned · <a href="/references">open the list</a></span></div>
@@ -93,7 +94,7 @@
       {% if runner.error %}<p class="small muted">Executions unavailable: {{ runner.error }}</p>{% endif %}
       {% if runner.executions %}
       <div class="table-wrap"><table class="exec"><tr><th>Execution</th><th>Started</th><th>State</th></tr>
-      {% for e in runner.executions %}<tr><td class="mono">{{ e.name }}</td><td class="small muted">{{ e.created|replace('T',' ') }}</td><td><span class="badge {{ e.state }}">{{ e.state }}</span></td></tr>{% endfor %}
+      {% for e in runner.executions %}<tr><td class="mono">{{ e.name }}</td><td class="small muted">{{ e.created|local }}</td><td><span class="badge {{ e.state }}">{{ e.state }}</span></td></tr>{% endfor %}
       </table></div>{% endif %}
       <form method="post" action="/tick" style="margin-top:14px"><input type="hidden" name="next" value="/"><button class="quiet"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>Run a tick now</button></form>
     {% else %}<p class="muted small" style="margin-top:10px">No runner configured: this control room reads a local folder.</p>{% endif %}
@@ -139,8 +140,9 @@
         {% if f.logline %}<p class="logline">{{ f.logline }}</p>{% endif %}
         <div>{{ money_line(f.money) }}</div>
         <div class="meta">
+          {% if f.animatic %}<span class="badge held">animatic</span>{% endif %}
           {% if f.has_film %}<span class="badge done">film</span>{% endif %}{% if f.has_trailer %}<span class="badge done">trailer</span>{% endif %}
-          {% if f.updated %}<span>updated {{ f.updated[:16]|replace('T',' ') }}</span>{% endif %}
+          {% if f.updated %}<span>updated {{ f.updated|local }}</span>{% endif %}
           {% if f.hint %}<span class="bad" title="{{ f.note }}">· {{ f.hint }}</span>{% elif f.note %}<span title="{{ f.note }}">· {{ f.note|short(70) }}</span>{% endif %}
         </div>
         <div class="actions" style="margin-top:4px">

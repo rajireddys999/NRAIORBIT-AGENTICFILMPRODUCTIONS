@@ -783,7 +783,8 @@ def _main(argv: list[str] | None = None) -> None:
         p = sub.add_parser(name, help=f"{name} a project's media, caches, reports and plan files {where} the bucket")
         p.add_argument("slug")
         p.add_argument("--bucket")
-        p.add_argument("--sets", nargs="*", help="inbox cache keyframes music reports master scenes shots post files")
+        p.add_argument("--sets", nargs="*",
+                       help="inbox cache keyframes music reports master scenes shots post edit reviews files")
         p.set_defaults(fn=cmd_backup)
 
     args = ap.parse_args(argv)

@@ -496,3 +496,28 @@ def test_a_film_is_never_made_without_the_template_and_the_runner_finds_the_pack
     assert "providers" in (packaged / "pipeline.yaml").read_text(encoding="utf-8")
     (tmp_path / "work" / "_template").mkdir(parents=True)
     assert cli.project_template() == tmp_path / "work" / "_template"          # the folder's own wins when present
+
+
+def test_assembly_masters_again_when_the_trailers_source_was_not_restored(tmp_path):
+    """A fresh container restores the finished master but, from an older backup, not 10_edit: the trailer is cut
+    from 10_edit/film_dialogue.mp4, so assembly masters again from the timeline instead of letting ffmpeg fail."""
+    from nraiorbit.ops import backup
+    calls = []
+    p = SimpleNamespace(p=ProjectPaths(tmp_path), log=lambda *_: None, _animatic=lambda: True,
+                        _master=lambda movie: calls.append(("master", movie.name)),
+                        _place_cards=lambda movie: calls.append(("cards", movie.name)),
+                        gate=lambda name: calls.append(("gate", name)))
+    p.p.master.mkdir(parents=True)
+    p.p.edit.mkdir(parents=True)
+    (p.p.master / "movie.mp4").write_bytes(b"cut")
+    Pipeline._assemble(p)
+    assert calls == [("master", "movie.mp4"), ("cards", "movie.mp4"), ("gate", "pacing")]
+    assert not (p.p.master / "movie.mp4").exists()                        # the stale master is dropped first
+    calls.clear()
+    (p.p.master / "movie.mp4").write_bytes(b"cut")
+    (p.p.edit / "film_dialogue.mp4").write_bytes(b"dialogue cut")
+    Pipeline._assemble(p)
+    assert calls == [("cards", "movie.mp4"), ("gate", "pacing")]           # everything there: no re-master
+    # and the edit folder now travels with the project, so the next restore brings it back
+    assert ("folder", tmp_path / "10_edit", "gs://b/" + tmp_path.name + "/10_edit") in backup.pairs(tmp_path, "b", ["edit"])
+    assert "edit" in backup.DEFAULT_SETS

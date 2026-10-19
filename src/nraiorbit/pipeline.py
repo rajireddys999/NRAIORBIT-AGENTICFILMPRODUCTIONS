@@ -853,7 +853,14 @@ class Pipeline:
 
     def _assemble(self) -> None:
         movie = self.p.master / "movie.mp4"
+        film = self.p.edit / "film_dialogue.mp4"             # the cut before music: what the trailer is cut from
         if not movie.exists() and not (self.p.edit / "movie_nocards.mp4").exists():
+            self._master(movie)
+        elif not film.exists():
+            # a fresh container restored the master but not 10_edit (an older backup): master again from the
+            # timeline, so the trailer has its source; nothing paid, the clips are cached
+            self.log("  assemble: 10_edit/film_dialogue.mp4 is missing; re-mastering from the timeline")
+            movie.unlink(missing_ok=True)
             self._master(movie)
         self._place_cards(movie)
         self.gate("pacing" if self._animatic() else "final_cut")

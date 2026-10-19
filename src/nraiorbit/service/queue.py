@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import csv
 import datetime
+import inspect
 import io
 import json
 import os
@@ -34,11 +35,14 @@ from pathlib import Path
 
 import yaml
 
+from .progress import Tracker
+
 STORY_COLUMNS = ["slug", "story_uri", "budget_usd", "gates", "publish", "state", "note", "updated"]
 REFERENCE_COLUMNS = ["url", "title", "learn", "minutes", "state", "profile_uri", "note", "updated"]
 GATES = ["story", "outline", "scenes", "cast", "shots", "cost", "faces", "render", "pacing", "final_cut", "trailer",
          "publish"]                                   # every gate a run can stop at, in order; what approve accepts
 CLAIM_HOURS = 6.0                                     # a producing row is another tick's for this long (the job's limit)
+TRACKER_FACTORY = Tracker                             # the execution's running record; tests inject a fake
 
 
 def now() -> str:
@@ -315,12 +319,39 @@ def approve_gate(root: Path, gate: str) -> None:
     (reviews / f"{gate}.approved").write_text("approved in the queue\n" + text, encoding="utf-8")
 
 
+def _doing(tracker, doing: str, **fields) -> None:
+    if tracker is not None:
+        tracker.start(doing, **fields)
+
+
+def _takes_progress(fn) -> bool:
+    """Whether a produce_fn can hear the film's progress; a two-argument one (the tests' fakes) cannot."""
+    try:
+        return "progress" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: str | None, produce_fn, learn_fn,
          template: Path | None = None, fetch_story=_fetch, log=print) -> dict:
-    """One pass: one reference profile, then one story step. Returns what happened."""
+    """One pass: one reference profile, then one story step. Returns what happened. With a bucket, the execution
+    says what it is doing in queue/running/ while it works (service/progress.py), and the record goes when it exits,
+    whatever happened."""
+    tracker = TRACKER_FACTORY(bucket, log=log) if bucket else None
+    try:
+        return _tick(stories_uri, references_uri, projects_dir, bucket=bucket, produce_fn=produce_fn,
+                     learn_fn=learn_fn, template=template, fetch_story=fetch_story, log=log, tracker=tracker)
+    finally:
+        if tracker is not None:
+            tracker.close()
+
+
+def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, learn_fn, template, fetch_story, log,
+          tracker) -> dict:
     summary = {"reference": None, "story": None}
     if bucket:                                            # identity packs and reference profiles made by earlier ticks
         from ..ops import backup
+        _doing(tracker, "library-restore")
         try:
             backup.sync_library(bucket, "restore", log=lambda *_: None)
         except Exception as exc:
@@ -329,6 +360,7 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
     refs = load(references_uri, REFERENCE_COLUMNS)
     r = ready_reference(refs)
     if r:
+        _doing(tracker, "reference", url=r["url"])
         try:
             profile = learn_fn(r["url"], r.get("title") or None, r.get("learn") or "all", r.get("minutes") or None)
             r.update(state="done", profile_uri=str(profile), note="", updated=now())
@@ -345,7 +377,8 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
         prior, was_approved = s["state"], s["state"] == "approved"
         s.update(state="producing", updated=now())        # the claim, before the slow restore: no second tick joins in
         write_story(stories_uri, s)
-        mirror_reviews = False
+        _doing(tracker, "story", slug=s["slug"])
+        mirror_reviews, film = False, None
         try:
             if bucket and not (root / "pipeline.yaml").exists():
                 from ..ops import backup
@@ -366,7 +399,11 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
                 gate = pending_gate(root)
                 if gate:
                     approve_gate(root, gate)
-            report = produce_fn(root, bucket)
+            if tracker is not None and _takes_progress(produce_fn):
+                film = tracker.film(s["slug"], root)
+                report = produce_fn(root, bucket, progress=film)
+            else:
+                report = produce_fn(root, bucket)
             s.update(state=report["state"], note=(report.get("steps", {}).get("publish") or "")
                      if isinstance(report.get("steps", {}).get("publish"), str) else
                      str(report.get("steps", {}).get("publish", "")), updated=now())
@@ -379,12 +416,17 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
             s.update(state="blocked:restore" if strikes >= 3 else back_to,
                      note=f"restore failed ({strikes}): {exc}"[:200], updated=now())
         except Exception as exc:
+            if film is not None:
+                film.finish("failed")
             s.update(state=f"blocked:{type(exc).__name__}", note=str(exc)[:200], updated=now())
         write_story(stories_uri, s)
         summary["story"] = {"slug": s["slug"], "state": s["state"]}
         log(f"  story {s['slug']}: {s['state']}")
+    elif not r:
+        _doing(tracker, "idle")                           # nothing to do: said so until the tick exits
     if bucket and (summary["reference"] or summary["story"]):
         from ..ops import backup
+        _doing(tracker, "library-backup")
         try:
             backup.sync_library(bucket, "backup", log=lambda *_: None)
         except Exception as exc:

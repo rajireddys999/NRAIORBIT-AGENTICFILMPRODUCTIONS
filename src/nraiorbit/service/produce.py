@@ -89,11 +89,24 @@ def _faces_needed(pipeline: Pipeline) -> bool:
     return not any((pipeline.p.root / "inbox" / "video").glob("*/*.mp4"))
 
 
+def _teed(log, progress):
+    """The same log, each line also handed to the progress record as its last line."""
+    def tee(text="", *args, **kwargs):
+        log(text, *args, **kwargs)
+        progress.line(str(text).strip())
+    return tee
+
+
 def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | None = None, gates: str | None = None,
-            keyframes=None, log=print) -> dict:
+            keyframes=None, log=print, progress=None) -> dict:
     """Drive the project as far as its policy allows. `keyframes` is the first-frames step (the CLI's command),
-    injected so tests can skip it. Returns and writes the report."""
+    injected so tests can skip it. `progress` (a service.progress.FilmProgress) hears every stage, step and log
+    line while the run works, so the control room can show where a running film is. Returns and writes the report."""
     root = pipeline.p.root
+    if progress is not None:
+        pipeline.on_stage = progress.phase
+        pipeline.log, log = _teed(pipeline.log, progress), _teed(log, progress)
+    step = progress.phase if progress is not None else (lambda name: None)
     pol = policy_of(pipeline.cfg, gates=gates, publish=publish)
     report = {"slug": root.name, "started": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
               "policy": pol, "steps": {}, "state": "running"}
@@ -105,6 +118,8 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
         pipeline.p.reports.mkdir(parents=True, exist_ok=True)
         (pipeline.p.reports / "produce.json").write_text(json.dumps(report, indent=1, default=str), encoding="utf-8")
         log(f"  produce: {state}")
+        if progress is not None:
+            progress.finish(state)
         return report
 
     # 1. plan up to the shot lists (Claude only), honouring the story and cast gates
@@ -125,6 +140,7 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
 
     # 2. the cost gate: what the paid stages would cost against what is left of the cap, before anything is paid.
     #    Over the cap it blocks; under it the owner approves the figure (ask) or it goes straight on (auto).
+    step("cost")
     block, preview = cost_gate(pipeline)
     if preview:
         report["steps"]["estimate"] = {k: preview[k] for k in ("total_usd", "video_usd", "keyframe_usd", "tts_usd",
@@ -149,6 +165,7 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
     report["steps"]["cost"] = "approved" if approved(pipeline, "cost") else "not needed"
 
     # 3. faces: first frames for every shot with a lead, then a human look (ask) or straight on (auto)
+    step("faces")
     if _faces_needed(pipeline) and pol["gates"] == "ask":
         if keyframes is not None:
             try:
@@ -179,6 +196,7 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
     report["steps"]["render"] = "done"
 
     # 4. QA: never stops the run; it writes sheets and a verdict for the owner
+    step("qa")
     try:
         from ..qa import film
         fc = film.check(root, log=log)
@@ -191,6 +209,7 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
         report["steps"]["qa"] = f"skipped: {type(exc).__name__}: {str(exc)[:100]}"
 
     # 5. deliverables and links
+    step("deliver")
     try:
         from ..release import deliver, gcs
         bucket = bucket or (gcs.default_bucket(pipeline.cfg) if os.environ.get("GOOGLE_CLOUD_PROJECT")
@@ -205,6 +224,7 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
 
     # 6. YouTube, private unless the policy says otherwise; approved by the owner first (ask), and on its own only
     #    when the film check passed (auto); never a browser
+    step("publish")
     if pol["publish"] not in ("private", "unlisted", "public"):
         clear(pipeline, "publish")
         report["steps"]["publish"] = "none"
@@ -225,6 +245,7 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
 
     # 7. backup
     if bucket:
+        step("backup")
         try:
             from ..ops import backup
             report["steps"]["backup"] = f"{backup.backup(root, bucket, log=log)} sets"

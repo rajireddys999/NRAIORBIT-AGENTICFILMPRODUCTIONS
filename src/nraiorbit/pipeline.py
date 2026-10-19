@@ -111,6 +111,7 @@ class Pipeline:
         self.face_mesh = None                          # lipsync.shots.<id>.mesh; tests inject a fake
         self.takes = load_takes(self.p.root)
         self.log = log
+        self.on_stage = None                           # called with each stage's name as it starts (live progress)
         self.story_analyst = StoryAnalyst(llm, self.cfg)
         self.screenwriter = Screenwriter(llm, self.cfg)
         self.critic = DialogueCritic(llm, self.cfg)
@@ -125,6 +126,8 @@ class Pipeline:
             self.invalidate(min(force, key=STAGES.index))
         for stage in STAGES:
             self.log(f"[{stage}]")
+            if self.on_stage is not None:
+                self.on_stage(stage)
             getattr(self, f"_{stage}")()
             if STAGE_GATES.get(stage) in STEP_GATES:
                 self.gate(STAGE_GATES[stage])

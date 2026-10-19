@@ -16,6 +16,26 @@ waves every gate through.
 It writes only `queue/stories.csv`, `queue/references.csv` and `stories/<slug>.*`; the runner does every paid step
 under the row's cap. There is no database: the page can never disagree with what the runner sees.
 
+**What is running now.** The runner keeps two small records in the bucket while a tick works, and the page pairs
+each with Cloud Run's own list of running executions, so a record left behind by a crash never reads as live:
+
+- `<slug>/reports/progress.json`: the film's phase (a pipeline stage such as `scenes`, or a step such as `cost` or
+  `qa`), when it began, and the last log line. While its execution runs, that stage is drawn as **executing** (a
+  gold pulse) with "scenes since 06:48 UTC · last: sc010: 3 lines (40 s ago)", and the top of the page says
+  "Running … · execution <name>". Once the execution ends the record is ignored and the page infers the next step
+  from the plan files as before.
+- `queue/running/<execution>.json`: one per tick, removed when the tick exits. The Runner tables' **Doing** column
+  reads these: film · phase · when the tick started (not the phase: the film page says when the phase began),
+  "nothing to do" for an idle tick, "no record yet" for a running tick that has not written one, "left behind" when
+  the record outlived its execution. Two running executions on the same film are marked **duplicate**: cancel the
+  newer one in the console (each execution name links to its Cloud Run page), since it repeats the older one's work.
+  "Run a tick now" refuses while a tick runs or has just been started, for the same reason.
+
+The log header says when the latest execution started, how long it has run (or when it finished) and how old its
+last line is. The film page refreshes every 20 s while a stage is executing and every 45 s while the film is queued
+or claimed; the board every 45 s while a tick runs, else every 90 s. A refresh keeps the scroll position, and waits
+while a field such as the budget cap is being edited.
+
 - Locally: `nraiorbit ui --root projects --no-auth` (reads the projects folder; no sign-in, so never on the internet).
 - On Cloud Run: `PROJECT=… BUCKET=… ALLOW=you@gmail.com CLIENT_ID=… deploy/ui/setup.sh`. The service scales to zero.
   Sign-in is Google's own "Sign in with Google" button inside the page: the visitor's Google ID token is verified

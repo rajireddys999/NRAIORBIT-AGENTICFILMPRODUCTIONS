@@ -226,6 +226,38 @@ def load_rows(store: Store, rel: str, columns: list[str]) -> list[dict]:
     return queue.rows_of(store.read_text(rel) or "", columns)
 
 
+def duplicates(executions: list[dict], doings: dict) -> set[str]:
+    """Running executions whose doing records name the same film. The runner's claim keeps the second one from
+    paying twice, but it still burns its time: the owner should see it and cancel it."""
+    by_slug: dict[str, list[str]] = {}
+    for e in executions:
+        rec = doings.get(e["name"]) if e.get("state") == "running" else None
+        if rec and rec.get("slug"):
+            by_slug.setdefault(rec["slug"], []).append(e["name"])
+    return {n for names in by_slug.values() if len(names) > 1 for n in names}
+
+
+def log_time(lines: list[str], started: str | None = None, now=None) -> str | None:
+    """The ISO moment of the last timed log line. A line carries only HH:MM:SS UTC, so the date comes from the
+    execution's start (a line is never earlier than that; past midnight it is the next day), else from today: an
+    execution three days old must read as three days old. None when no line has a time ("log unavailable")."""
+    m = next((m for m in (re.match(r"^(\d\d):(\d\d):(\d\d)\b", ln or "") for ln in reversed(lines)) if m), None)
+    if not m:
+        return None
+    hms = {"hour": int(m[1]), "minute": int(m[2]), "second": int(m[3]), "microsecond": 0}
+    start = films.when(started)
+    if start:
+        t = start.astimezone(datetime.timezone.utc).replace(**hms)
+        if t < start - datetime.timedelta(minutes=1):
+            t += datetime.timedelta(days=1)
+    else:
+        now = now or datetime.datetime.now(datetime.timezone.utc)
+        t = now.replace(**hms)
+        if t > now + datetime.timedelta(minutes=1):
+            t -= datetime.timedelta(days=1)
+    return t.isoformat(timespec="seconds")
+
+
 def edit_row(store: Store, slug: str, change) -> dict:
     """Change one film's row in the queue sheet under the store's write precondition, so an edit here and a tick's
     claim seconds apart never lose each other. `change(row)` edits the row in place; returning False leaves the sheet
@@ -254,6 +286,8 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.filters["money"] = lambda v: "" if v is None else f"${float(v):,.2f}"
     templates.env.filters["short"] = lambda v, n=90: (v if len(v) <= n else v[:n - 1] + "…") if isinstance(v, str) else v
+    templates.env.filters["ago"] = films.ago
+    templates.env.filters["clock"] = films.clock
 
     throttle = Throttle()
 
@@ -292,6 +326,14 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         except Exception as exc:                       # no roles, no network, no job: the page still renders
             panel["error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
         return panel
+
+    def running_execution() -> str | None:
+        """The name of a tick under way, if any: never two executions on the queue at once. One just started is
+        pending for its first minute while Cloud Run schedules it, and counts too; a cancelled one has a completion
+        time, so it cannot hold the queue up."""
+        busy = [e for e in runner_mod.executions(settings.project, settings.region, settings.job)
+                if e["state"] == "running" or (e["state"] == "pending" and not e.get("completed"))]
+        return busy[0]["name"] if busy else None
 
     # ------------------------------------------------------------------ sign-in
     @app.get("/healthz", response_class=PlainTextResponse)
@@ -443,7 +485,9 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         by_slug = {r["slug"]: r for r in rows}
         cards = [films.summary(store, slug, by_slug.get(slug)) for slug in films.film_slugs(store, rows)]
         refs = load_rows(store, REFERENCES, queue.REFERENCE_COLUMNS)
-        return page("home.html", request, email, films=cards, refs=refs, runner=runner_panel(), youtube=youtube_status())
+        panel, doings = runner_panel(), runner_mod.doings(store)
+        return page("home.html", request, email, films=cards, refs=refs, runner=panel, youtube=youtube_status(),
+                    doings=doings, dupes=duplicates(panel["executions"], doings))
 
     FORM_DEFAULTS = {"slug": "", "story": "", "budget": "150", "runtime": "10", "gates": "ask", "publish": "private",
                      "start": "1"}
@@ -512,18 +556,21 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         if row is None and not store.exists(f"{slug}/project/pipeline.yaml") and \
                 not store.exists(f"{slug}/project/01_story_bible.json"):
             raise HTTPException(404, f"no film called {slug}")
-        d = films.detail(store, slug, row)
-        log_lines, latest = [], None
-        panel = runner_panel()
+        panel, doings = runner_panel(), runner_mod.doings(store)
+        running = {e["name"] for e in panel["executions"] if e["state"] == "running"}
+        d = films.detail(store, slug, row, running)
+        log_lines, latest, last_log_at = [], None, None
         if panel["executions"]:
-            latest = panel["executions"][0]["name"]
+            latest = dict(panel["executions"][0])
             try:
-                log_lines = runner_mod.logs(settings.project, latest)
+                log_lines = runner_mod.logs(settings.project, latest["name"])
             except Exception as exc:
                 log_lines = [f"(log unavailable: {type(exc).__name__})"]
-        running = bool(panel["executions"]) and panel["executions"][0]["state"] == "running"
+            last_log_at = log_time(log_lines, latest.get("created"))
+            latest["minutes"] = int((films.seconds_since(latest.get("created")) or 0) // 60)
         return page("film.html", request, email, f=d, stages=films.STAGES, runner=panel, log_lines=log_lines,
-                    latest=latest, runner_running=running, youtube=youtube_status())
+                    latest=latest, last_log_at=last_log_at, runner_running=bool(running), youtube=youtube_status(),
+                    doings=doings, dupes=duplicates(panel["executions"], doings))
 
     # ------------------------------------------------------------------ actions (the queue sheet only)
     @app.post("/film/{slug}/approve")
@@ -546,10 +593,9 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         msg = f"{gate} approved; the next tick carries on"
         if settings.project and settings.job:                 # no fifteen-minute wait: the next step starts now
             try:
-                busy = [e for e in runner_mod.executions(settings.project, settings.region, settings.job)
-                        if e["state"] == "running"]
-                if busy:                                      # never two executions on the queue at once
-                    msg = f"{gate} approved; a tick is running ({busy[0]['name']}), the next scheduled one carries on"
+                busy = running_execution()
+                if busy:
+                    msg = f"{gate} approved; a tick is running ({busy}), the next scheduled one carries on"
                 else:
                     ex = runner_mod.run(settings.project, settings.region, settings.job)
                     msg = f"{gate} approved; a tick started ({ex}) and the next step is under way"
@@ -589,6 +635,12 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
     def tick(request: Request, email: str = Depends(guard), next: str = Form("/")):
         if not (settings.project and settings.job):
             return back(next, "no runner is configured for this control room")
+        try:
+            busy = running_execution()
+        except Exception:                                     # cannot tell: start one, as before this check existed
+            busy = None
+        if busy:
+            return back(next, f"a tick is already running ({busy}); a second one would repeat its work")
         try:
             ex = runner_mod.run(settings.project, settings.region, settings.job)
         except Exception as exc:

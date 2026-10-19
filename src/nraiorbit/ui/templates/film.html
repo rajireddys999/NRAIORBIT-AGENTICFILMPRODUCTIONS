@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ f.title }} · {{ settings.title }}{% endblock %}
-{% block head %}{% if f.state in ['new','approved','retry','producing'] %}<meta http-equiv="refresh" content="60">{% endif %}{% endblock %}
+{% set refresh = 20 if f.live else (45 if f.state in ['new','approved','retry','producing'] else 0) %}
 {% block style %}
 .desk-head { display:flex; align-items:flex-end; justify-content:space-between; gap:20px; flex-wrap:wrap; margin-bottom:20px }
 .desk-head h1 { font-family:var(--te); font-weight:700; font-size:48px; line-height:1.05 } .desk-head h1 .en { font-family:var(--serif); font-weight:400; color:var(--muted); font-size:24px; display:block; margin-top:8px }
@@ -29,17 +29,23 @@
 .node.done { border-color:rgba(92,211,138,.3) } .node.todo { opacity:.72 } .node.todo:hover { opacity:1 }
 .node.awaiting { border-color:rgba(79,216,240,.6); background:var(--cyan-soft); box-shadow:0 0 0 4px rgba(79,216,240,.12) }
 .node.next { border-color:rgba(242,181,68,.55); background:rgba(242,181,68,.06) } .node.running { box-shadow:0 0 0 4px rgba(242,181,68,.14) }
+.node.executing { border-color:rgba(242,181,68,.7); background:rgba(242,181,68,.08); animation:pulse-gold 1.6s ease-out infinite }
 .node.blocked { border-color:rgba(255,107,107,.5); background:rgba(255,107,107,.06) }
 .node.held, .node.partial { border-color:rgba(242,181,68,.35) }
 .node .node-act { padding:0 14px 14px; display:flex; flex-direction:column; gap:8px } .node .node-act form { display:block } .node .node-act button, .node .node-act .btn { width:100% }
 .badge.next { background:var(--gold-soft); color:var(--gold) }
-.arrow { flex:0 0 26px; display:flex; align-items:center; justify-content:center; color:rgba(255,255,255,.25) } .node.done + .arrow { color:var(--ok) } .node.awaiting + .arrow, .node.next + .arrow { color:var(--gold) }
+.arrow { flex:0 0 26px; display:flex; align-items:center; justify-content:center; color:rgba(255,255,255,.25) } .node.done + .arrow { color:var(--ok) } .node.awaiting + .arrow, .node.next + .arrow, .node.executing + .arrow { color:var(--gold) }
 @media (max-width:720px) { .node { flex-basis:100%; max-width:none } .arrow { flex-basis:100%; height:22px } .arrow svg { transform:rotate(90deg) } }
 {% endblock %}
 {% block body %}
+{% macro exec_name(e, badge=True) %}{% if e.url %}<a href="{{ e.url }}" target="_blank" rel="noopener">{{ e.name }}</a>{% else %}<span class="gold">{{ e.name }}</span>{% endif %}{% if badge and e.name in dupes %} <span class="badge blocked">duplicate</span>{% endif %}{% endmacro %}
+{% macro doing(e, rec) %}{% if not rec %}{% if e.state == 'running' %}<span class="dim">no record yet</span>{% endif %}
+  {%- elif e.state != 'running' %}<span class="dim" title="the execution ended without removing its record">left behind</span>
+  {%- elif rec.doing == 'idle' %}<span class="dim">nothing to do</span>
+  {%- else %}<span title="{% if rec.last_line %}last: {{ rec.last_line }} {% endif %}{% if rec.updated %}({{ rec.updated|ago }}){% endif %}">{% if rec.slug %}<a href="/film/{{ rec.slug }}">{{ rec.slug }}</a>{% else %}{{ rec.doing|replace('-', ' ') }}{% endif %}{% if rec.phase %} · {{ rec.phase|replace('_', ' ') }}{% endif %}{% if rec.started %} · tick started {{ rec.started|clock }}{% endif %}</span>{% endif %}{% endmacro %}
 {% set m = f.money %}
 {% set state0 = f.state.split(':')[0] %}
-{% set executing = runner_running and state0 == 'producing' %}
+{% set executing = f.live or (runner_running and state0 == 'producing') %}
 {% set hue = (f.slug|length) % 8 %}
 {% set shot_count = f.shots|map(attribute='shots')|map('length')|sum %}
 
@@ -93,6 +99,8 @@
           {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/approve"><input type="hidden" name="gate" value="{{ g }}"><button>Approve {{ g }} and continue</button></form>
           {% else %}<p class="small muted">This film is not in the queue; approve it from Claude Code (<span class="mono">nraiorbit approve {{ f.slug }} {{ g }}</span>).</p>{% endif %}
         {% endfor %}
+      {% elif f.live %}
+        <p><span class="live-dot" style="margin-right:8px"></span>Running{% if f.live.stage_label %} <b>{{ f.live.stage_label }}</b>{% endif %}{% if f.live.since %} since {{ f.live.since }}{% endif %}{% if f.live.last_line %} · last: {{ f.live.last_line }}{% if f.live.ago %} ({{ f.live.ago }}){% endif %}{% endif %} · execution <span class="mono">{{ f.live.execution }}</span>. This page refreshes by itself.</p>
       {% elif f.state.startswith('blocked') %}
         <p>Blocked: <b class="bad">{{ f.state[8:] }}</b>. {{ f.hint or (f.row.note if f.row else '') }}</p>
         {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/retry"><button>Fix is in place, retry</button></form>{% endif %}
@@ -104,7 +112,7 @@
     {% if f.bible.logline %}<p class="muted">{{ f.bible.logline }}</p>{% endif %}
     <div class="stages" style="grid-template-columns:repeat(auto-fit,minmax(84px,1fr));gap:6px;margin-top:auto">
       {% for key, label in stages %}{% set s = f.stages[key] %}
-      <a class="stage {{ s.status }}{% if key == f.next_stage %} producing{% endif %}" href="#{{ 'money' if key == 'cost' else key }}" title="{{ label }}: {{ s.status }}" style="padding:10px 10px;border-radius:12px;gap:6px"><b style="font-size:9px">{{ label|truncate(12, True, '…') }}</b><div class="bar"><span></span></div></a>
+      <a class="stage {{ s.status }}{% if key == f.next_stage and s.status != 'executing' %} producing{% endif %}" href="#{{ 'money' if key == 'cost' else key }}" title="{{ label }}: {{ s.status }}" style="padding:10px 10px;border-radius:12px;gap:6px"><b style="font-size:9px">{{ label|truncate(12, True, '…') }}</b><div class="bar"><span></span></div></a>
       {% endfor %}
     </div>
   </div>
@@ -119,11 +127,12 @@
   </div>
   <ol class="flow">
   {% for key, label in stages %}{% set s = f.stages[key] %}{% set gate = f.gate_for.get(key) %}{% set is_next = (key == f.next_stage) %}
-    <li class="node {{ s.status }}{% if is_next %} next{% if executing %} running{% endif %}{% endif %}">
+    <li class="node {{ s.status }}{% if is_next and s.status != 'executing' %} next{% if executing %} running{% endif %}{% endif %}">
       <a class="node-body" href="#{{ 'money' if key == 'cost' else key }}" title="{{ label }}: details">
         <span class="n">{{ '%02d'|format(loop.index) }}</span>
         <b>{{ label }}</b>
         {% if gate %}<span class="badge awaiting">needs you</span>
+        {% elif s.status == 'executing' %}<span class="badge executing live">executing</span>
         {% elif is_next %}<span class="badge next{% if executing %} live{% endif %}">{{ 'executing' if executing else 'next up' }}</span>
         {% else %}<span class="badge {{ s.status }}">{{ s.status }}</span>{% endif %}
         {% if s.text %}<span class="txt muted">{{ s.text }}</span>{% endif %}
@@ -175,8 +184,9 @@
     <div class="section-head"><h2>Runner</h2>{% if runner.project and runner.job %}<span class="badge plain {% if runner_running %}live{% endif %}" style="color:{{ 'var(--ok)' if runner_running else 'var(--muted)' }}">{{ 'tick running' if runner_running else 'idle' }}</span>{% endif %}</div>
     {% if runner.project and runner.job %}
       <p class="small muted">Cloud Run job <span class="mono gold">{{ runner.job }}</span>, one tick every 15 minutes; an approval starts one at once. Each tick does one step and stops at the next gate.</p>
-      {% if runner.executions %}<div class="table-wrap"><table><tr><th>Execution</th><th>Started</th><th>State</th></tr>
-      {% for e in runner.executions[:4] %}<tr><td class="mono">{{ e.name }}</td><td class="small muted">{{ e.created|replace('T',' ') }}</td><td><span class="badge {{ e.state }}">{{ e.state }}</span></td></tr>{% endfor %}</table></div>{% endif %}
+      {% if runner.executions %}<div class="table-wrap"><table><tr><th>Execution</th><th>Started</th><th>State</th><th>Doing</th></tr>
+      {% for e in runner.executions[:4] %}<tr><td class="mono">{{ exec_name(e) }}</td><td class="small muted">{{ e.created|replace('T',' ') }}</td><td><span class="badge {{ e.state }}">{{ e.state }}</span></td><td class="small">{{ doing(e, doings.get(e.name)) }}</td></tr>{% endfor %}</table></div>
+      {% if dupes %}<p class="small bad" style="margin-top:8px">two executions on the same film; cancel the newer one in the console (it repeats the older one's work)</p>{% endif %}{% endif %}
       {% if runner.error %}<p class="small muted">Executions unavailable: {{ runner.error }}</p>{% endif %}
     {% else %}<p class="small muted">No runner configured: this control room reads a local folder, so approvals wait for a manual run.</p>{% endif %}
     <p class="small dim" style="margin-top:12px">Gates in order: {% for g in ['story','outline','scenes','cast','shots','cost','faces','render','pacing','trailer','publish'] %}<span class="mono">{{ g }}</span>{% if not loop.last %} · {% endif %}{% endfor %}</p>
@@ -307,7 +317,7 @@
 </div>
 
 <div class="card" id="log">
-  <div class="section-head"><h2>Runner log</h2>{% if latest %}<span class="mono tiny dim">latest execution <span class="gold">{{ latest }}</span></span>{% endif %}</div>
+  <div class="section-head"><h2>Runner log</h2>{% if latest %}<span class="mono tiny dim">execution {{ exec_name(latest, False) }}{% if latest.created %} · started {{ latest.created[:19]|replace('T',' ') }} UTC{% endif %}{% if latest.state == 'running' %} · running for {{ latest.minutes }} min{% elif latest.completed %} · finished {{ latest.completed[11:19] }}{% endif %}{% if last_log_at %} · last line {{ last_log_at[11:19] }} ({{ last_log_at|ago }}){% endif %}</span>{% endif %}</div>
   {% if log_lines %}<pre class="log">{{ log_lines|join('\n') }}</pre>{% else %}<p class="muted">No log to show.</p>{% endif %}
 </div>
 {% endblock %}

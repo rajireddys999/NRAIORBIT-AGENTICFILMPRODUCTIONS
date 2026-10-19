@@ -262,6 +262,17 @@ _Last updated: 2026-10-15. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
   Google-managed OAuth client in a project without an organization) to "Sign in with Google" in the page plus a
   Secret Manager passphrase; **Connect YouTube** on the board stores the channel's upload token in Secret Manager
   (YOUTUBE_TOKEN_JSON) and the runner reads it when publishing (2026-10-19).
+- **Live progress in the control room (2026-10-19):** while a tick works it writes two small records to the bucket
+  (service/progress.py): `<slug>/reports/progress.json` (the film's phase, when it began and its last log line) and
+  `queue/running/<execution>.json` (what the execution is doing), removed when the tick exits. The film page shows
+  the stage as **executing** with a gold pulse ("Running scenes since 06:48 UTC · last: sc010: 3 lines (40 s ago)")
+  only while Cloud Run lists that execution as running; the Runner tables gain a Doing column, links to each
+  execution's console page and a **duplicate** badge when two executions work on one film; the log says when its
+  last line was; pages refresh every 20 s while a stage runs and keep the reader's place. **Run a tick now** refuses
+  while one is running or just starting. Found on the way: the runner image looked for the project template under
+  its work volume, so a queued film was made without it and rendered on the mock defaults (monkey-saves-man's first
+  cut at the pacing gate is a mock render made for free). `cli.template_dir()` now falls back to the repository's
+  template, which a film made from now on uses; the existing project keeps its pipeline.yaml until the owner decides.
 
 ### Verified vs. not verified
 

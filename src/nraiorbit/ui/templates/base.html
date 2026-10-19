@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+Telugu:wght@400;600;700&display=swap" rel="stylesheet" referrerpolicy="no-referrer">
+{% if refresh %}<noscript><meta http-equiv="refresh" content="{{ refresh }}"></noscript>{% endif %}
 {% block head %}{% endblock %}
 <style>
 :root { --bg:#07080F; --panel:#0A0C15; --card:#0C0E17; --card2:#11141F; --well:#07080F;
@@ -71,6 +72,7 @@ p { margin:0 0 10px } p:last-child { margin-bottom:0 }
 .badge.blocked, .badge.failed { background:rgba(255,107,107,.12); color:var(--bad) }
 .badge.todo { color:var(--todo) } .badge.plain::before { display:none }
 .badge.live::before { animation:pulse 2s ease-out infinite }
+.badge.executing { background:var(--gold-soft); color:var(--gold) } .badge.executing.live::before { animation:pulse-gold 1.6s ease-out infinite }
 
 /* ---------- controls ---------- */
 button, .btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; height:42px; padding:0 18px; border-radius:12px; border:0;
@@ -116,6 +118,8 @@ a.stage:hover { border-color:rgba(242,181,68,.45); transform:translateY(-2px); c
 .stage .bar { height:3px; margin-top:auto } .stage.done .bar > span, .stage.ok .bar > span { background:var(--ok); background-image:none; width:100% }
 .stage.partial .bar > span, .stage.held .bar > span { width:50% } .stage.awaiting .bar > span, .stage.producing .bar > span { background:var(--cyan); background-image:none; width:66% }
 .stage.blocked .bar > span { background:var(--bad); background-image:none; width:66% } .stage.todo .bar > span, .stage.skipped .bar > span { width:0 }
+.stage.executing { border-color:rgba(242,181,68,.6); background:rgba(242,181,68,.08); animation:pulse-gold 1.6s ease-out infinite }
+.stage.executing .bar > span { width:66%; animation:shimmer 2.4s linear infinite }
 
 /* ---------- media ---------- */
 .frame { position:relative; aspect-ratio:16/9; border-radius:14px; overflow:hidden; background:linear-gradient(180deg,#0B1026 0%,#2A1B3D 42%,#7A3A2A 62%,#E08B3A 68%,#0A0C14 69%,#05070C 100%); display:block }
@@ -172,6 +176,7 @@ footer .strip { height:10px; background:repeating-linear-gradient(90deg,transpar
 footer .line { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 40px; font-family:var(--mono); font-size:11px; color:var(--dim); flex-wrap:wrap }
 
 @keyframes pulse { 0%,100% { box-shadow:0 0 0 0 rgba(92,211,138,.55) } 70% { box-shadow:0 0 0 8px rgba(92,211,138,0) } }
+@keyframes pulse-gold { 0%,100% { box-shadow:0 0 0 0 rgba(242,181,68,0) } 50% { box-shadow:0 0 0 8px rgba(242,181,68,.45) } }
 @keyframes shimmer { 0% { background-position:0 0 } 100% { background-position:200% 0 } }
 @keyframes sweep { 0% { transform:rotate(-14deg) } 50% { transform:rotate(14deg) } 100% { transform:rotate(-14deg) } }
 @keyframes spin { to { transform:rotate(360deg) } } @keyframes spinr { to { transform:rotate(-360deg) } }
@@ -208,5 +213,20 @@ footer .line { display:flex; align-items:center; justify-content:space-between; 
   <div class="line"><span>{% if email %}{{ root }}{% endif %}</span><span>THE RUNNER READS THE SAME FILES · THIS PAGE ONLY WRITES THE QUEUE SHEETS AND THE STORIES FOLDER</span></div>
   <div class="strip" aria-hidden="true"></div>
 </footer>
+{% if refresh %}<script>
+(function () {   /* the page's own refresh keeps the reader's place, and only that one: a link followed lands at the top */
+  var key = "scroll:" + location.pathname + location.search, y = null, edited = false;
+  try { y = sessionStorage.getItem(key); sessionStorage.removeItem(key); } catch (e) {}
+  if (y !== null) addEventListener("load", function () { scrollTo(0, +y); });
+  addEventListener("input", function () { edited = true; });
+  var reload = function () {   /* a half-typed cap or setting would be lost: wait while a field is in use */
+    var a = document.activeElement;
+    if (edited || (a && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName))) return setTimeout(reload, {{ refresh }} * 1000);
+    try { sessionStorage.setItem(key, String(scrollY)); } catch (e) {}
+    location.reload();
+  };
+  setTimeout(reload, {{ refresh }} * 1000);
+})();
+</script>{% endif %}
 </body>
 </html>

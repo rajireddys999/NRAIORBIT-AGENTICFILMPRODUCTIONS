@@ -45,6 +45,14 @@ def _project(slug: str) -> Path:
     return path
 
 
+def template_dir() -> Path:
+    """The projects folder's own template, else the repository's. The runner's projects live on its work volume
+    while the image carries the template in the repository, and a film made without it renders on the mock
+    defaults of config/pipeline.yaml."""
+    own = PROJECTS / "_template"
+    return own if own.exists() else REPO_ROOT / "projects" / "_template"
+
+
 def cmd_new(args) -> None:
     root = PROJECTS / args.slug
     paths = ProjectPaths(root)
@@ -53,7 +61,7 @@ def cmd_new(args) -> None:
     text = Path(args.story).read_text(encoding="utf-8") if args.story else args.prompt
     if not text:
         sys.exit("give --story FILE or --prompt TEXT")
-    template = PROJECTS / "_template"
+    template = template_dir()
     if template.exists() and not args.bare:                 # the choices the last film settled on, as data
         shutil.copytree(template, root, dirs_exist_ok=True)
     paths.story_input.parent.mkdir(parents=True, exist_ok=True)
@@ -503,11 +511,12 @@ def cmd_service(args) -> None:
     if args.action == "tick":
         from .llm import ClaudeClient
 
-        def produce_fn(root: Path, bucket):
+        def produce_fn(root: Path, bucket, progress=None):
             cfg = load_pipeline_config(root)
             llm = ClaudeClient(model=cfg["llm"]["model"], max_tokens=cfg["llm"]["max_tokens"],
                                usage_log=root / "reports" / "llm_usage.jsonl")
-            return produce.produce(Pipeline(root, llm, cfg=cfg), bucket=bucket, keyframes=cmd_keyframes)
+            return produce.produce(Pipeline(root, llm, cfg=cfg), bucket=bucket, keyframes=cmd_keyframes,
+                                   progress=progress)
 
         def learn_fn(url, title, what, minutes=None):
             from .costing import load_pricing
@@ -515,7 +524,7 @@ def cmd_service(args) -> None:
                                minutes=float(minutes) if minutes else None, pricing=load_pricing(None))
 
         out = queue.tick(args.stories, args.references, PROJECTS, bucket=args.bucket, produce_fn=produce_fn,
-                         learn_fn=learn_fn, template=PROJECTS / "_template")
+                         learn_fn=learn_fn, template=template_dir())
         print(out)
         return
     if args.action == "add-story":

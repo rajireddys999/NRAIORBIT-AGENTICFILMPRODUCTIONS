@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block head %}<meta http-equiv="refresh" content="90">{% endblock %}
+{% set refresh = 45 if runner.executions|selectattr('state', 'equalto', 'running')|list else 90 %}
 {% block style %}
 .films { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:18px }
 .film .logline { font-size:13px; line-height:1.5; color:var(--muted); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden }
@@ -17,6 +17,11 @@
     {% if m.estimate %} · next paid step about {{ m.estimate.total_usd|money }}{% endif %}</div>
   {% if m.cap %}<div class="bar {% if m.spent > m.cap %}over{% endif %}" style="margin-top:8px"><span style="width:{{ [100, (100 * m.spent / m.cap)|round]|min }}%"></span></div>{% endif %}
 {% endmacro %}
+{% macro exec_name(e) %}{% if e.url %}<a href="{{ e.url }}" target="_blank" rel="noopener">{{ e.name }}</a>{% else %}{{ e.name }}{% endif %}{% if e.name in dupes %} <span class="badge blocked">duplicate</span>{% endif %}{% endmacro %}
+{% macro doing(e, rec) %}{% if not rec %}{% if e.state == 'running' %}<span class="dim">no record yet</span>{% endif %}
+  {%- elif e.state != 'running' %}<span class="dim" title="the execution ended without removing its record">left behind</span>
+  {%- elif rec.doing == 'idle' %}<span class="dim">nothing to do</span>
+  {%- else %}<span title="{% if rec.last_line %}last: {{ rec.last_line }} {% endif %}{% if rec.updated %}({{ rec.updated|ago }}){% endif %}">{% if rec.slug %}<a href="/film/{{ rec.slug }}">{{ rec.slug }}</a>{% else %}{{ rec.doing|replace('-', ' ') }}{% endif %}{% if rec.phase %} · {{ rec.phase|replace('_', ' ') }}{% endif %}{% if rec.started %} · tick started {{ rec.started|clock }}{% endif %}</span>{% endif %}{% endmacro %}
 {% macro gate_actions(f) %}
   {% for g in f.gates %}
     {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/approve"><input type="hidden" name="gate" value="{{ g }}"><button class="sm">Approve {{ g }}</button></form>
@@ -92,9 +97,10 @@
       <p class="small muted" style="margin-top:10px">Cloud Run job <span class="mono gold">{{ runner.job }}</span> in {{ runner.project }}, scheduled every 15 minutes. One tick does one unit of work per queue and exits.</p>
       {% if runner.error %}<p class="small muted">Executions unavailable: {{ runner.error }}</p>{% endif %}
       {% if runner.executions %}
-      <div class="table-wrap"><table class="exec"><tr><th>Execution</th><th>Started</th><th>State</th></tr>
-      {% for e in runner.executions %}<tr><td class="mono">{{ e.name }}</td><td class="small muted">{{ e.created|replace('T',' ') }}</td><td><span class="badge {{ e.state }}">{{ e.state }}</span></td></tr>{% endfor %}
-      </table></div>{% endif %}
+      <div class="table-wrap"><table class="exec"><tr><th>Execution</th><th>Started</th><th>State</th><th>Doing</th></tr>
+      {% for e in runner.executions %}<tr><td class="mono">{{ exec_name(e) }}</td><td class="small muted">{{ e.created|replace('T',' ') }}</td><td><span class="badge {{ e.state }}">{{ e.state }}</span></td><td>{{ doing(e, doings.get(e.name)) }}</td></tr>{% endfor %}
+      </table></div>
+      {% if dupes %}<p class="small bad" style="margin-top:8px">two executions on the same film; cancel the newer one in the console (it repeats the older one's work)</p>{% endif %}{% endif %}
       <form method="post" action="/tick" style="margin-top:14px"><input type="hidden" name="next" value="/"><button class="quiet"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>Run a tick now</button></form>
     {% else %}<p class="muted small" style="margin-top:10px">No runner configured: this control room reads a local folder.</p>{% endif %}
   </div>

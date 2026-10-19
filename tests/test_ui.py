@@ -475,3 +475,175 @@ def test_publish_paths_find_the_token_in_the_environment_or_secret_manager(tmp_p
     assert creds.valid and token.exists()                      # seeded from Secret Manager, no browser
     monkeypatch.setenv("YOUTUBE_TOKEN_JSON", seed.replace('"t"', '"env"'))
     assert json.loads(youtube.stored_token())["token"] == "env"   # the environment wins over the secret
+
+
+def running_exec(name, created="2026-10-19T06:46:02+00:00", state="running"):
+    return {"name": name, "created": created, "completed": "" if state == "running" else "2026-10-19T07:30:00+00:00",
+            "succeeded": int(state == "ok"), "failed": int(state == "failed"), "running": int(state == "running"),
+            "state": state, "url": f"https://console.cloud.google.com/run/jobs/executions/details/r/{name}?project=p"}
+
+
+def producing(root, record=None):
+    """The film claimed by a tick (no gate pending), and the progress record the runner keeps while it works."""
+    rs = rows(root)
+    rs[0].update(state="producing", updated=queue.now())
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    (root / "demo" / "reviews" / "faces.pending").unlink()
+    if record is not None:
+        (root / "demo" / "reports" / "progress.json").write_text(json.dumps(record))
+
+
+def now_iso(seconds_ago=0):
+    import datetime
+    t = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=seconds_ago)
+    return t.isoformat(timespec="seconds")
+
+
+PROGRESS = {"slug": "demo", "execution": "nraiorbit-runner-mfkkm", "state": "running", "phase": "scenes",
+            "phase_started": "2026-10-19T06:48:10+00:00", "started": "2026-10-19T06:46:02+00:00",
+            "last_line": "sc010: 3 lines", "lines": 17}
+
+
+def test_the_runners_progress_record_marks_the_stage_under_way(client, root, monkeypatch):
+    """The runner's own word beats the inference from plan files: while its execution runs, the phase in
+    reports/progress.json is the stage under way, with when it began and how fresh its last line is. The same record
+    once that execution has ended is ignored, so a crash never leaves a stage "executing"."""
+    from nraiorbit.ui import films
+    producing(root, {**PROGRESS, "updated": now_iso(40)})
+    store = Store(str(root))
+    d = films.detail(store, "demo", rows(root)[0], {"nraiorbit-runner-mfkkm"})
+    assert d["stages"]["scenes"]["status"] == "executing" and d["next_stage"] == "scenes"
+    assert d["stages"]["scenes"]["text"].startswith("scenes since 06:48 UTC · last: sc010: 3 lines (")
+    assert d["live"]["stage_key"] == "scenes" and d["live"]["since"] == "06:48 UTC" and d["live"]["ago"].endswith("s ago")
+    assert d["gates"] == [] and d["gate_for"] == {}
+    monkeypatch.setattr(runner_mod, "executions", lambda *a, **k: [running_exec("nraiorbit-runner-mfkkm")])
+    html = client.get("/film/demo").text
+    assert "Running <b>Scenes &amp; dialogue</b> since 06:48 UTC · last: sc010: 3 lines (" in html
+    assert "execution <span class=\"mono\">nraiorbit-runner-mfkkm</span>" in html
+    assert 'class="node executing"' in html and 'class="badge executing live">executing</span>' in html
+    assert 'class="stage executing"' in html and "executing now · scenes" in html
+    assert '<noscript><meta http-equiv="refresh" content="20"></noscript>' in html and "sessionStorage" in html
+    assert "location.reload()" in html and "pagehide" not in html             # only its own refresh keeps the place
+    assert 'name="gate"' not in html                                           # a run under way offers no button
+    rs = rows(root)
+    rs[0]["state"] = "approved"                                                 # approved, the tick not yet claimed
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    html = client.get("/film/demo").text
+    assert 'name="gate"' not in html and "Approve" not in html and "Running <b>" in html
+    # the music plan is drawn on the render stage and says so
+    (root / "demo" / "reports" / "progress.json").write_text(json.dumps({**PROGRESS, "phase": "music_plan"}))
+    d = films.detail(store, "demo", rows(root)[0], {"nraiorbit-runner-mfkkm"})
+    assert d["next_stage"] == "render" and d["stages"]["render"]["text"].startswith("music plan since")
+    # a phase with no stage (the restore, or none yet) is live for the header only; the inference picks the stage
+    for phase in ("restore", None):
+        (root / "demo" / "reports" / "progress.json").write_text(json.dumps({**PROGRESS, "phase": phase}))
+        d = films.detail(store, "demo", rows(root)[0], {"nraiorbit-runner-mfkkm"})
+        assert d["live"]["stage_key"] is None and "executing" not in {s["status"] for s in d["stages"].values()}
+    html = client.get("/film/demo").text
+    assert "Running since 06:48 UTC · last: sc010" in html
+    assert "executing now · " in html and "on the next tick" not in html      # a run is on the film: never "next tick"
+    # the execution has ended, or the record says it finished: not live, today's inference stands
+    (root / "demo" / "reports" / "progress.json").write_text(json.dumps(PROGRESS))
+    before = films.detail(store, "demo", rows(root)[0])
+    for running, record in (({"nraiorbit-runner-other"}, PROGRESS), ({"nraiorbit-runner-mfkkm"}, {**PROGRESS, "state": "done"})):
+        (root / "demo" / "reports" / "progress.json").write_text(json.dumps(record))
+        d = films.detail(store, "demo", rows(root)[0], running)
+        assert d["live"] is None and d["next_stage"] == before["next_stage"] and d["stages"] == before["stages"]
+        assert "executing" not in {s["status"] for s in d["stages"].values()}
+    monkeypatch.setattr(runner_mod, "executions", lambda *a, **k: [running_exec("nraiorbit-runner-mfkkm", state="ok")])
+    html = client.get("/film/demo").text
+    assert "Running <b>" not in html and 'class="node executing"' not in html and 'class="stage executing"' not in html
+    assert '<meta http-equiv="refresh" content="45">' in html                 # still producing by the sheet
+    (root / "demo" / "reports" / "progress.json").write_text("{not json")       # half-written: the page still renders
+    assert client.get("/film/demo").status_code == 200
+
+
+def test_the_runner_table_says_what_each_execution_is_doing(client, root, monkeypatch):
+    """queue/running/<execution>.json is each tick's own word on what it does; Cloud Run says whether it still runs.
+    A record whose execution has ended was left behind; two running executions on one film are a duplicate."""
+    running = root / "queue" / "running"
+    running.mkdir()
+    rec = {"started": "2026-10-19T06:46:02+00:00", "updated": now_iso(12), "doing": "story", "slug": "demo",
+           "phase": "music_plan", "last_line": "cue 3"}
+    (running / "nraiorbit-runner-a.json").write_text(json.dumps({**rec, "execution": "nraiorbit-runner-a"}))
+    (running / "nraiorbit-runner-b.json").write_text(json.dumps({"execution": "nraiorbit-runner-b", "doing": "idle"}))
+    (running / "nraiorbit-runner-old.json").write_text(json.dumps({**rec, "execution": "nraiorbit-runner-old"}))
+    (running / "broken.json").write_text("{")
+    assert set(runner_mod.doings(Store(str(root)))) == {"nraiorbit-runner-a", "nraiorbit-runner-b", "nraiorbit-runner-old"}
+    execs = [running_exec("nraiorbit-runner-a"), running_exec("nraiorbit-runner-b"),
+             running_exec("nraiorbit-runner-old", state="failed")]
+    monkeypatch.setattr(runner_mod, "executions", lambda *a, **k: execs)
+    for page in ("/", "/film/demo"):
+        html = client.get(page).text
+        assert "<th>Doing</th>" in html and '<a href="/film/demo">demo</a> · music plan · tick started 06:46 UTC' in html
+        assert "nothing to do" in html and "left behind" in html and "duplicate" not in html
+        assert ('<a href="https://console.cloud.google.com/run/jobs/executions/details/r/nraiorbit-runner-a?project=p" '
+                'target="_blank" rel="noopener">nraiorbit-runner-a</a>') in html
+    assert '<meta http-equiv="refresh" content="45">' in client.get("/").text
+    # a second tick on the same film: both rows say so, and the page says what to do
+    (running / "nraiorbit-runner-b.json").write_text(json.dumps({**rec, "execution": "nraiorbit-runner-b"}))
+    for page in ("/", "/film/demo"):
+        html = client.get(page).text
+        assert html.count('class="badge blocked">duplicate</span>') == 2
+        assert "two executions on the same film; cancel the newer one in the console" in html
+    assert app_mod.duplicates(execs, runner_mod.doings(Store(str(root)))) == {"nraiorbit-runner-a", "nraiorbit-runner-b"}
+    monkeypatch.setattr(runner_mod, "executions", lambda *a, **k: [running_exec("nraiorbit-runner-a", state="ok")])
+    assert '<meta http-equiv="refresh" content="90">' in client.get("/").text
+
+
+def test_a_tick_is_never_started_over_a_running_one(client, root, monkeypatch):
+    from urllib.parse import unquote
+    started = client.started
+    monkeypatch.setattr(runner_mod, "run", lambda *a: pytest.fail("a second tick was started"))
+    # running, or just started and still pending while Cloud Run schedules it
+    pending = {**running_exec("nraiorbit-runner-new"), "running": 0, "state": "pending"}
+    for busy in (running_exec("nraiorbit-runner-busy"), pending):
+        monkeypatch.setattr(runner_mod, "executions", lambda *a, **k: [busy])
+        r = client.post("/tick", data={"next": "/film/demo"}, follow_redirects=False)
+        assert r.status_code == 303 and r.headers["location"].startswith("/film/demo?")
+        assert f"a tick is already running ({busy['name']}); a second one would repeat its work" in \
+            unquote(r.headers["location"])
+    # a pending one that has a completion time was cancelled; and when Cloud Run cannot be asked, a tick still starts
+    cancelled = {**pending, "completed": "2026-10-19T06:47:00+00:00"}
+
+    def unreachable(*a, **k):
+        raise PermissionError("no run.viewer role")
+    monkeypatch.setattr(runner_mod, "run", lambda p, r, j: started.append(j) or "nraiorbit-runner-next")
+    for listing in (lambda *a, **k: [cancelled], unreachable):
+        monkeypatch.setattr(runner_mod, "executions", listing)
+        r = client.post("/tick", data={"next": "/"}, follow_redirects=False)
+        assert r.status_code == 303 and "tick started (nraiorbit-runner-next)" in unquote(r.headers["location"])
+    assert started == ["nraiorbit-runner", "nraiorbit-runner"]
+
+
+def test_the_log_header_says_when_the_execution_ran_and_spoke(client, root, monkeypatch):
+    monkeypatch.setattr(runner_mod, "executions", lambda *a, **k: [running_exec("nraiorbit-runner-x", state="ok")])
+    monkeypatch.setattr(runner_mod, "logs", lambda *a, **k: ["06:46:03  restore", "07:29:58  backup done", ""])
+    html = client.get("/film/demo").text
+    assert "execution <a href=" in html and "started 2026-10-19 06:46:02 UTC · finished 07:30:00" in html
+    assert "last line 07:29:58 (" in html and " ago)" in html
+    monkeypatch.setattr(runner_mod, "executions", lambda *a, **k: [running_exec("nraiorbit-runner-x",
+                                                                                created=now_iso(125))])
+    assert "running for 2 min" in client.get("/film/demo").text
+    # the date of a log line comes from the execution's start, so an old execution reads as old
+    assert app_mod.log_time(["23:59:58  a", "00:00:03  b"], "2026-10-17T23:50:00+00:00") == "2026-10-18T00:00:03+00:00"
+    assert app_mod.log_time(["10:00:01  x"], "2026-10-17T10:00:00") == "2026-10-17T10:00:01+00:00"
+    assert app_mod.log_time(["(log unavailable: Forbidden)"], "2026-10-17T10:00:00") is None
+    import datetime
+    noon = datetime.datetime(2026, 10, 19, 12, 0, tzinfo=datetime.timezone.utc)
+    assert app_mod.log_time(["23:00:00  late"], None, now=noon) == "2026-10-18T23:00:00+00:00"
+
+
+def test_ago_reads_a_timestamp_as_its_age():
+    import datetime
+
+    from nraiorbit.ui import films
+    now = datetime.datetime(2026, 10, 19, 7, 5, 46, tzinfo=datetime.timezone.utc)
+    assert films.ago("2026-10-19T07:05:06+00:00", now) == "40 s ago"
+    assert films.ago("2026-10-19T06:53:00Z", now) == "12 min ago"
+    assert films.ago("2026-10-19T04:00:00", now) == "3 h ago"                   # a naive time is UTC
+    assert films.ago("2026-10-16T07:00:00+00:00", now) == "3 d ago"
+    assert films.ago("2026-10-19T07:06:00+00:00", now) == "0 s ago"             # a clock a little ahead
+    for bad in ("", None, "yesterday", 17):
+        assert films.ago(bad, now) == ""
+    assert films.clock("2026-10-19T08:48:10+01:00") == "07:48 UTC" and films.clock("nope") == ""

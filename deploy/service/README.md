@@ -32,6 +32,17 @@ gate markers, is mirrored with deletes only by a tick that restored that folder 
 runner consumed never comes back to be approved twice, while a failed restore can never wipe an approval: a tick
 whose restore of `reviews` or `reports` fails sets the row to `retry`, runs nothing, and the next tick tries again.
 
+While it works, a tick keeps two small JSON records in the bucket for the control room (`service/progress.py`),
+each written whole. `queue/running/<execution>.json` (Cloud Run's `CLOUD_RUN_EXECUTION`) says what the execution is
+doing (library-restore, reference, story, idle, library-backup), on which film and phase; the tick removes it when
+it exits and deletes any older than seven hours, left by a killed execution. `<slug>/reports/progress.json`, also in
+the project's `reports/` so the backup carries it, is the film's state (running, then done, awaiting, blocked or
+failed), its phase (a pipeline stage, or cost, faces, qa, deliver, publish, backup) and its last log line. A phase
+goes up at once, log lines at most every 15 s, and a failed upload is logged once while the run goes on.
+
+A queued film is made from the projects folder's `_template` when it has one, else from the image's
+`/app/projects/_template` (the repository's): the runner's projects live on `/work/projects`, which has none.
+
 Before anything is paid, `produce` prices the row's run and blocks without a cap or over it (docs/FRAMEWORK.md §7):
 a row needs `budget_usd`. Watch a tick: `gcloud run jobs executions list --job nraiorbit-runner --region us-central1`
 and its logs in Cloud Logging; the per-project report is `reports/produce.json` in the project's backup.

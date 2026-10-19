@@ -6,6 +6,7 @@ and the queue row, so the page can never disagree with what the runner sees.
 
 from __future__ import annotations
 
+import datetime
 import json
 from collections import Counter, defaultdict
 
@@ -21,8 +22,67 @@ STAGES = [
 GATES = {"story": "story", "outline": "outline", "scenes": "scenes", "cast": "cast", "shots": "shots", "cost": "cost",
          "faces": "faces", "render": "render", "pacing": "assemble", "final_cut": "assemble", "trailer": "assemble",
          "publish": "publish"}
+# the runner's phase names (pipeline stages and produce steps) -> the stage the page draws them on; restore, backup
+# and the library phases have no stage and show in the headers only
+PHASES = {"story_bible": "story", "outline": "outline", "scenes": "scenes", "cast": "cast", "shots": "shots",
+          "music_plan": "render", "render": "render", "assemble": "assemble", "trailer": "assemble", "cost": "cost",
+          "faces": "faces", "qa": "qa", "deliver": "deliver", "publish": "publish"}
 RUNNING = {"new", "approved", "retry", "producing"}       # row states in which the runner is, or is about to be, on it
 NOT_FILMS = {"queue", "library", "lipsync", "stories", "_template", "final"}
+
+
+def when(iso) -> datetime.datetime | None:
+    """A tz-aware moment from an ISO string; a naive one is UTC, as the runner and Cloud Run write them. None when
+    the text is not a time, so a template never breaks on a half-written record."""
+    if not isinstance(iso, str) or not iso:
+        return None
+    try:
+        t = datetime.datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)
+
+
+def seconds_since(iso, now=None) -> float | None:
+    """Never negative: a clock a little ahead on the runner must not read as "in the future"."""
+    t = when(iso)
+    if t is None:
+        return None
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    return max(0.0, (now - t).total_seconds())
+
+
+def ago(iso, now=None) -> str:
+    """"40 s ago", "12 min ago", "3 h ago": how old a timestamp is, for telling fresh from stale at a glance."""
+    secs = seconds_since(iso, now)
+    if secs is None:
+        return ""
+    secs = int(secs)
+    if secs < 60:
+        return f"{secs} s ago"
+    if secs < 3600:
+        return f"{secs // 60} min ago"
+    if secs < 2 * 86400:
+        return f"{secs // 3600} h ago"
+    return f"{secs // 86400} d ago"
+
+
+def clock(iso) -> str:
+    """"07:05 UTC" for an ISO time, "" when it cannot be read."""
+    t = when(iso)
+    return t.astimezone(datetime.timezone.utc).strftime("%H:%M UTC") if t else ""
+
+
+def live_progress(record, running) -> dict | None:
+    """The progress record as the page shows it, only while its execution is still running: a finished record, or
+    one left behind by a crash, must never mark a stage as under way. Adds the stage it lands on, the clock time its
+    phase began and how long ago it last spoke."""
+    if not isinstance(record, dict) or record.get("state") != "running" or record.get("execution") not in running:
+        return None
+    phase = str(record.get("phase") or "")
+    key = PHASES.get(phase)
+    return {**record, "stage_key": key, "stage_label": dict(STAGES).get(key) or phase.replace("_", " "),
+            "since": clock(record.get("phase_started") or record.get("started")), "ago": ago(record.get("updated"))}
 
 
 def _json(store: Store, rel: str):
@@ -141,8 +201,9 @@ def summary(store: Store, slug: str, row: dict | None) -> dict:
     }
 
 
-def detail(store: Store, slug: str, row: dict | None) -> dict:
-    """Everything the film page shows."""
+def detail(store: Store, slug: str, row: dict | None, running=()) -> dict:
+    """Everything the film page shows. `running` is the set of execution names Cloud Run reports as running: the
+    runner's progress record counts as live only while its execution is among them."""
     cfg = _yaml(store, f"{slug}/project/pipeline.yaml") or {}
     bible = _json(store, f"{slug}/project/01_story_bible.json") or {}
     outline = _json(store, f"{slug}/project/02_outline.json") or {}
@@ -270,6 +331,15 @@ def detail(store: Store, slug: str, row: dict | None) -> dict:
     next_stage = None
     if state.split(":")[0] in RUNNING and not gates:
         next_stage = next((k for k, _ in STAGES if stage[k]["status"] in ("todo", "partial")), None)
+    # the runner's own word beats that inference: while its execution runs, the phase it reports is the one under way
+    live = live_progress(_json(store, f"{slug}/reports/progress.json"), running)
+    if live and live["stage_key"]:
+        text = f"{live['phase'].replace('_', ' ')} since {live['since']}"
+        if live.get("last_line"):
+            text += f" · last: {live['last_line']} ({live['ago']})"
+        stage[live["stage_key"]] = {"status": "executing", "text": text}
+        gate_for.pop(live["stage_key"], None)
+        next_stage = live["stage_key"]
 
     def img(rel):
         return store.url(rel)
@@ -328,7 +398,7 @@ def detail(store: Store, slug: str, row: dict | None) -> dict:
     return {
         "slug": slug, "row": row, "cfg": cfg, "bible": bible, "outline": scenes_out, "cast": cast_cards,
         "scenes": scene_views, "shots": shot_views, "keyframes": keyframe_cards, "stages": stage, "gates": gates,
-        "gate_for": gate_for, "next_stage": next_stage,
+        "gate_for": gate_for, "next_stage": next_stage, "live": live,
         "money": cash, "produce": produce, "steps": steps,
         "review_queue": review_queue[-30:], "qa_film": qa_film, "qa_md": qa_md,
         "strips": [{"shot_id": n.rsplit("/", 1)[-1].replace("_strip.jpg", ""), "url": img(n)} for n in strips],

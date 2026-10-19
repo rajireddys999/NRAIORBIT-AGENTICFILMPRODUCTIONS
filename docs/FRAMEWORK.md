@@ -173,6 +173,16 @@ only the queue sheet; the runner does the work under the row's cap. There is no 
 disagree with the runner. On Cloud Run it sits behind Identity-Aware Proxy with an allow-list of e-mail addresses,
 and the app checks the address again. Locally: `nraiorbit ui --root projects --no-auth`.
 
+Live progress (2026-10-19). The plan files land in the bucket only when a run returns, so a page that infers the
+stage from them alone showed the story gate for 25 minutes while the runner wrote the outline and fifteen scenes. The
+runner now says where it is, in two records the page reads: `<slug>/reports/progress.json` (phase, when it began,
+last line, the execution's name, `state` running until the run ends) and `queue/running/<execution>.json` (what each
+tick is doing: a film, a reference, the library, or nothing; removed when the tick exits). A stage is **executing**
+only while the record says running and Cloud Run lists its execution as running; otherwise the record is ignored and
+the inference from the plan files stands, so a crash never leaves a stage executing. The Runner tables show each
+execution's doing, link to its console page, call a record whose execution ended "left behind", and mark two running
+executions on one film as a duplicate to cancel. "Run a tick now" refuses while a tick runs.
+
 What the runner learned at the same time: the shared library (identity packs, reference profiles) is restored from
 the bucket before every tick and backed up after it, so a fresh container never pays again for images it has; the
 gates' review marks are backed up with the project; the sheet's cap, gates and publish setting are written into the

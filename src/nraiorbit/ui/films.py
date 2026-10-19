@@ -25,20 +25,36 @@ RUNNING = {"new", "approved", "retry", "producing"}       # row states in which 
 SETTLED = {"done", "skipped", "held"}                     # statuses that let the next step count
 
 
+def _base_providers() -> dict:
+    """The providers the base config supplies for whatever a project leaves out (all mock, today)."""
+    try:
+        from ..config import load_pipeline_config
+        return dict(load_pipeline_config(None).get("providers") or {})
+    except Exception:
+        return {}
+
+
+BASE_PROVIDERS = _base_providers()
+ADVISORY = {"qa"}                                         # steps that never stop the run: no later step waits on them
+
+
 def animatic(cfg: dict) -> bool:
     """A film whose providers are all mock or none runs as an animatic: placeholder picture, silent voices, mock
     music, nothing paid (the pipeline's own rule, with the base config's defaults for what the project leaves out).
     A film queued without a template looks exactly like this: its pipeline.yaml names no providers."""
-    prov = cfg.get("providers") or {}
+    prov = {**BASE_PROVIDERS, **(cfg.get("providers") or {})}
     return all(prov.get(k, "mock") in ("mock", "none") for k in ("keyframe", "video", "tts", "music"))
 
 
 def in_order(stage: dict) -> None:
     """A later step never counts as done while an earlier one is open: a cut that exists before every shot is filmed
-    is from an earlier run (an animatic, a previous take) and is remade after the open step, so it shows as stale."""
+    is from an earlier run (an animatic, a previous take) and is remade after the open step, so it shows as stale.
+    QA is advisory, so a flagged or skipped check opens nothing: the delivery it sits before is real."""
     first_open = None
     for key, label in STAGES:
         st = stage[key]["status"]
+        if key in ADVISORY:
+            continue
         if first_open is None and st not in SETTLED:
             first_open = label.lower()
         elif first_open is not None and st == "done":
@@ -271,7 +287,7 @@ def detail(store: Store, slug: str, row: dict | None) -> dict:
         render_status = "blocked"
     has_film = any(n.endswith("/movie.mp4") for n in master)
     has_trailer = any(n.endswith("/trailer.mp4") for n in master)
-    if mock:                                            # placeholder clips are made on the fly and never backed up
+    if mock and render_status != "blocked":             # placeholder clips are made on the fly and never backed up
         render_status = "done" if has_film or str(steps.get("render", "")) not in ("", "todo") else render_status
         render_bits = ["placeholder picture and voices (mock providers)"] + [b for b in render_bits if "music" in b]
     put("render", render_status, "; ".join(render_bits))

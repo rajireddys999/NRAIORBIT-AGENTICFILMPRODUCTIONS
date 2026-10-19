@@ -259,6 +259,7 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         from zoneinfo import ZoneInfo
         tz = ZoneInfo(settings.timezone or "UTC")
     except Exception:                                    # an unknown zone name: the page still renders, in UTC
+        print(f"control room: unknown UI_TIMEZONE {settings.timezone!r}; times shown in UTC", flush=True)
         tz = datetime.timezone.utc
 
     def local(v, fmt: str = "%Y-%m-%d %H:%M") -> str:

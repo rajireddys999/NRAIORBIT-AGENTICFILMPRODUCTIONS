@@ -167,19 +167,31 @@ def detail(store: Store, slug: str, row: dict | None) -> dict:
     put("shots", "done" if shot_lists and len(shot_lists) >= len(scenes_out) else ("partial" if shot_lists else "todo"),
         f"{len(shots)} shots, {sum(sh.get('duration_s', 0) for sh in shots) / 60:.1f} min" if shots else "")
     framed = sum(1 for sh in with_leads if sh.get("shot_id") in keyframes)
-    put("faces", "awaiting" if "faces" in gates else ("done" if with_leads and framed >= len(with_leads)
-                                                      else ("partial" if framed else "todo")),
-        f"{framed} of {len(with_leads)} shots with a lead have a first frame" if with_leads else "")
     filmed = sum(1 for sh in shots if sh.get("shot_id") in clips)
+    all_filmed = bool(shots) and filmed >= len(shots)
+    if "faces" in gates:
+        faces_status = "awaiting"
+    elif with_leads and framed >= len(with_leads):
+        faces_status = "done"
+    elif all_filmed or steps.get("render") == "done":
+        faces_status = "done"                           # the film was shot; a frame no longer gates anything
+    else:
+        faces_status = "partial" if framed else "todo"
+    faces_text = f"{framed} of {len(with_leads)} shots with a lead have a first frame" if with_leads else ""
+    if faces_status == "done" and with_leads and framed < len(with_leads):
+        faces_text = f"{framed} first frames; {len(with_leads) - framed} shots were filmed without one"
+    put("faces", faces_status, faces_text)
     cues = [c for c in cue_sheet.get("cues", []) if c.get("instruments")]
+    cue_ids = {c.get("cue_id") for c in cues}
+    cues_made = sum(1 for n in music_files if n.rsplit("/", 1)[-1][:-4] in cue_ids)
     render_bits = []
     if shots:
         render_bits.append(f"{filmed} of {len(shots)} shots filmed")
     if cues:
-        render_bits.append(f"{len(music_files)} of {len(cues)} music cues")
+        render_bits.append(f"{cues_made} of {len(cues)} music cues")
     if lipsync:
         render_bits.append(f"{speaking_needed} shots lip-synced")
-    render_status = "done" if steps.get("render") == "done" or (shots and filmed >= len(shots) and master) else (
+    render_status = "done" if steps.get("render") == "done" or (all_filmed and master) else (
         "partial" if filmed or music_files else "todo")
     if str(steps.get("render", "")).startswith("blocked") or str(steps.get("render", "")).startswith("estimate"):
         render_status = "blocked"

@@ -1040,6 +1040,7 @@ def test_sync_silence_sends_the_model_only_the_frames_with_a_voice(setup):
 
     pipeline, cfg = setup.make(only=["trailer"])
     pipeline.face_detector = lambda rgb: [one]
+    pipeline.face_mesh = lambda rgb, near: None                       # synthetic face: no mesh, no MediaPipe
     cfg["providers"]["lipsync"] = "silence_test"
     pipeline.run(until="render")
     always = frames_sent()

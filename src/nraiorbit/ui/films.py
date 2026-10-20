@@ -501,7 +501,9 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
     for cid, entry in (cast.get("characters") or {}).items():
         spec = names.get(cid, {})
         asset = entry.get("character_asset") if isinstance(entry, dict) else None
-        refs = [n for n in store.list(f"library/characters/{asset}/") if n.endswith((".png", ".jpg"))] if asset else []
+        aid = asset.rsplit("/", 1)[-1].split("@")[0] if asset else None    # "characters/x@v1" or a bare id
+        refs = [n for n in store.list(f"library/characters/{aid}/") if n.endswith((".png", ".jpg"))] \
+            if aid and not asset.endswith("@pending") else []
         locked = entry if isinstance(entry, dict) else {}
         cast_cards.append({"id": cid, "name": spec.get("name_en", cid), "name_te": spec.get("name_te"),
                            "role": spec.get("role"), "physical": spec.get("physical"),

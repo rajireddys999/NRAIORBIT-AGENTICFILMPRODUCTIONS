@@ -106,7 +106,7 @@
       {% if f.gates %}
         {% for g in f.gates %}
           <p>Waiting at the <b>{{ g }}</b> gate.
-          {% if g == 'faces' %}Look at the <a href="#faces">first frames</a>; video is bought only after this.{% elif g == 'story' %}Read the <a href="#story">story bible</a>.{% elif g == 'outline' %}Read the <a href="#outline">outline</a>.{% elif g == 'scenes' %}Read the <a href="#scenes">scenes and dialogue</a>.{% elif g == 'cast' %}Check the <a href="#cast">cast</a>.{% elif g == 'shots' %}Check the <a href="#shots">shot lists</a>.{% elif g == 'cost' %}Approve the <a href="#money">estimate</a> in the pipeline below; nothing is paid before that.{% elif g == 'render' %}Look at what was <a href="#render">rendered</a> before it is cut.{% elif g == 'publish' %}Watch the <a href="#assemble">film and trailer</a>, then approve the YouTube upload in the pipeline below.{% else %}See <a href="#assemble">film &amp; trailer</a>.{% endif %}</p>
+          {% if g == 'faces' %}Look at the <a href="#faces">first frames</a>; video is bought only after this.{% elif g == 'story' %}Read the <a href="#story">story bible</a>.{% elif g == 'outline' %}Read the <a href="#outline">outline</a>.{% elif g == 'scenes' %}Read the <a href="#scenes">scenes and dialogue</a>.{% elif g == 'cast' %}Check the <a href="#cast">cast</a>.{% elif g == 'shots' %}Check the <a href="#shots">shot lists</a>.{% elif g == 'cost' %}Approve the <a href="#money">estimate</a> in the pipeline below; picture, voices, music and lip-sync are paid only after that (the cast's reference pictures, a few cents each, are made at the cast step).{% elif g == 'render' %}Look at what was <a href="#render">rendered</a> before it is cut.{% elif g == 'publish' %}Watch the <a href="#assemble">film and trailer</a>, then approve the YouTube upload in the pipeline below.{% else %}See <a href="#assemble">film &amp; trailer</a>.{% endif %}</p>
           {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/approve"><input type="hidden" name="gate" value="{{ g }}"><button>Approve {{ g }} and continue</button></form>
           {% else %}<p class="small muted">This film is not in the queue; approve it from Claude Code (<span class="mono">nraiorbit approve {{ f.slug }} {{ g }}</span>).</p>{% endif %}
         {% endfor %}
@@ -208,7 +208,7 @@
     {% if f.row %}
     <form method="post" action="/film/{{ f.slug }}/row" class="actions" style="margin-top:14px">
       <input name="budget" type="number" min="1" step="1" value="{{ f.row.budget_usd }}" style="width:120px" title="cap" aria-label="Budget cap"> <span class="small muted">cap</span>
-      <select name="gates" aria-label="Gates"><option value="">gates: {{ f.row.gates or f.policy.gates or 'ask' }}</option><option value="ask">ask</option><option value="auto">auto</option></select>
+      <select name="gates" aria-label="Gates"><option value="">gates: {{ f.row.gates or f.policy.gates or 'ask' }}</option><option value="ask">ask: every step waits</option><option value="auto">auto: waits only at cost and YouTube</option></select>
       <select name="publish" aria-label="YouTube"><option value="">YouTube: {{ f.row.publish or f.policy.publish or 'none' }}</option>{% for p in ['none','private','unlisted','public'] %}<option value="{{ p }}">{{ p }}</option>{% endfor %}</select>
       <button class="quiet">Save</button>
     </form>{% endif %}

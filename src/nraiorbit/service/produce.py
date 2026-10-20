@@ -1,8 +1,9 @@
 """One story, start to finish, under the project's policy (`nraiorbit produce <slug>`).
 
-    plan (story bible … shots, cues)  →  cost (the paid stages priced against the cap, approved before anything is
-    paid)  →  faces (first frames, checked before video is paid)  →  render (picture, voices, music, lip-sync under
-    the cap)  →  assemble, trailer  →  QA (lip-sync sheets, film check)  →  deliver (720p, bucket, links)  →
+    plan (story bible … shots, cues; a real film's cast reference pictures, a few cents each, under the cap)
+    →  cost (the paid stages priced against the cap, approved before any of them is paid)  →  faces (first
+    frames, checked before video is paid)  →  render (picture, voices, music, lip-sync under the cap)  →
+    assemble, trailer  →  QA (lip-sync sheets, film check)  →  deliver (720p, bucket, links)  →
     publish (YouTube, approved first; private by default)  →  backup
 
 `policy` in the project's pipeline.yaml says how far it goes on its own:
@@ -10,7 +11,8 @@
     policy:
       gates: ask | auto        ask: stop at every review gate the project lists (story, outline, scenes, cast, shots,
                                cost, faces, render, pacing, trailer, publish) and report awaiting:<gate>; auto:
-                               approve them as they come. The budget cap is never touched.
+                               approve them as they come, except the cost and the YouTube upload, which always wait
+                               for the owner (OWNER_GATES). The budget cap is never touched.
       publish: none | private | unlisted | public
       deliver_days: 7
       tag: ""                  a word in the delivery file names
@@ -33,6 +35,7 @@ from ..pipeline import GatePending, Pipeline, PipelineBlocked
 from .queue import GATES as GATE_ORDER
 
 RUNNER_GATES = ("cost", "faces", "publish")          # raised here, between pipeline runs, not inside a stage
+OWNER_GATES = ("cost", "publish")                    # money and a release: the owner's under every policy
 COST_GROWTH = 0.10                                   # an approved estimate that grows by more than this is asked again
 
 
@@ -128,7 +131,7 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
             pipeline.run(until="shots")
             break
         except GatePending as g:
-            if pol["gates"] == "auto":
+            if pol["gates"] == "auto" and g.gate not in OWNER_GATES:
                 approve(pipeline, g.gate)
                 continue
             report["steps"]["plan"] = f"awaiting:{g.gate}"
@@ -138,8 +141,17 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
             return finish(f"blocked:{str(b)[:120]}")
     report["steps"]["plan"] = "done"
 
-    # 2. the cost gate: what the paid stages would cost against what is left of the cap, before anything is paid.
-    #    Over the cap it blocks; under it the owner approves the figure (ask) or it goes straight on (auto).
+    # a film that cannot be voiced is never offered a cost to approve: speech runs after each scene's clips
+    voiceless = pipeline._voiceless()
+    if voiceless:
+        why = (f"voices: no ElevenLabs voice for {voiceless}; add voice.cast.<character>: <voice id> to the "
+               "project's pipeline.yaml (or elevenlabs_voice to the character's library voice), then retry")
+        report["steps"]["render"] = f"blocked: {why}"
+        return finish(f"blocked:{why[:160]}")
+
+    # 2. the cost gate: what the paid stages (picture, voices, music, lip-sync) would cost against what is left of the
+    #    cap, before any of them is paid. Over the cap it blocks; under it the owner approves the figure, under every
+    #    policy. Only planning and the cast's reference pictures come before it.
     step("cost")
     block, preview = cost_gate(pipeline)
     if preview:
@@ -154,13 +166,11 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
         grown = was is not None and total > was * (1 + COST_GROWTH) + 0.5     # the plan changed since the approval
         if not approved(pipeline, "cost") or grown:
             marker = json.dumps(report["steps"]["estimate"]) + "\n"
-            if pol["gates"] == "ask":
-                clear(pipeline, "cost", "approved")
-                hold(pipeline, "cost", marker)
-                report["steps"]["cost"] = "awaiting:cost" + (f" (the estimate grew from {was:.2f} to {total:.2f})"
-                                                             if grown else "")
-                return finish("awaiting:cost")
-            approve(pipeline, "cost", "approved by policy\n" + marker)
+            clear(pipeline, "cost", "approved")
+            hold(pipeline, "cost", marker)
+            report["steps"]["cost"] = "awaiting:cost" + (f" (the estimate grew from {was:.2f} to {total:.2f})"
+                                                         if grown else "")
+            return finish("awaiting:cost")
     clear(pipeline, "cost")                                   # passed: never shown as waiting
     report["steps"]["cost"] = "approved" if approved(pipeline, "cost") else "not needed"
 
@@ -185,7 +195,7 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
             pipeline.run()
             break
         except GatePending as g:
-            if pol["gates"] == "auto":
+            if pol["gates"] == "auto" and g.gate not in OWNER_GATES:
                 approve(pipeline, g.gate)
                 continue
             report["steps"]["render"] = f"awaiting:{g.gate}"
@@ -222,20 +232,18 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
         report["steps"]["deliver"] = f"failed: {type(exc).__name__}: {str(exc)[:160]}"
         return finish("blocked:deliver")
 
-    # 6. YouTube, private unless the policy says otherwise; approved by the owner first (ask), and on its own only
-    #    when the film check passed (auto); never a browser
+    # 6. YouTube, private unless the policy says otherwise; approved by the owner first under every policy; never
+    #    a browser
     step("publish")
     if pol["publish"] not in ("private", "unlisted", "public"):
         clear(pipeline, "publish")
         report["steps"]["publish"] = "none"
-    elif pol["gates"] == "ask" and not approved(pipeline, "publish"):
-        hold(pipeline, "publish", f"Watch the film and the trailer, then approve the {pol['publish']} YouTube upload.\n")
+    elif not approved(pipeline, "publish"):
+        qa = "" if report["steps"].get("qa_film") == "ok" else " The film check did not pass: look at QA first."
+        hold(pipeline, "publish", f"Watch the film and the trailer, then approve the {pol['publish']} YouTube "
+                                  f"upload.{qa}\n")
         report["steps"]["publish"] = "awaiting:publish"
         return finish("awaiting:publish")
-    elif report["steps"].get("qa_film") != "ok" and not approved(pipeline, "publish"):
-        clear(pipeline, "publish")
-        report["steps"]["publish"] = "held: the film check did not pass; look at reports/qa/film.json, then " \
-                                     "`nraiorbit release youtube <slug>`"
     else:
         try:
             report["steps"]["publish"] = publish_youtube(root, pol["publish"])

@@ -5,7 +5,7 @@
 Read docs/FRAMEWORK.md first. A new story: `nraiorbit new <slug> --story story.md` (from projects/_template), set
 `budget.max_usd` and `voice.cast`, then `nraiorbit produce <slug>`; it stops at every review gate the project lists
 (the template lists them all: story, outline, scenes, cast, shots, cost, faces, render, pacing, trailer, publish)
-unless `policy.gates: auto`. QA, delivery, YouTube and backup are `nraiorbit qa`, `release`, `backup`. The always-on
+unless `policy.gates: auto`, which still stops at cost and publish. QA, delivery, YouTube and backup are `nraiorbit qa`, `release`, `backup`. The always-on
 runner is deploy/service (Cloud Run job + two CSV queues); reference learning is `nraiorbit learn youtube`.
 
 Guard rails added the same day (docs/FRAMEWORK.md §7): `produce` prices the paid stages first and blocks without a cap

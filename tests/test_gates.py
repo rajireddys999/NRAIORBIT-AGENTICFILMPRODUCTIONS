@@ -568,3 +568,80 @@ def test_assembly_masters_again_when_the_trailers_source_was_not_restored(tmp_pa
     # 10_edit stays out of the backup on purpose: its timeline points at clips and takes that are not backed up
     # either, and a restored timeline without them would make the render step skip and the trailer fail
     assert "edit" not in backup.FOLDERS and not any("10_edit" in str(local) for _, local, _ in backup.pairs(tmp_path, "b"))
+
+
+def _fake_film(tmp_path, monkeypatch, gates):
+    """produce over a stand-in pipeline: its plan and render raise every step gate until approved, the cost estimate
+    is 12.50 and first frames are wanted; QA, delivery and the upload are recorded, nothing is made or paid."""
+    import json as _json
+
+    from nraiorbit.qa import film
+    from nraiorbit.release import deliver
+    paths = ProjectPaths(tmp_path)
+    plan_gates, render_gates = ["story", "outline", "scenes", "cast", "shots"], ["render", "pacing", "trailer"]
+
+    def run(until=None):
+        for g in plan_gates + ([] if until == "shots" else render_gates):
+            if not (paths.reviews / f"{g}.approved").exists():
+                raise GatePending(g, tmp_path)
+    pipeline = SimpleNamespace(p=paths, run=run, log=lambda *_: None, _voiceless=lambda: [],
+                               cfg={"policy": {"gates": gates, "publish": "private"}, "providers": {}})
+    estimate = {"total_usd": 12.5, "video_usd": 10.0, "tts_usd": 2.5}
+    monkeypatch.setattr(produce, "cost_gate", lambda p: (None, dict(estimate)))
+    monkeypatch.setattr(produce, "_faces_needed", lambda p: not (paths.reviews / "faces.approved").exists())
+    monkeypatch.setattr(film, "check", lambda root, log=None: {"ok": True})
+    monkeypatch.setattr(deliver, "deliver", lambda *a, **k: [])
+    uploads = []
+    monkeypatch.setattr(produce, "publish_youtube", lambda root, privacy: uploads.append(privacy) or {"film": {"id": "v"}})
+    return pipeline, paths, uploads, _json
+
+
+def test_auto_runs_every_step_but_waits_for_the_cost_and_the_youtube_upload(tmp_path, monkeypatch):
+    pipeline, paths, uploads, _json = _fake_film(tmp_path, monkeypatch, "auto")
+    report = produce.produce(pipeline, log=lambda *_: None)
+    assert report["state"] == "awaiting:cost"                                    # the plan ran through on its own
+    assert all((paths.reviews / f"{g}.approved").read_text().startswith("approved by policy")
+               for g in ("story", "outline", "scenes", "cast", "shots"))
+    assert _json.loads((paths.reviews / "cost.pending").read_text())["total_usd"] == 12.5
+    assert not (paths.reviews / "cost.approved").exists() and not uploads      # nothing approved for the owner
+    produce.approve(pipeline, "cost", "approved in the control room\n")
+    report = produce.produce(pipeline, log=lambda *_: None)
+    assert report["state"] == "awaiting:publish" and not uploads                # faces, render, cut: on their own
+    assert all((paths.reviews / f"{g}.approved").exists() for g in ("render", "pacing", "trailer"))
+    assert not (paths.reviews / "faces.pending").exists()
+    produce.approve(pipeline, "publish", "approved in the control room\n")
+    report = produce.produce(pipeline, log=lambda *_: None)
+    assert report["state"] == "done" and uploads == ["private"]
+
+
+def test_ask_still_stops_at_every_step_and_a_grown_estimate_is_asked_again_under_auto(tmp_path, monkeypatch):
+    pipeline, paths, uploads, _json = _fake_film(tmp_path, monkeypatch, "ask")
+    assert produce.produce(pipeline, log=lambda *_: None)["state"] == "awaiting:story"
+    pipeline.cfg["policy"]["gates"] = "auto"
+    assert produce.produce(pipeline, log=lambda *_: None)["state"] == "awaiting:cost"
+    produce.approve(pipeline, "cost", "approved in the control room\n" + _json.dumps({"total_usd": 12.5}) + "\n")
+    monkeypatch.setattr(produce, "cost_gate", lambda p: (None, {"total_usd": 30.0, "video_usd": 30.0}))
+    report = produce.produce(pipeline, log=lambda *_: None)                      # the plan grew: asked again, not
+    assert report["state"] == "awaiting:cost" and "grew" in report["steps"]["cost"]   # waved through by policy
+    assert not uploads
+
+
+
+def test_a_film_that_cannot_be_voiced_is_never_offered_a_cost_to_approve(tmp_path, monkeypatch):
+    pipeline, paths, uploads, _json = _fake_film(tmp_path, monkeypatch, "auto")
+    pipeline._voiceless = lambda: ["chintu", "lakshmi"]
+    report = produce.produce(pipeline, log=lambda *_: None)
+    assert report["state"].startswith("blocked:voices: no ElevenLabs voice for ['chintu', 'lakshmi']")
+    assert not (paths.reviews / "cost.pending").exists() and not uploads
+
+
+def test_a_gate_named_like_an_owner_gate_is_never_waved_through_by_auto(tmp_path, monkeypatch):
+    """Whatever raises it, a cost or publish gate is the owner's: auto approves every other gate only."""
+    pipeline, paths, uploads, _json = _fake_film(tmp_path, monkeypatch, "auto")
+
+    def run(until=None):
+        if not (paths.reviews / "publish.approved").exists():
+            raise GatePending("publish", tmp_path)
+    pipeline.run = run
+    report = produce.produce(pipeline, log=lambda *_: None)
+    assert report["state"] == "awaiting:publish" and not (paths.reviews / "publish.approved").exists()

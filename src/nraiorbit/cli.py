@@ -700,7 +700,8 @@ def _main(argv: list[str] | None = None) -> None:
                                        "QA, deliver, YouTube, backup")
     p.add_argument("slug")
     p.add_argument("--max-spend", type=float, help="budget cap in USD (overrides config)")
-    p.add_argument("--gates", choices=["ask", "auto"], help="stop at review gates (ask) or approve them (auto)")
+    p.add_argument("--gates", choices=["ask", "auto"],
+                   help="stop at every review gate (ask), or approve all but the cost and the YouTube upload (auto)")
     p.add_argument("--publish", choices=["none", "private", "unlisted", "public"], help="YouTube privacy, or none")
     p.add_argument("--bucket", help="deliver and back up to this bucket (default from the config)")
     p.add_argument("--offline", action="store_true", help="lip-sync from paid results only")

@@ -7,11 +7,13 @@ and the runner's log), approve / retry / cap buttons, and the reference queue.
 
 The film page's pipeline shows the twelve steps joined by arrows, the step under way, and the step that waits for
 you. With `gates: ask` (the template's default) a film stops after every step: story bible, outline, scenes, cast,
-shot lists, the **cost** (the paid stages' estimate, approved before anything is paid), first frames, render, the cut,
+shot lists, the **cost** (the paid stages' estimate, approved before picture, voices, music or lip-sync is paid; only the
+cast's reference pictures, a few cents each, come before it), first frames, render, the cut,
 the trailer and the **YouTube upload** (watch the film and the trailer, download the delivery, then approve at the
 visibility the row says). Every stop leaves `reviews/<gate>.pending` in the project; the approve button sets the row
 to `approved`, which the next tick turns into `reviews/<gate>.approved`, and starts that tick at once. `gates: auto`
-waves every gate through. **Retry** sets the row to `retry` and starts a tick at once in the same way. It refuses
+waves every step through on its own and stops only at the **cost** and the **YouTube upload**, which wait for you
+under every policy. **Retry** sets the row to `retry` and starts a tick at once in the same way. It refuses
 while the runner is on the film, unless that run stopped: Cloud Run lists no execution running or pending, and the
 film's progress record does not belong to a run still under way.
 

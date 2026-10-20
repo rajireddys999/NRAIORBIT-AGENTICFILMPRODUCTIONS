@@ -47,6 +47,9 @@
 {% set m = f.money %}
 {% set state0 = f.state.split(':')[0] %}
 {% set executing = f.live or (runner_running and state0 == 'producing') %}
+{% set rerun_ok = f.row and not executing and state0 in ['done', 'awaiting', 'blocked'] %}
+{% macro rerun_form(label) %}<form method="post" action="/film/{{ f.slug }}/retry"><button class="sm quiet">{{ label }}</button></form>
+        <span class="tiny dim">Checks every step in the background: finished ones are kept, missing or failed ones are redone, and the gates ask again. The pipeline shows the step under way.</span>{% endmacro %}
 {# a stage's badge: "running" while the runner is on it (its live record, or the step under way during a run),
    else its status #}
 {% macro run_badge(key, quiet=False) %}{% set s = f.stages[key] %}{% if s.status == 'executing' or (executing and f.next_stage == key) %}<span class="badge executing live"{% if quiet %} style="margin-left:10px;vertical-align:middle"{% endif %}>running</span>{% elif not quiet %}<span class="badge {{ s.status }}">{{ s.status }}</span>{% endif %}{% endmacro %}
@@ -114,6 +117,9 @@
         {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/retry"><button>Fix is in place, retry</button></form>{% endif %}
       {% elif f.state == 'done' %}<p>Done. The deliverables are under <a href="#deliver">Delivery</a>.</p>
       {% elif f.state == 'approved' %}<p><span class="live-dot" style="margin-right:8px"></span>Approved. The runner takes it up on its next tick{% if runner_running %} (one is running now){% endif %}; this page refreshes by itself.</p>
+      {% elif stalled %}
+        <p>The last run stopped without finishing (claimed {{ stalled.since|local }}, nothing running now). The runner resumes it on its own{% if stalled.resumes %} after {{ stalled.resumes|local }}{% else %} after {{ stalled.hours }} h{% endif %}.</p>
+        {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/retry"><button>Re-run it now</button></form>{% endif %}
       {% elif f.state in ['new','retry','producing'] %}<p><span class="live-dot" style="margin-right:8px"></span>The runner is on it (state <b>{{ f.state }}</b>). This page refreshes by itself.</p>
       {% else %}<p class="muted">Nothing is waiting on you.</p>{% endif %}
       {% if f.render_note %}<p class="small" style="color:var(--warn);margin-top:10px">{{ f.render_note }}{% if f.animatic and not f.tools_planned and not f.cfg.providers %} This film's project names no providers, so it runs on the mock ones. {% if f.row %}Queue it again to start from the project template, or add{% else %}Add{% endif %} the providers to its pipeline.yaml.{% endif %}</p>{% endif %}
@@ -147,6 +153,8 @@
         {% elif is_next %}<span class="badge next{% if executing %} live{% endif %}">{{ 'running' if executing else 'next up' }}</span>
         {% else %}<span class="badge {{ s.status }}">{{ s.status }}</span>{% endif %}
         {% if s.text %}<span class="txt muted">{{ s.text }}</span>{% endif %}
+        {% if f.animatic and key in ['assemble', 'publish'] %}<span class="txt" style="color:var(--warn)">animatic: placeholder picture and mock voices{% if key == 'publish' %}; approving uploads it as it is{% endif %}</span>{% endif %}
+        {% if key == 'cost' and f.cost_lines %}{% for l in f.cost_lines %}<span class="txt tiny" style="display:block">{{ l.name }} <b>{{ l.usd|money }}</b>{% if l.why %} · {{ l.why }}{% endif %}</span>{% endfor %}{% endif %}
         <span class="details">Details <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m6 13 6 6 6-6"/></svg></span>
       </a>
       {% if gate %}
@@ -159,6 +167,7 @@
             {% set pol = f.row.publish or f.policy.publish or 'private' %}
             <form method="post" action="/film/{{ f.slug }}/approve"><input type="hidden" name="gate" value="publish"><button class="sm">Approve YouTube · {{ pol }}</button></form>
             <span class="tiny dim">Change the visibility under <a href="#money">costs</a> before approving.</span>
+            {% if not executing %}{{ rerun_form('Re-run the film') }}{% endif %}
           {% endif %}
         {% elif key == 'cost' %}
           {% if f.row %}<form method="post" action="/film/{{ f.slug }}/approve"><input type="hidden" name="gate" value="cost"><button class="sm">Approve {% if f.money.estimate %}{{ f.money.estimate.total_usd|money }}{% else %}cost{% endif %}</button></form>{% endif %}
@@ -167,6 +176,18 @@
           {% if f.row %}<form method="post" action="/film/{{ f.slug }}/approve"><input type="hidden" name="gate" value="{{ gate }}"><button class="sm">Approve {{ gate }}</button></form>{% endif %}
         {% endif %}
         {% if not f.row %}<span class="tiny dim">Not in the queue: <span class="mono">nraiorbit approve {{ f.slug }} {{ gate }}</span></span>{% endif %}
+      </div>
+      {% elif f.issue and key == f.issue.stage %}
+      <div class="node-act">
+        <span class="tiny bad">Failed here: {{ f.issue.reason }}.{% if f.issue.hint %} {{ f.issue.hint }}{% endif %}</span>
+        {% if f.row and not executing %}<form method="post" action="/film/{{ f.slug }}/retry"><button class="sm">Fix is in place, re-run from here</button></form>
+        <span class="tiny dim">The runner keeps the finished steps, redoes this one and the rest, and asks at the gates again.</span>{% endif %}
+      </div>
+      {% elif key == 'publish' and rerun_ok %}
+      <div class="node-act">
+        {% if f.media['movie.mp4'] %}<a class="btn quiet sm" href="{{ f.media['movie.mp4'] }}" target="_blank" rel="noopener">View the film</a>{% endif %}
+        {% if f.media['trailer.mp4'] %}<a class="btn quiet sm" href="{{ f.media['trailer.mp4'] }}" target="_blank" rel="noopener">View the trailer</a>{% endif %}
+        {{ rerun_form('Re-run the film') }}
       </div>
       {% endif %}
     </li>

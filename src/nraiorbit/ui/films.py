@@ -239,6 +239,66 @@ def story_overrides(store: Store, row: dict | None) -> dict | None:
     return None
 
 
+def progress_record(store: Store, slug: str) -> dict | None:
+    """The runner's progress record for the film as the bucket holds it: None when there is none or it is not JSON."""
+    rec = _json(store, f"{slug}/reports/progress.json")
+    return rec if isinstance(rec, dict) else None
+
+
+def blocked_issue(state: str, note: str | None, progress: dict | None, stage: dict) -> dict | None:
+    """Which step a blocked film failed on, for its card: the runner's own last phase when its progress record ended
+    blocked or failed, else the first step still open. The text is the row's note (the error), or the reason."""
+    if not str(state).startswith("blocked:"):
+        return None
+    key = None
+    if isinstance(progress, dict) and progress.get("state") in ("blocked", "failed"):
+        key = PHASES.get(str(progress.get("phase") or ""))
+    if key is None:
+        key = next((k for k, _ in STAGES if k not in ADVISORY and stage[k]["status"] not in SETTLED), "publish")
+    reason = state[len("blocked:"):]
+    text = (note or reason).strip()
+    return {"stage": key, "label": dict(STAGES)[key], "reason": reason, "note": note or "",
+            "text": text if len(text) <= 160 else text[:157] + "…", "hint": explain_note(note)}
+
+
+def cost_lines(estimate: dict | None, cfg: dict, to_film: list, to_frame: list, scenes: list, cues: list) -> list[dict]:
+    """The money analysis on the Cost step: what each paid part of the next run costs and why. The counts are what
+    the estimate prices: shots still to film (clips in the inbox are reused), frames still to make, dialogue lines.
+    Video carries the seconds Veo bills against the seconds on screen, since a shot is billed at the next clip
+    length up (4, 6 or 8 s, as produce prices it): a film cut in 1.7-second shots pays for more than twice its length."""
+    if not isinstance(estimate, dict):
+        return []
+    from .. import costing
+    try:
+        if not to_film:
+            raise LookupError("nothing to film: the parts without the seconds")
+        pricing = costing.load_pricing()
+        google = cfg.get("google") or {}
+        res = str(google.get("veo_resolution") or pricing["veo"].get("resolution") or "720p")
+        mode = str(google.get("veo_mode") or "keyframe")
+        shortest = min(costing.veo_durations(pricing, res))
+        billed = sum(costing.veo_clip_seconds(float(sh.get("duration_s") or 0), pricing, res, mode,
+                                              bool(sh.get("characters_in_frame"))) for sh in to_film)
+    except Exception:                                     # a pricing file off this machine: the parts still show
+        billed = None
+    screen = sum(float(sh.get("duration_s") or 0) for sh in to_film)
+    lines = sum(1 for sc in scenes for b in (sc.get("blocks") or []) if b.get("kind") == "dialogue")
+    video_why = f"{len(to_film)} shots to film" if to_film else ""
+    if billed is not None:
+        video_why += f" · {billed:.0f} s billed for {screen:.0f} s on screen"
+        if screen and billed > screen * 1.25:
+            video_why += f" ({100 * (billed - screen) / billed:.0f}% of the video spend is trimmed away: shots " \
+                         f"shorter than the {shortest} s clip)"
+    parts = [("video", "video_usd", video_why),
+             ("first frames", "keyframe_usd", f"{len(to_frame)} frames to make" if to_frame else ""),
+             ("voices", "tts_usd", f"{lines} line{'s' if lines != 1 else ''}" if lines else ""),
+             ("music", "music_usd", f"{len(cues)} cues" if cues else ""),
+             ("lip sync", "lipsync_usd", "")]
+    out = [{"name": name, "usd": float(estimate.get(k) or 0), "why": why}
+           for name, k, why in parts if estimate.get(k) not in (None, 0, 0.0)]
+    return out
+
+
 def summary(store: Store, slug: str, row: dict | None) -> dict:
     """The board row: title, state, gates, money. Cheap: a handful of reads."""
     cfg = _config(store, slug)
@@ -408,12 +468,16 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         for key, _ in STAGES:
             if stage[key]["status"] == "todo" and not stage[key]["text"]:
                 stage[key]["text"] = PLANNED
+    progress = progress_record(store, slug)
+    issue = blocked_issue(state, (row or {}).get("note"), progress, stage)
+    if issue:
+        stage[issue["stage"]] = {"status": "blocked", "text": issue["text"]}
     # the step the runner is on (or about to pick up): the first unfinished stage while nothing waits on the owner
     next_stage = None
     if state.split(":")[0] in RUNNING and not gates:
         next_stage = next((k for k, _ in STAGES if stage[k]["status"] in ("todo", "partial", "stale")), None)
     # the runner's own word beats that inference: while its execution runs, the phase it reports is the one under way
-    live = live_progress(_json(store, f"{slug}/reports/progress.json"), running, tz)
+    live = live_progress(progress, running, tz)
     if live and live["stage_key"]:
         text = f"{live['phase'].replace('_', ' ')} since {live['since']}"
         if live.get("last_line"):
@@ -481,7 +545,10 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
     return {
         "slug": slug, "row": row, "cfg": cfg, "bible": bible, "outline": scenes_out, "cast": cast_cards,
         "scenes": scene_views, "shots": shot_views, "keyframes": keyframe_cards, "stages": stage, "gates": gates,
-        "gate_for": gate_for, "next_stage": next_stage, "live": live, "animatic": mock,
+        "gate_for": gate_for, "next_stage": next_stage, "live": live, "animatic": mock, "issue": issue,
+        "cost_lines": cost_lines(cash["estimate"], cfg, [sh for sh in shots if sh.get("shot_id") not in clips],
+                                 [sh for sh in with_leads if sh.get("shot_id") not in keyframes], scenes, cues)
+        if not mock else [],
         "money": cash, "produce": produce, "steps": steps,
         "review_queue": review_queue[-30:], "qa_film": qa_film, "qa_md": qa_md,
         "strips": [{"shot_id": n.rsplit("/", 1)[-1].replace("_strip.jpg", ""), "url": img(n)} for n in strips],

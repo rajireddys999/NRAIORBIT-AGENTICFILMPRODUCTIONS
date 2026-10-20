@@ -101,7 +101,7 @@
       {% if runner.error %}<p class="small muted">Executions unavailable: {{ runner.error }}</p>{% endif %}
       {% if runner.executions %}
       <div class="table-wrap"><table class="exec"><tr><th>Execution</th><th>Started</th><th>State</th><th>Doing</th></tr>
-      {% for e in runner.executions %}<tr><td class="mono">{{ exec_name(e) }}</td><td class="small muted">{{ e.created|local }}</td><td><span class="badge {{ e.state }}">{{ e.state }}</span></td><td>{{ doing(e, doings.get(e.name)) }}</td></tr>{% endfor %}
+      {% for e in runner.executions[:6] %}<tr><td class="mono">{{ exec_name(e) }}</td><td class="small muted">{{ e.created|local }}</td><td><span class="badge {{ e.state }}">{{ e.state }}</span></td><td>{{ doing(e, doings.get(e.name)) }}</td></tr>{% endfor %}
       </table></div>
       {% if dupes %}<p class="small bad" style="margin-top:8px">two executions on the same film; cancel the newer one in the console (it repeats the older one's work)</p>{% endif %}{% endif %}
       <form method="post" action="/tick" style="margin-top:14px"><input type="hidden" name="next" value="/"><button class="quiet"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>Run a tick now</button></form>

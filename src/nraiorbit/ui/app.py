@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import html as _html
+import os
 import math
 import re
 from dataclasses import dataclass, field
@@ -260,6 +261,10 @@ def log_time(lines: list[str], started: str | None = None, now=None, tz=datetime
     return t.isoformat(timespec="seconds")
 
 
+SCAN_EXECUTIONS = 40          # executions to look through for one still running: a claim lasts six hours and a
+                              # scheduled tick comes every 15 minutes, so a long render sits behind up to 24 quick ones
+
+
 def edit_row(store: Store, slug: str, change) -> dict:
     """Change one film's row in the queue sheet under the store's write precondition, so an edit here and a tick's
     claim seconds apart never lose each other. `change(row)` edits the row in place; returning False leaves the sheet
@@ -348,7 +353,8 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
     def runner_panel() -> dict:
         panel = {"project": settings.project, "job": settings.job, "executions": [], "error": None}
         try:
-            panel["executions"] = runner_mod.executions(settings.project, settings.region, settings.job)
+            panel["executions"] = runner_mod.executions(settings.project, settings.region, settings.job,
+                                                        limit=SCAN_EXECUTIONS)
         except Exception as exc:                       # no roles, no network, no job: the page still renders
             panel["error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
         return panel
@@ -357,23 +363,27 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         """The name of a tick under way, if any: never two executions on the queue at once. One just started is
         pending for its first minute while Cloud Run schedules it, and counts too; a cancelled one has a completion
         time, so it cannot hold the queue up."""
-        busy = [e for e in runner_mod.executions(settings.project, settings.region, settings.job)
+        busy = [e for e in runner_mod.executions(settings.project, settings.region, settings.job, limit=SCAN_EXECUTIONS)
                 if e["state"] == "running" or (e["state"] == "pending" and not e.get("completed"))]
         return busy[0]["name"] if busy else None
 
-    def start_tick() -> tuple[str, str]:
-        """Start the runner now instead of waiting up to fifteen minutes for the schedule, unless a tick runs (a
-        second would repeat its work). ("started", execution) | ("busy", execution) | ("failed", error type) |
-        ("", "") when no runner is configured. Approve and Retry both use it, so they start ticks the same way."""
-        if not (settings.project and settings.job):
-            return "", ""
-        try:
-            busy = running_execution()
-            if busy:
-                return "busy", busy
-            return "started", runner_mod.run(settings.project, settings.region, settings.job)
-        except Exception as exc:
-            return "failed", type(exc).__name__
+    def stopped_run(slug: str, row: dict | None, panel: dict) -> bool:
+        """Whether a producing row's claim is held by no one: the run behind it stopped (killed, out of time), so the
+        owner may run the film again. Never a guess, since a wrong yes pays for a render twice: the runner must be
+        configured and Cloud Run must have answered; no execution may be running or pending; and the film's own
+        progress record must not be from a run still under way: a record that says running frees the claim only
+        when the listing shows its execution finished (a long render falls out of a short listing, which is why
+        the listing looks SCAN_EXECUTIONS back; one the listing does not know at all keeps the claim)."""
+        if not (settings.project and settings.job) or panel.get("error") or not row or row.get("state") != "producing":
+            return False
+        seen = panel["executions"]
+        if any(e["state"] == "running" or (e["state"] == "pending" and not e.get("completed")) for e in seen):
+            return False
+        record = films.progress_record(store, slug)
+        if record and record.get("state") == "running":
+            ended = {e["name"] for e in seen if e["state"] in ("ok", "failed") or e.get("completed")}
+            return record.get("execution") in ended
+        return True
 
     # ------------------------------------------------------------------ sign-in
     @app.get("/healthz", response_class=PlainTextResponse)
@@ -608,9 +618,15 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                 log_lines = [f"(log unavailable: {type(exc).__name__})"]
             last_log_at = log_time(log_lines, latest.get("created"), tz=tz)
             latest["minutes"] = int((films.seconds_since(latest.get("created")) or 0) // 60)
+        stalled = None                                    # a claim with no execution behind it: the run stopped
+        if stopped_run(slug, row, panel):
+            hours = float(os.environ.get("NRAIORBIT_CLAIM_HOURS") or queue.CLAIM_HOURS)   # as the job's claimed() reads
+            since = films.when(row.get("updated"))                                         # it, when this service carries it
+            stalled = {"since": row.get("updated"), "hours": hours,
+                       "resumes": (since + datetime.timedelta(hours=hours)).isoformat() if since else None}
         return page("film.html", request, email, f=d, stages=films.STAGES, runner=panel, log_lines=log_lines,
                     latest=latest, last_log_at=last_log_at, runner_running=bool(running), youtube=youtube_status(),
-                    doings=doings, dupes=duplicates(panel["executions"], doings))
+                    doings=doings, dupes=duplicates(panel["executions"], doings), stalled=stalled)
 
     # ------------------------------------------------------------------ actions (the queue sheet only)
     @app.post("/film/{slug}/approve")
@@ -630,22 +646,43 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         edit_row(store, slug, change)
         if refused:
             return back(f"/film/{slug}", refused["msg"])
-        outcome, name = start_tick()                          # no fifteen-minute wait: the next step starts now
-        msg = {"started": f"{gate} approved; a tick started ({name}) and the next step is under way",
-               "busy": f"{gate} approved; a tick is running ({name}), the next scheduled one carries on",
-               "failed": f"{gate} approved; the tick could not be started ({name}), the scheduled one carries on",
-               }.get(outcome, f"{gate} approved; the next tick carries on")
-        return back(f"/film/{slug}", msg)
+        return back(f"/film/{slug}", f"{gate} approved; " + tick_now("the next step is under way"))
+
+    def tick_now(then: str) -> str:
+        """Start a tick unless one is running, and say what happened: no fifteen-minute wait after a decision."""
+        if not (settings.project and settings.job):
+            return "the next tick carries on"
+        try:
+            busy = running_execution()
+            if busy:
+                return f"a tick is running ({busy}), the next scheduled one carries on"
+            ex = runner_mod.run(settings.project, settings.region, settings.job)
+            return f"a tick started ({ex}) and {then}"
+        except Exception as exc:
+            return f"the tick could not be started ({type(exc).__name__}), the scheduled one carries on"
 
     @app.post("/film/{slug}/retry")
     def retry(slug: str, email: str = Depends(guard)):
-        edit_row(store, slug, lambda row: row.update(state="retry", updated=queue.now()))
-        outcome, name = start_tick()                          # as approve does: no wait for the schedule
-        msg = {"started": f"set to retry; a tick started ({name})",
-               "busy": f"set to retry; a tick is running ({name}); the next one runs it",
-               "failed": f"set to retry; the tick could not be started ({name}), the scheduled one runs it",
-               }.get(outcome, "set to retry; the next tick runs it again")
-        return back(f"/film/{slug}", msg)
+        """Run the film again, from a blocked step or from its end: the runner checks every step, keeps the finished
+        ones, redoes the missing or failed ones and asks at the gates again. Never over a run under way."""
+        refused: dict = {}
+        current = next((r for r in load_rows(store, STORIES, queue.STORY_COLUMNS) if r["slug"] == slug), None)
+        stopped = stopped_run(slug, current, runner_panel())   # a producing row whose run stopped may be run again
+
+        def change(row: dict):
+            head = row["state"].split(":")[0]
+            # a stopped run's claim is freed only if the row has not moved since the decision: a tick that claimed
+            # it afresh in the seconds the listing took keeps its claim, or two runs would render the same film
+            if head in films.RUNNING and not (head == "producing" and stopped
+                                               and row.get("updated") == (current or {}).get("updated")):
+                refused["msg"] = f"the runner is already on it ({row['state']}); nothing changed"
+                return False
+            row.update(state="retry", updated=queue.now())
+        edit_row(store, slug, change)
+        if refused:
+            return back(f"/film/{slug}", refused["msg"])
+        return back(f"/film/{slug}", "set to retry; " + tick_now(
+            "the runner checks every step, keeps the finished ones and redoes the rest; the pipeline shows the step under way"))
 
     @app.post("/film/{slug}/row")
     def save_row(slug: str, email: str = Depends(guard), budget: str = Form(""), gates: str = Form(""),

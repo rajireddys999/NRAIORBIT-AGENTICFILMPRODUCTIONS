@@ -51,11 +51,10 @@ def in_order(stage: dict) -> None:
     first_open = None
     for key, label in STAGES:
         st = stage[key]["status"]
-        if key in ADVISORY:
-            continue
-        if first_open is None and st not in SETTLED:
-            first_open = label.lower()
-        elif first_open is not None and st == "done":
+        if first_open is None:
+            if st not in SETTLED and key not in ADVISORY:     # an advisory step never holds the rest up
+                first_open = label.lower()
+        elif st == "done" or (key in ADVISORY and st in ("partial", "skipped")):
             stage[key] = {"status": "stale", "text": f"from an earlier run; redone after {first_open}"}
 NOT_FILMS = {"queue", "library", "lipsync", "stories", "_template", "final"}
 
@@ -210,6 +209,13 @@ def pending_gates(store: Store, slug: str, produce: dict | None, row: dict | Non
     return gates
 
 
+def needs_a_setting(note: str | None) -> bool:
+    """A stop nothing in the control room can fix: the film's pipeline.yaml needs a setting (characters to build,
+    voices to name), so a re-run before that change stops at the same place."""
+    text = note or ""
+    return "need identity packs" in text or text.startswith(("voices:", "blocked:voices:")) or "no ElevenLabs voice" in text
+
+
 def explain_note(note: str | None) -> str | None:
     """A plain sentence for the runner's blocked notes that have one fix."""
     text = note or ""
@@ -218,6 +224,15 @@ def explain_note(note: str | None) -> str | None:
                 "Store a key as the Secret Manager secret ANTHROPIC_API_KEY, attach it to the runner job, then Retry.")
     if "insufficient_credits" in text or "402" in text:
         return "A paid service answered 402: its prepaid credit is used up. Top it up, then Retry."
+    if "need identity packs" in text:
+        return ("Characters the library does not have need reference pictures before any video is paid. This film's "
+                "settings do not let the runner make them (it was queued before it could): add cast.build_identity: "
+                "true to its pipeline.yaml, then re-run. The runner then makes their pictures, a few cents each under "
+                "the cap, and stops at the cast gate so you can look at the faces. Re-running before that stops here "
+                "again and pays nothing.")
+    if text.startswith("voices:") or "no ElevenLabs voice" in text:
+        return ("Speaking characters have no ElevenLabs voice. Add voice.cast.<character>: <ElevenLabs voice id> to "
+                "the film's pipeline.yaml, then re-run. Nothing is paid for video before every speaker has a voice.")
     return None
 
 
@@ -258,7 +273,8 @@ def blocked_issue(state: str, note: str | None, progress: dict | None, stage: di
     reason = state[len("blocked:"):]
     text = (note or reason).strip()
     return {"stage": key, "label": dict(STAGES)[key], "reason": reason, "note": note or "",
-            "text": text if len(text) <= 160 else text[:157] + "…", "hint": explain_note(note)}
+            "text": text if len(text) <= 160 else text[:157] + "…", "hint": explain_note(note or state),
+            "outside": needs_a_setting(note or state)}
 
 
 def cost_lines(estimate: dict | None, cfg: dict, to_film: list, to_frame: list, scenes: list, cues: list) -> list[dict]:
@@ -317,7 +333,8 @@ def summary(store: Store, slug: str, row: dict | None) -> dict:
         "has_film": any(n.endswith("/movie.mp4") for n in master),
         "has_trailer": any(n.endswith("/trailer.mp4") for n in master),
         "updated": (row or {}).get("updated") or (produce or {}).get("finished"),
-        "note": (row or {}).get("note"), "hint": explain_note((row or {}).get("note")), "produce": produce,
+        "note": (row or {}).get("note"), "produce": produce,
+        "hint": explain_note((row or {}).get("note") or (row or {}).get("state")),
         "render_note": tools.render_note(resolved), "tools_line_render": tools.line(render), "tools_planned": planned,
     }
 
@@ -442,14 +459,30 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
     put("assemble", "awaiting" if any(g in gates for g in ("pacing", "final_cut", "trailer")) else
         ("done" if has_film else "todo"), cut + (" (animatic)" if mock and has_film else ""))
     qa_bits = []
-    if qa_film is not None:
+    if qa_film is not None and qa_film.get("skipped"):
+        qa_bits.append(f"skipped: {qa_film['skipped']}"[:120])
+    elif qa_film is not None:
         qa_bits.append("film check " + ("ok" if qa_film.get("ok") else "needs a look"))
-    if qa_lip:
+    if qa_lip and not (qa_film is not None and qa_film.get("skipped")):     # a skipped QA: no older lip-sync sheet
         rows = qa_lip if isinstance(qa_lip, list) else qa_lip.get("shots") or qa_lip.get("rows") or []
         flagged = sum(1 for r in rows if isinstance(r, dict) and r.get("flags"))
         qa_bits.append(f"lip-sync: {flagged} of {len(rows)} shots flagged")
-    put("qa", ("done" if qa_film is None or qa_film.get("ok") else "partial") if (qa_film is not None or qa_lip) else "todo",
-        "; ".join(qa_bits))
+    said, skipped = str(steps.get("qa_film") or ""), str(steps.get("qa") or "")
+    if qa_film is not None and qa_film.get("skipped"):    # the file is the newest verdict: the runner writes it every
+        qa_status = "skipped"                             # run (a skipped check too), a check by hand after it
+    elif qa_film is not None or qa_lip:
+        qa_status = "done" if qa_film is None or qa_film.get("ok") else "partial"
+    elif said in ("ok", "look"):                          # no file: a film checked before the runner kept one
+        qa_status = "done" if said == "ok" else "partial"
+        qa_bits.append("film check " + ("ok" if said == "ok" else "needs a look"))
+        if steps.get("qa_lipsync"):
+            qa_bits.append(f"lip-sync: {steps['qa_lipsync']}")
+    elif skipped.startswith("skipped"):
+        qa_status = "skipped"
+        qa_bits.append(skipped[:120])
+    else:
+        qa_status = "todo"
+    put("qa", qa_status, "; ".join(qa_bits))                  # in_order marks it stale while an earlier step is open
     put("deliver", "done" if delivery else "todo",
         f"{len(delivery)} files" if isinstance(delivery, list) else ("" if not delivery else "delivered"))
     pub = steps.get("publish")
@@ -556,7 +589,7 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         "strips": [{"shot_id": n.rsplit("/", 1)[-1].replace("_strip.jpg", ""), "url": img(n)} for n in strips],
         "media": media, "delivery": deliver_links, "title": bible.get("title_en") or slug, "title_te": bible.get("title_te"),
         "state": state,
-        "hint": explain_note((row or {}).get("note")),
+        "hint": explain_note((row or {}).get("note") or (row or {}).get("state")),
         "policy": cfg.get("policy") or {}, "runtime": (cfg.get("film") or {}).get("runtime_minutes"),
         "story_text": store.read_text(f"{slug}/project/input/story.md") or "",
         "tools": stage_tools, "tools_line": {k: tools.line(v) for k, v in stage_tools.items()},

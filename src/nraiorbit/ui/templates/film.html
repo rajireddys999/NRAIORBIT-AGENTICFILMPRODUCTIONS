@@ -114,7 +114,7 @@
         <p><span class="live-dot" style="margin-right:8px"></span>Running{% if f.live.stage_label %} <b>{{ f.live.stage_label }}</b>{% endif %}{% if f.live.tools_line %} · {{ f.live.tools_line }}{% endif %}{% if f.live.since %}{% if f.live.tools_line %} ·{% endif %} since {{ f.live.since }}{% endif %}{% if f.live.last_line %} · last: {{ f.live.last_line }}{% if f.live.ago %} ({{ f.live.ago }}){% endif %}{% endif %} · execution <span class="mono">{{ f.live.execution }}</span>. This page refreshes by itself.</p>
       {% elif f.state.startswith('blocked') %}
         <p>Blocked: <b class="bad">{{ f.state[8:] }}</b>. {{ f.hint or (f.row.note if f.row else '') }}</p>
-        {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/retry"><button>Fix is in place, retry</button></form>{% endif %}
+        {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/retry"><button>{{ 'Re-run after the change' if f.issue and f.issue.outside else 'Fix is in place, retry' }}</button></form>{% endif %}
       {% elif f.state == 'done' %}<p>Done. The deliverables are under <a href="#deliver">Delivery</a>.</p>
       {% elif f.state == 'approved' %}<p><span class="live-dot" style="margin-right:8px"></span>Approved. The runner takes it up on its next tick{% if runner_running %} (one is running now){% endif %}; this page refreshes by itself.</p>
       {% elif stalled %}
@@ -180,7 +180,7 @@
       {% elif f.issue and key == f.issue.stage %}
       <div class="node-act">
         <span class="tiny bad">Failed here: {{ f.issue.reason }}.{% if f.issue.hint %} {{ f.issue.hint }}{% endif %}</span>
-        {% if f.row and not executing %}<form method="post" action="/film/{{ f.slug }}/retry"><button class="sm">Fix is in place, re-run from here</button></form>
+        {% if f.row and not executing %}<form method="post" action="/film/{{ f.slug }}/retry"><button class="sm">{{ 'Re-run after the change' if f.issue.outside else 'Fix is in place, re-run from here' }}</button></form>
         <span class="tiny dim">The runner keeps the finished steps, redoes this one and the rest, and asks at the gates again.</span>{% endif %}
       </div>
       {% elif key == 'publish' and rerun_ok %}
@@ -330,7 +330,8 @@
 <div class="card" id="qa">
   <div class="section-head"><h2>QA</h2>{{ run_badge('qa') }}</div>
   {{ tools_head('qa') }}
-  {% if f.qa_film %}<p>Film check: <span class="badge {{ 'ok' if f.qa_film.ok else 'partial' }}">{{ 'ok' if f.qa_film.ok else 'needs a look' }}</span></p>
+  {% if f.qa_film and f.qa_film.skipped %}<p>Film check: <span class="badge skipped">skipped</span> <span class="small muted">{{ f.qa_film.skipped }}</span></p>
+  {% elif f.qa_film %}<p>Film check: <span class="badge {{ 'ok' if f.qa_film.ok else 'partial' }}">{{ 'ok' if f.qa_film.ok else 'needs a look' }}</span></p>
     <details><summary>Measurements</summary><pre>{{ f.qa_film|tojson(indent=1) }}</pre></details>{% endif %}
   {% if f.qa_md %}<details><summary>Lip-sync review</summary><pre>{{ f.qa_md }}</pre></details>{% endif %}
   {% if f.strips %}<div class="grid g2" style="margin-top:12px">{% for s in f.strips %}<div><img src="{{ s.url }}" style="width:100%;border-radius:10px;border:1px solid var(--line)" loading="lazy" alt=""><div class="mono tiny dim" style="margin-top:4px">{{ s.shot_id }}</div></div>{% endfor %}</div>{% endif %}

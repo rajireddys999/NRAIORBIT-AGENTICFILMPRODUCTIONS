@@ -612,6 +612,8 @@ def test_auto_runs_every_step_but_waits_for_the_cost_and_the_youtube_upload(tmp_
     produce.approve(pipeline, "publish", "approved in the control room\n")
     report = produce.produce(pipeline, log=lambda *_: None)
     assert report["state"] == "done" and uploads == ["private"]
+    # the film check's verdict is kept where the control room's QA card reads it, as `nraiorbit qa film` keeps it
+    assert _json.loads((paths.reports / "qa" / "film.json").read_text()) == {"ok": True}
 
 
 def test_ask_still_stops_at_every_step_and_a_grown_estimate_is_asked_again_under_auto(tmp_path, monkeypatch):
@@ -645,3 +647,19 @@ def test_a_gate_named_like_an_owner_gate_is_never_waved_through_by_auto(tmp_path
     pipeline.run = run
     report = produce.produce(pipeline, log=lambda *_: None)
     assert report["state"] == "awaiting:publish" and not (paths.reviews / "publish.approved").exists()
+
+
+def test_a_skipped_film_check_replaces_the_last_cuts_verdict(tmp_path, monkeypatch):
+    from nraiorbit.qa import film
+    pipeline, paths, uploads, _json = _fake_film(tmp_path, monkeypatch, "auto")
+    (paths.reports / "qa").mkdir(parents=True)
+    (paths.reports / "qa" / "film.json").write_text('{"ok": true}')            # the previous cut's verdict
+
+    def broken(root, log=None):
+        raise ImportError("no mediapipe")
+    monkeypatch.setattr(film, "check", broken)
+    for gate in ("cost", "publish"):
+        produce.approve(pipeline, gate, "approved in the control room\n")
+    produce.produce(pipeline, log=lambda *_: None)
+    kept = _json.loads((paths.reports / "qa" / "film.json").read_text())
+    assert kept["ok"] is None and kept["skipped"].startswith("ImportError")

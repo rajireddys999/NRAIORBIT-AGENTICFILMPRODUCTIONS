@@ -72,11 +72,11 @@ def test_story_overrides_row_sync_reference_minutes_and_library_sync(tmp_path, m
     (projects / "_template" / "pipeline.yaml").write_text("film: {runtime_minutes: 10}\nbudget: {max_usd: 0}\n")
     seen, calls = {}, []
     from nraiorbit.ops import backup
-    monkeypatch.setattr(backup, "sync_library", lambda bucket, direction, log=print: calls.append((bucket, direction)))
+    monkeypatch.setattr(backup, "sync_library", lambda bucket, direction, log=print, **kw: calls.append((bucket, direction)))
     monkeypatch.setattr(backup, "restore_report",
-                        lambda root, bucket, log=print: calls.append(("restore", root.name)) or (0, []))
+                        lambda root, bucket, log=print, **k: calls.append(("restore", root.name)) or (0, []))
     monkeypatch.setattr(backup, "backup",
-                        lambda root, bucket, log=print, mirror_reviews=False: calls.append(("backup", root.name)))
+                        lambda root, bucket, log=print, mirror_reviews=False, **k: calls.append(("backup", root.name)))
 
     def produce_fn(root, bucket):
         seen["cfg"] = yaml.safe_load((root / "pipeline.yaml").read_text())

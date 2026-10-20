@@ -361,6 +361,20 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                 if e["state"] == "running" or (e["state"] == "pending" and not e.get("completed"))]
         return busy[0]["name"] if busy else None
 
+    def start_tick() -> tuple[str, str]:
+        """Start the runner now instead of waiting up to fifteen minutes for the schedule, unless a tick runs (a
+        second would repeat its work). ("started", execution) | ("busy", execution) | ("failed", error type) |
+        ("", "") when no runner is configured. Approve and Retry both use it, so they start ticks the same way."""
+        if not (settings.project and settings.job):
+            return "", ""
+        try:
+            busy = running_execution()
+            if busy:
+                return "busy", busy
+            return "started", runner_mod.run(settings.project, settings.region, settings.job)
+        except Exception as exc:
+            return "failed", type(exc).__name__
+
     # ------------------------------------------------------------------ sign-in
     @app.get("/healthz", response_class=PlainTextResponse)
     def healthz():
@@ -616,24 +630,22 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         edit_row(store, slug, change)
         if refused:
             return back(f"/film/{slug}", refused["msg"])
-        msg = f"{gate} approved; the next tick carries on"
-        if settings.project and settings.job:                 # no fifteen-minute wait: the next step starts now
-            try:
-                busy = running_execution()
-                if busy:
-                    msg = f"{gate} approved; a tick is running ({busy}), the next scheduled one carries on"
-                else:
-                    ex = runner_mod.run(settings.project, settings.region, settings.job)
-                    msg = f"{gate} approved; a tick started ({ex}) and the next step is under way"
-            except Exception as exc:
-                msg = f"{gate} approved; the tick could not be started ({type(exc).__name__}), " \
-                      f"the scheduled one carries on"
+        outcome, name = start_tick()                          # no fifteen-minute wait: the next step starts now
+        msg = {"started": f"{gate} approved; a tick started ({name}) and the next step is under way",
+               "busy": f"{gate} approved; a tick is running ({name}), the next scheduled one carries on",
+               "failed": f"{gate} approved; the tick could not be started ({name}), the scheduled one carries on",
+               }.get(outcome, f"{gate} approved; the next tick carries on")
         return back(f"/film/{slug}", msg)
 
     @app.post("/film/{slug}/retry")
     def retry(slug: str, email: str = Depends(guard)):
         edit_row(store, slug, lambda row: row.update(state="retry", updated=queue.now()))
-        return back(f"/film/{slug}", "set to retry; the next tick runs it again")
+        outcome, name = start_tick()                          # as approve does: no wait for the schedule
+        msg = {"started": f"set to retry; a tick started ({name})",
+               "busy": f"set to retry; a tick is running ({name}); the next one runs it",
+               "failed": f"set to retry; the tick could not be started ({name}), the scheduled one runs it",
+               }.get(outcome, "set to retry; the next tick runs it again")
+        return back(f"/film/{slug}", msg)
 
     @app.post("/film/{slug}/row")
     def save_row(slug: str, email: str = Depends(guard), budget: str = Form(""), gates: str = Form(""),

@@ -40,6 +40,7 @@ llm:
     casting: medium
   critique_rounds: 2
   critique_pass_score: 8
+  concurrency: 2                   # independent Claude calls at once (shot lists per scene). 1 = one at a time, as before. Each call gets the same inputs as in the one-at-a-time order
 
 # Provider per capability. "mock" renders placeholders with ffmpeg (animatic mode).
 # Production values are adapter names registered in src/nraiorbit/providers/.

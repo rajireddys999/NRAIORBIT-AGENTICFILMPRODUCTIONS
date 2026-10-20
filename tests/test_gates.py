@@ -2,6 +2,7 @@
 (cost, faces, publish) leave the same pending marker a pipeline gate does, so an approval from the control room
 or the queue sheet reaches the next run."""
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -73,12 +74,12 @@ def test_a_bucket_that_keeps_spent_markers_does_not_deadlock_the_queue(tmp_path,
     template = projects / "_template"
     template.mkdir(parents=True)
     (template / "pipeline.yaml").write_text("providers: {video: mock}\n", encoding="utf-8")
-    def restore_report(root, b, log=None):                # bucket -> empty disk, nothing ever missing or failing
+    def restore_report(root, b, log=None, **k):                # bucket -> empty disk, nothing ever missing or failing
         if (bucket / root.name).exists():
             shutil.copytree(bucket / root.name, root, dirs_exist_ok=True)
         return 1, []
     monkeypatch.setattr(backup, "restore_report", restore_report)
-    monkeypatch.setattr(backup, "backup", lambda root, b, log=None, mirror_reviews=False:
+    monkeypatch.setattr(backup, "backup", lambda root, b, log=None, mirror_reviews=False, **k:
                         shutil.copytree(root, bucket / root.name, dirs_exist_ok=True))    # a union: nothing deleted
     monkeypatch.setattr(backup, "sync_library", lambda *a, **k: None)
     order = ["story", "outline", "scenes", "cast"]
@@ -216,20 +217,42 @@ class _Obj:
     def __init__(self, text, generation):
         self.text, self.generation = text, generation
 
+    @property
+    def data(self) -> bytes:
+        return self.text if isinstance(self.text, bytes) else self.text.encode("utf-8")
+
+
+def _crc(data: bytes) -> str:
+    import base64
+
+    import google_crc32c
+    return base64.b64encode(google_crc32c.Checksum(data).digest()).decode("ascii")
+
 
 class _FakeBlob:
     def __init__(self, objects, key, generation):
         self._o, self.key, self.generation = objects, key, generation
+        cur = objects.get(key)                        # what a listing or a look-up reports about the object
+        self.name, self.size, self.crc32c = key, len(cur.data) if cur else None, _crc(cur.data) if cur else None
 
     def exists(self):
         return self.key in self._o
 
-    def download_as_text(self):                       # reads through the generation it was looked up with, as GCS does
+    def download_as_text(self, **kw):                 # reads through the generation it was looked up with, as GCS does
         from google.api_core.exceptions import NotFound
         cur = self._o.get(self.key)
         if self.generation and (cur is None or cur.generation != self.generation):
             raise NotFound("that generation is gone")
-        return cur.text
+        if cur is None:
+            raise NotFound(self.key)
+        return cur.data.decode("utf-8")
+
+    def download_to_filename(self, filename, **kw):
+        from google.api_core.exceptions import NotFound
+        cur = self._o.get(self.key)
+        if cur is None:
+            raise NotFound(self.key)
+        Path(filename).write_bytes(cur.data)
 
     def upload_from_string(self, text, content_type=None, if_generation_match=None):
         from google.api_core.exceptions import PreconditionFailed
@@ -238,6 +261,15 @@ class _FakeBlob:
         if if_generation_match is not None and if_generation_match != gen:
             raise PreconditionFailed("stale generation")
         self._o[self.key] = _Obj(text, gen + 1)
+
+    def upload_from_filename(self, filename, content_type=None, **kw):
+        cur = self._o.get(self.key)
+        self._o[self.key] = _Obj(Path(filename).read_bytes(), (cur.generation if cur else 0) + 1)
+
+    def delete(self, **kw):
+        from google.api_core.exceptions import NotFound
+        if self._o.pop(self.key, None) is None:
+            raise NotFound(self.key)
 
 
 class _FakeBucket:
@@ -255,8 +287,8 @@ class _FakeBucket:
         return _FakeBlob(self._o, key, 0)
 
     def list_blobs(self, prefix="", max_results=None):
-        keys = [k for k in self._o if k.startswith(prefix)]
-        return iter(keys[:max_results] if max_results else keys)
+        keys = sorted(k for k in self._o if k.startswith(prefix))
+        return iter([_FakeBlob(self._o, k, self._o[k].generation) for k in (keys[:max_results] if max_results else keys)])
 
 
 class _FakeClient:
@@ -345,7 +377,7 @@ def test_a_failed_restore_stops_the_tick_before_produce_keeps_the_row_and_blocks
     (projects / "_template").mkdir(parents=True)
     (projects / "_template" / "pipeline.yaml").write_text("providers: {video: mock}\n", encoding="utf-8")
     monkeypatch.setattr(backup, "sync_library", lambda *a, **k: None)
-    monkeypatch.setattr(backup, "restore_report", lambda root, b, log=None: (4, ["inbox"]))
+    monkeypatch.setattr(backup, "restore_report", lambda root, b, log=None, **k: (4, ["inbox"]))
     ran, seen = [], {}
     kw = dict(bucket="b", produce_fn=lambda r, b: ran.append(1) or {"state": "done", "steps": {}}, learn_fn=None,
               template=projects / "_template", log=lambda *_: None)
@@ -362,8 +394,8 @@ def test_a_failed_restore_stops_the_tick_before_produce_keeps_the_row_and_blocks
     rows = queue.load(str(st), queue.STORY_COLUMNS)
     rows[0]["state"] = "retry"
     queue.save(str(st), rows, queue.STORY_COLUMNS)
-    monkeypatch.setattr(backup, "restore_report", lambda root, b, log=None: (0, []))
-    monkeypatch.setattr(backup, "backup", lambda root, b, log=None, mirror_reviews=False: seen.update(mirror=mirror_reviews))
+    monkeypatch.setattr(backup, "restore_report", lambda root, b, log=None, **k: (0, []))
+    monkeypatch.setattr(backup, "backup", lambda root, b, log=None, mirror_reviews=False, **k: seen.update(mirror=mirror_reviews))
     queue.tick(str(st), str(rf), projects, **kw)
     assert ran == [1] and seen == {"mirror": True} and queue.load(str(st), queue.STORY_COLUMNS)[0]["state"] == "done"
 
@@ -377,17 +409,20 @@ def test_restore_asks_the_bucket_what_is_there_and_only_a_real_error_is_a_failur
     objects["film/reports/produce.json"] = _Obj("{}", 1)                  # held: a failing copy of it is a failure
     objects["film/inbox/video/a.mp4"] = _Obj("", 1)                       # held and restored fine
     objects["film/project/pipeline.yaml"] = _Obj("x: 1", 1)               # held; pricing.yaml etc. never existed
-    synced = []
+    fetched, real = [], gcs.download_blob
 
-    def rsync(src, dst, delete=False):
-        if "reports" in str(src):
-            raise gcs.BucketError("gcloud storage rsync failed: 503 backend error")
-        synced.append(Path(str(src)).name)
-    monkeypatch.setattr(gcs, "rsync", rsync)
-    monkeypatch.setattr(gcs, "copy", lambda src, dst: synced.append(Path(str(src)).name))
+    def download(blob, local):
+        if "/reports/" in blob.name:
+            raise gcs.BucketError("503 backend error")
+        fetched.append(blob.name)
+        real(blob, local)
+    monkeypatch.setattr(gcs, "download_blob", download)
+    monkeypatch.setattr(gcs, "RUN", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no gcloud with a client")))
     done, failed = backup.restore_report(tmp_path / "film", "bkt", ["reviews", "reports", "inbox", "files"],
                                          log=lambda *_: None)
-    assert failed == ["reports"] and done == 2 and synced == ["inbox", "pipeline.yaml"]   # absent sets never asked for
+    assert failed == ["reports"] and done == 2                                # absent sets never asked for
+    assert fetched == ["film/inbox/video/a.mp4", "film/project/pipeline.yaml"]   # one set at a time, in set order
+    assert (tmp_path / "film" / "pipeline.yaml").read_text() == "x: 1"
     # without a client to ask, only gcloud's own no-match messages mean "nothing there"
     monkeypatch.setattr(gcs, "STORAGE_FACTORY", lambda: (_ for _ in ()).throw(RuntimeError("no credentials here")))
 
@@ -465,7 +500,7 @@ def test_a_failed_restore_on_a_resumed_claim_goes_to_retry_not_back_to_producing
                           "updated": "2026-01-01T00:00:00+00:00"}], queue.STORY_COLUMNS)   # an expired claim
     queue.save(str(rf), [], queue.REFERENCE_COLUMNS)
     monkeypatch.setattr(backup, "sync_library", lambda *a, **k: None)
-    monkeypatch.setattr(backup, "restore_report", lambda root, b, log=None: (0, ["cache"]))
+    monkeypatch.setattr(backup, "restore_report", lambda root, b, log=None, **k: (0, ["cache"]))
     queue.tick(str(st), str(rf), tmp_path / "projects", bucket="b", produce_fn=None, learn_fn=None,
                log=lambda *_: None)
     row = queue.load(str(st), queue.STORY_COLUMNS)[0]

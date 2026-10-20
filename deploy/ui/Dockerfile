@@ -7,6 +7,7 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY config ./config
+COPY projects/_template/pipeline.yaml ./projects/_template/pipeline.yaml
 RUN pip install --no-cache-dir -e ".[google,publish,ui]"
 
 ENV PYTHONUNBUFFERED=1 UI_AUTH=on

@@ -8,8 +8,9 @@ Two spreadsheets in the bucket are the control surface; the owner edits cells, t
 A story row is the film's control surface: its budget_usd, gates and publish are written into the project's
 pipeline.yaml on every tick, so a cap raised in the sheet (or the control room) reaches the run. A file next to the
 story named <story>.overrides.yaml (film.runtime_minutes, voice.cast, ...) is merged into the project when it is made.
-The library (identity packs, reference profiles) is restored from the bucket before a tick and backed up after it,
-so a fresh container never pays for images it already has.
+The library (identity packs, reference profiles) is restored from the bucket before a tick that has work and backed
+up after it, so a fresh container never pays for images it already has; a tick with nothing to do reads the two
+sheets and exits.
 
 Story states: `new` (make the project from the template and start) → `awaiting:<gate>` (the owner reviews, then
 sets `approved`) → `producing` … → `done`, or `blocked:<reason>` (the owner fixes the cause, then sets `retry`).
@@ -31,6 +32,7 @@ import io
 import json
 import os
 import shutil
+import time
 from pathlib import Path
 
 import yaml
@@ -52,9 +54,23 @@ def now() -> str:
 # ------------------------------------------------------------------------------------------------------ csv i/o
 
 def _fetch(uri: str) -> str:
+    """The text at a local path or gs:// URI, '' when there is none or it cannot be read. Through the storage client
+    a read is a tenth of a second; gcloud cp, used where no client can be made or the client's read fails, takes
+    seconds. Only the client's NotFound means "no sheet": any other error (stale Application Default Credentials
+    beside a working gcloud login) read as empty would let add-story save a one-row sheet over everyone's rows."""
     if uri.startswith("gs://"):
         from ..release import gcs
         import tempfile
+        try:
+            storage = gcs.client()
+        except Exception:
+            storage = None
+        if storage is not None:
+            try:
+                text = gcs.read_text(uri, storage)
+                return "" if text is None else text
+            except Exception:
+                pass                                       # gcloud below, with its own login
         with tempfile.TemporaryDirectory() as d:
             local = Path(d) / "q.csv"
             try:
@@ -326,6 +342,23 @@ def _doing(tracker, doing: str, **fields) -> None:
         tracker.start(doing, **fields)
 
 
+def _timing_line(what: str, timings: dict, seconds: float) -> str:
+    """One line per restore or backup, so the time each set takes can be read from the runner's log."""
+    if not timings:
+        return f"  {what}: 0 sets in {seconds:.1f} s"
+    slow = max(timings, key=timings.get)
+    return f"  {what}: {len(timings)} sets in {seconds:.1f} s (slowest {slow} {timings[slow]:.1f} s)"
+
+
+def _backup_project(root: Path, bucket: str, mirror_reviews: bool, log) -> None:
+    """The project to the bucket, with its timing line. `mirror_reviews` only when this tick restored the reviews
+    folder (backup.backup says why)."""
+    from ..ops import backup
+    timings, t0 = {}, time.monotonic()
+    backup.backup(root, bucket, log=lambda *_: None, mirror_reviews=mirror_reviews, timings=timings)
+    log(_timing_line("backup", timings, time.monotonic() - t0))
+
+
 def _takes_progress(fn) -> bool:
     """Whether a produce_fn can hear the film's progress; a two-argument one (the tests' fakes) cannot."""
     try:
@@ -351,16 +384,22 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
 def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, learn_fn, template, fetch_story, log,
           tracker) -> dict:
     summary = {"reference": None, "story": None}
+    # the sheets first: a tick with nothing to do (most of them) never touches the library
+    refs = load(references_uri, REFERENCE_COLUMNS)
+    r, peek = ready_reference(refs), ready_story(load(stories_uri, STORY_COLUMNS))
+    if not r and not peek:
+        _doing(tracker, "idle")                           # nothing to do: said so until the tick exits
+        return summary
+    library_restored = False
     if bucket:                                            # identity packs and reference profiles made by earlier ticks
         from ..ops import backup
         _doing(tracker, "library-restore")
         try:
             backup.sync_library(bucket, "restore", log=lambda *_: None)
+            library_restored = True
         except Exception as exc:
             log(f"  library restore skipped: {type(exc).__name__}: {str(exc)[:120]}")
     # references first: cheap and useful to the next film
-    refs = load(references_uri, REFERENCE_COLUMNS)
-    r = ready_reference(refs)
     if r:
         _doing(tracker, "reference", url=r["url"])
         try:
@@ -371,7 +410,7 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
         write_reference(references_uri, r)
         summary["reference"] = {"url": r["url"], "state": r["state"]}
         log(f"  reference {r['url']}: {r['state']}")
-    # one story step
+    # one story step, from the sheet as it is now: a reference profile takes minutes, and the owner may edit meanwhile
     rows = load(stories_uri, STORY_COLUMNS)
     s = ready_story(rows)
     if s:
@@ -380,14 +419,17 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
         s.update(state="producing", updated=now())        # the claim, before the slow restore: no second tick joins in
         write_story(stories_uri, s)
         _doing(tracker, "story", slug=s["slug"])
-        mirror_reviews, film = False, None
+        mirror_reviews, film, restored = False, None, False
         try:
             if bucket and not (root / "pipeline.yaml").exists():
                 from ..ops import backup
-                _, failed = backup.restore_report(root, bucket, log=lambda *_: None)
+                timings, t0 = {}, time.monotonic()
+                _, failed = backup.restore_report(root, bucket, log=lambda *_: None, timings=timings)
+                log(_timing_line("restore", timings, time.monotonic() - t0))
                 if failed:                                # a half-restored project would pay again or skip a gate
                     raise RestoreFailed(f"the bucket could not be read for {', '.join(sorted(failed))}")
                 mirror_reviews = True                     # this run saw every marker the bucket holds: it may mirror them
+            restored = True                               # or on this disk already: a backup sends nothing half-restored
             if not (root / "pipeline.yaml").exists():
                 story = fetch_story(s["story_uri"]) if s.get("story_uri") else ""
                 if not story.strip():
@@ -410,8 +452,7 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
                      if isinstance(report.get("steps", {}).get("publish"), str) else
                      str(report.get("steps", {}).get("publish", "")), updated=now())
             if bucket:
-                from ..ops import backup
-                backup.backup(root, bucket, log=lambda *_: None, mirror_reviews=mirror_reviews)
+                _backup_project(root, bucket, mirror_reviews, log)
         except RestoreFailed as exc:                      # not the film's fault: the row goes back as it was, with a
             strikes = restore_strikes(s.get("note", "")) + 1       # strike; three in a row and the owner is told
             back_to = "retry" if prior == "producing" else prior   # never a fresh claim nobody is working under
@@ -421,6 +462,11 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
             if film is not None:
                 film.finish("failed")
             s.update(state=f"blocked:{type(exc).__name__}", note=str(exc)[:200], updated=now())
+            if bucket and restored:                       # what the run paid for and saved before it failed (a later
+                try:                                      # scene's shot list, clips) outlives the container
+                    _backup_project(root, bucket, mirror_reviews, log)
+                except Exception as e:                    # the row keeps the run's own error
+                    log(f"  backup after the failure failed: {type(e).__name__}: {str(e)[:120]}")
         write_story(stories_uri, s)
         summary["story"] = {"slug": s["slug"], "state": s["state"]}
         log(f"  story {s['slug']}: {s['state']}")
@@ -429,8 +475,10 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
     if bucket and (summary["reference"] or summary["story"]):
         from ..ops import backup
         _doing(tracker, "library-backup")
+        if not library_restored:                          # the disk holds the image's older copies: sent up, they
+            log("  library backup: new files only (the library restore failed)")   # would replace newer ones
         try:
-            backup.sync_library(bucket, "backup", log=lambda *_: None)
+            backup.sync_library(bucket, "backup", log=lambda *_: None, only_missing=not library_restored)
         except Exception as exc:
             log(f"  library backup failed: {type(exc).__name__}: {str(exc)[:120]}")
     return summary

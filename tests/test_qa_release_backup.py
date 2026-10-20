@@ -92,6 +92,10 @@ def test_deliver_without_upload_writes_the_record(tmp_path):
     assert (root / "11_master" / "deliver" / "delivery.json").exists()
 
 
+def _no_client():
+    raise RuntimeError("no credentials on this machine")
+
+
 def test_backup_pairs_and_commands(tmp_path, monkeypatch):
     root = tmp_path / "godavari10"
     (root / "inbox").mkdir(parents=True)
@@ -108,6 +112,7 @@ def test_backup_pairs_and_commands(tmp_path, monkeypatch):
         stderr = ""
     monkeypatch.setattr(gcs, "RUN", lambda cmd, **kw: calls.append(cmd) or Done())
     monkeypatch.setattr(gcs.shutil, "which", lambda name: "/usr/bin/gcloud")
+    monkeypatch.setattr(gcs, "STORAGE_FACTORY", _no_client)           # no client here: gcloud does the sync
     assert backup.backup(root, "my-media", ["inbox", "files"], log=lambda *_: None) == 2   # the missing files are skipped
     assert calls[0][:4] == ["gcloud", "storage", "rsync", "-r"] and calls[1][:3] == ["gcloud", "storage", "cp"]
 
@@ -129,6 +134,7 @@ def test_library_sync_restores_what_exists_and_skips_what_does_not(monkeypatch, 
                                                         "container at: gs://b/library/references")
         return SimpleNamespace(returncode=0, stderr="")
     monkeypatch.setattr(gcs, "RUN", run)
+    monkeypatch.setattr(gcs, "STORAGE_FACTORY", _no_client)
     monkeypatch.setattr(gcs, "which", lambda *_: "/usr/bin/gcloud", raising=False)
     import shutil
     monkeypatch.setattr(shutil, "which", lambda *_: "/usr/bin/gcloud")

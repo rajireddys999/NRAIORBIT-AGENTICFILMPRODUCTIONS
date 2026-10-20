@@ -12,6 +12,7 @@ import json
 import shutil
 from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable
 
 import numpy as np
@@ -19,6 +20,7 @@ import yaml
 from pydantic import BaseModel
 
 from .agents import CastingAgent, DialogueCritic, Director, MusicDirector, Screenwriter, StoryAnalyst
+from .concurrency import ordered_map, workers
 from .config import REPO_ROOT, load_navarasa, load_pipeline_config
 from .costing import BudgetExceeded, SpendLedger, crowd_voices, load_pricing, load_takes
 from .guards.identity import IdentityGuard, IdentityThresholds
@@ -313,23 +315,41 @@ class Pipeline:
     # ------------------------------------------------------------------ S6 shots
 
     def _shots(self) -> None:
+        """One director call per scene. No call reads another scene's shot list, so they run at the same time
+        (llm.concurrency); inputs are prepared and results cleaned, fitted, saved and logged here in scene order,
+        so the files, reports and log are those of the one-at-a-time run."""
         bible = self._load(self.p.bible, StoryBible)
         outline = self._load(self.p.outline, Outline)
         lock = self._lock()
+        prepared, prep_error = [], None
         for sc in outline.scenes:
-            path = self.p.shots / f"{sc.scene_id}.json"
-            if path.exists():
+            if (self.p.shots / f"{sc.scene_id}.json").exists():
                 continue
-            script = self._load(self.p.scenes / f"{sc.scene_id}.json", SceneScript)
-            tags = [sc.set_piece] if sc.set_piece != "none" else []
-            actions = [f"{h.asset.id}: {h.asset.description}" for h in
-                       self.library.search("action", tags=tags, rasa=sc.rasa_primary, intensity=sc.intensity)]
-            camera = self.navarasa["rasas"][sc.rasa_primary]["camera"]
-            shots = self.director.shots(bible, lock, sc, script, actions, camera)
-            shots = self._clean_shots(shots.model_copy(update={"scene_id": sc.scene_id}), script, lock)
+            try:
+                script = self._load(self.p.scenes / f"{sc.scene_id}.json", SceneScript)
+                tags = [sc.set_piece] if sc.set_piece != "none" else []
+                actions = [f"{h.asset.id}: {h.asset.description}" for h in
+                           self.library.search("action", tags=tags, rasa=sc.rasa_primary, intensity=sc.intensity)]
+                camera = self.navarasa["rasas"][sc.rasa_primary]["camera"]
+            except Exception as e:          # the scenes before it are still planned, as in the sequential loop
+                prep_error = e
+                break
+            prepared.append(SimpleNamespace(sc=sc, script=script, actions=actions, camera=camera))
+        error = None
+        for i, out in ordered_map(lambda p: self.director.shots(bible, lock, p.sc, p.script, p.actions, p.camera),
+                                  prepared, workers(self.cfg), warm_first=True):
+            if out.error is not None:
+                error = error or out.error
+                continue
+            sc, script = prepared[i].sc, prepared[i].script
+            shots = self._clean_shots(out.value.model_copy(update={"scene_id": sc.scene_id}), script, lock)
             shots = self._fit_shots(shots, sc)
-            self._save(path, shots)
+            self._save(self.p.shots / f"{sc.scene_id}.json", shots)
             self.log(f"  {sc.scene_id}: {len(shots.shots)} shots")
+        if error is not None:
+            raise error
+        if prep_error is not None:
+            raise prep_error
 
     def _billable_grid(self) -> bool:
         """shots.billable_grid: shot lengths on the video model's billed clip lengths (Veo 4/6/8 s), so no paid

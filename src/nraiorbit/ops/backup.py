@@ -8,6 +8,8 @@ nothing is generated or paid again.
 
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 
 from ..release import gcs
@@ -34,6 +36,12 @@ DEFAULT_SETS = ["inbox", "cache", "keyframes", "music", "reports", "master", "sc
 LIBRARY_SETS = ("characters", "references")     # library/<set> <-> gs://bucket/library/<set>, shared by every film
 
 
+def sync_workers() -> int:
+    """Transfers at once through the one storage client (NRAIORBIT_SYNC_WORKERS, default 8). Sets move one at a time,
+    each with all of them: a big set (the inbox of paid clips) is most of a restore, and it gets every transfer."""
+    return max(1, int(os.environ.get("NRAIORBIT_SYNC_WORKERS") or 8))
+
+
 def named_pairs(project_root: Path, bucket: str, sets=None) -> list[tuple[str, str, Path, str]]:
     """(set name, kind, local path, gs:// uri) for every set asked for: 'folder' pairs sync, 'file' pairs copy."""
     project_root = Path(project_root)
@@ -55,22 +63,56 @@ def pairs(project_root: Path, bucket: str, sets=None) -> list[tuple[str, Path, s
     return [(kind, local, remote) for _, kind, local, remote in named_pairs(project_root, bucket, sets)]
 
 
-def backup(project_root: Path, bucket: str | None = None, sets=None, log=print, mirror_reviews: bool = False) -> int:
+def backup(project_root: Path, bucket: str | None = None, sets=None, log=print, mirror_reviews: bool = False,
+           timings: dict | None = None) -> int:
     """Folders only ever gain objects in the bucket, so a marker the runner consumed may come back on the next
     restore (it is spent, and nothing acts on it). With `mirror_reviews` the reviews folder is mirrored with deletes
     instead: only a caller that restored that folder in this very run may ask for it, or a failed restore would
-    wipe every approval the bucket holds."""
+    wipe every approval the bucket holds. With a storage client only what changed goes up, one set at a time with
+    sync_workers() transfers each, and a set that fails does not keep the later sets from going up: the first failure
+    is raised at the end. Without one, gcloud does it one set at a time. `timings` gets {set name: seconds}."""
     bucket = bucket or gcs.default_bucket()
+    client = storage_client()
+    if client is None:
+        return _backup_gcloud(project_root, bucket, sets, log, mirror_reviews, timings)
+    workers, done, first = sync_workers(), 0, None
+    for name, kind, local, remote in named_pairs(project_root, bucket, sets):
+        if not local.exists():
+            continue
+        t0 = time.monotonic()
+        log(f"  {local.relative_to(Path(project_root))} -> {remote}")
+        try:
+            if kind == "folder":
+                gcs.sync_up(client, local, remote, workers, delete=mirror_reviews and name == "reviews")
+            else:
+                b, key = remote[5:].split("/", 1)
+                gcs.upload_file(local, client.bucket(b), key)
+            done += 1
+        except Exception as e:
+            if first is None:
+                first = e
+        if timings is not None:
+            timings[name] = timings.get(name, 0.0) + time.monotonic() - t0
+    if first is not None:                           # the first failure in set order
+        raise first if isinstance(first, gcs.BucketError) else gcs.BucketError(
+            f"{type(first).__name__}: {first}"[-800:]) from first
+    return done
+
+
+def _backup_gcloud(project_root, bucket, sets, log, mirror_reviews, timings) -> int:
     done = 0
     for name, kind, local, remote in named_pairs(project_root, bucket, sets):
         if not local.exists():
             continue
+        t0 = time.monotonic()
         log(f"  {local.relative_to(Path(project_root))} -> {remote}")
         if kind == "folder":
             gcs.rsync(local, remote, **({"delete": True} if mirror_reviews and name == "reviews" else {}))
         else:
             gcs.copy(local, remote)
         done += 1
+        if timings is not None:
+            timings[name] = timings.get(name, 0.0) + time.monotonic() - t0
     return done
 
 
@@ -103,34 +145,71 @@ def present(remote: str, kind: str, client=None) -> bool | None:
         return None
 
 
-def restore_report(project_root: Path, bucket: str | None = None, sets=None, log=print) -> tuple[int, list[str]]:
+def restore_report(project_root: Path, bucket: str | None = None, sets=None, log=print,
+                   timings: dict | None = None) -> tuple[int, list[str]]:
     """Restore every set; returns (sets restored, names of sets that FAILED). A set the bucket does not hold is
     skipped, not failed: a project's first run, a plan file this project never had. The runner refuses to produce
-    on a half-restored project: it would pay again for clips it already has, or pass gates nobody looked at."""
+    on a half-restored project: it would pay again for clips it already has, or pass gates nobody looked at. With a
+    storage client, sets come down one at a time with sync_workers() transfers each, and only files that differ by
+    checksum are fetched. `timings` gets {set name: seconds}."""
     bucket = bucket or gcs.default_bucket()
-    done, failed = 0, []
     client = storage_client()                                 # one client for the whole restore
+    if client is None:
+        return _restore_gcloud(project_root, bucket, sets, log, timings)
+    workers, done, failed = sync_workers(), 0, []
     for name, kind, local, remote in named_pairs(project_root, bucket, sets):
-        local.parent.mkdir(parents=True, exist_ok=True)
-        there = present(remote, kind, client)
-        if there is False:
-            log(f"  {remote}: nothing there")
-            continue
-        log(f"  {remote} -> {local.relative_to(Path(project_root))}")
+        t0 = time.monotonic()
         try:
-            if kind == "folder":
-                local.mkdir(parents=True, exist_ok=True)
-                gcs.rsync(remote, local)
-            else:
-                gcs.copy(remote, local)
-            done += 1
-        except gcs.BucketError as e:
-            if there is None and any(s in str(e).lower() for s in NO_MATCH):   # no client to ask: gcloud's words
-                log("    nothing there")
+            local.parent.mkdir(parents=True, exist_ok=True)
+            if present(remote, kind, client) is False:
+                log(f"  {remote}: nothing there")
                 continue
-            log(f"    failed ({str(e).splitlines()[-1][:120]})")
+            log(f"  {remote} -> {local.relative_to(Path(project_root))}")
+            if kind == "folder":                              # with a client, a NotFound here is a failure: present()
+                local.mkdir(parents=True, exist_ok=True)      # did not say the set was absent
+                gcs.sync_down(client, remote, local, workers)
+            else:
+                b, key = remote[5:].split("/", 1)
+                gcs.download_blob(client.bucket(b).blob(key), local)
+            done += 1
+        except Exception as e:
+            log(f"    failed ({(str(e).splitlines() or [type(e).__name__])[-1][:120]})")
             if name not in failed:
                 failed.append(name)
+        finally:
+            if timings is not None:
+                timings[name] = timings.get(name, 0.0) + time.monotonic() - t0
+    return done, failed
+
+
+def _restore_gcloud(project_root, bucket, sets, log, timings) -> tuple[int, list[str]]:
+    done, failed = 0, []
+    for name, kind, local, remote in named_pairs(project_root, bucket, sets):
+        t0 = time.monotonic()
+        local.parent.mkdir(parents=True, exist_ok=True)
+        there = present(remote, kind, None)
+        try:
+            if there is False:
+                log(f"  {remote}: nothing there")
+                continue
+            log(f"  {remote} -> {local.relative_to(Path(project_root))}")
+            try:
+                if kind == "folder":
+                    local.mkdir(parents=True, exist_ok=True)
+                    gcs.rsync(remote, local)
+                else:
+                    gcs.copy(remote, local)
+                done += 1
+            except gcs.BucketError as e:
+                if there is None and any(s in str(e).lower() for s in NO_MATCH):   # no client to ask: gcloud's words
+                    log("    nothing there")
+                    continue
+                log(f"    failed ({str(e).splitlines()[-1][:120]})")
+                if name not in failed:
+                    failed.append(name)
+        finally:
+            if timings is not None:
+                timings[name] = timings.get(name, 0.0) + time.monotonic() - t0
     return done, failed
 
 
@@ -138,29 +217,40 @@ def restore(project_root: Path, bucket: str | None = None, sets=None, log=print)
     return restore_report(project_root, bucket, sets, log)[0]
 
 
-def sync_library(bucket: str, direction: str = "backup", sets=LIBRARY_SETS, log=print) -> int:
+def sync_library(bucket: str, direction: str = "backup", sets=LIBRARY_SETS, log=print, only_missing: bool = False) -> int:
     """The shared library (identity packs under characters/, craft notes under references/) to or from the bucket.
-    A runner with an empty disk restores it before a tick so it never pays again for images it already has."""
+    A runner with an empty disk restores it before a tick so it never pays again for images it already has. With a
+    storage client only files that differ by checksum move (the image already holds most of the library). A backup
+    with `only_missing` sends up only files the bucket lacks and replaces nothing: after a failed restore the disk
+    holds the image's older copies, but a profile learned in that tick is new and paid for."""
     from ..config import REPO_ROOT
     from ..release import gcs
 
+    client = storage_client()
     n = 0
     for name in sets:
         local, remote = REPO_ROOT / "library" / name, f"gs://{bucket}/library/{name}"
         if direction == "backup":
             if not local.exists() or not any(local.rglob("*")):
                 continue
-            gcs.rsync(local, remote)
+            if client is not None:
+                gcs.sync_up(client, local, remote, sync_workers(), only_missing=only_missing)
+            else:
+                gcs.rsync(local, remote, no_clobber=only_missing)
         else:
             local.mkdir(parents=True, exist_ok=True)
-            try:
-                gcs.rsync(remote, local)
-            except gcs.BucketError as exc:                # nothing there yet is not an error
-                text = str(exc).lower()
-                if not any(w in text for w in ("not found", "did not find", "no url", "no such")):
-                    raise
-                continue
+            if client is not None:
+                if present(remote, "folder", client) is False:   # nothing there yet is not an error
+                    continue
+                gcs.sync_down(client, remote, local, sync_workers())
+            else:
+                try:
+                    gcs.rsync(remote, local)
+                except gcs.BucketError as exc:            # nothing there yet is not an error
+                    text = str(exc).lower()
+                    if not any(w in text for w in ("not found", "did not find", "no url", "no such")):
+                        raise
+                    continue
         n += 1
         log(f"  library/{name} {'->' if direction == 'backup' else '<-'} {remote}")
     return n
-

@@ -217,9 +217,15 @@ def test_the_default_storage_calls_one_client_and_a_missing_record_is_fine(monke
     from nraiorbit.release import gcs
     sent, made, kws = [], [], []
 
-    class Blob:
+    class Blob:                                   # an object as the client lists it: name, size, checksum
         def __init__(self, name):
-            self.name = name
+            self.name, self.size, self.crc32c = name, 2, "AAAAAA=="
+
+        def download_to_filename(self, filename, **kw):
+            raise AssertionError("the tracker never downloads a file")
+
+        def upload_from_filename(self, filename, content_type=None, **kw):
+            raise AssertionError("the tracker never uploads a file")
 
         def upload_from_string(self, text, content_type=None, **kw):
             sent.append((self.name, content_type, json.loads(text)["doing"]))
@@ -276,8 +282,8 @@ def fake_bucket(monkeypatch):
     from nraiorbit.ops import backup
     bucket, clock = Bucket(), Clock()
     monkeypatch.setattr(backup, "sync_library", lambda *a, **k: None)
-    monkeypatch.setattr(backup, "restore_report", lambda root, b, log=None: (0, []))
-    monkeypatch.setattr(backup, "backup", lambda root, b, log=None, mirror_reviews=False: 1)
+    monkeypatch.setattr(backup, "restore_report", lambda root, b, log=None, **k: (0, []))
+    monkeypatch.setattr(backup, "backup", lambda root, b, log=None, mirror_reviews=False, **k: 1)
     monkeypatch.setattr(queue, "TRACKER_FACTORY", lambda b, log=print: _tracker(bucket, clock, log))
     return bucket
 
@@ -326,15 +332,23 @@ def test_a_two_argument_produce_fn_gets_no_progress_and_a_failure_is_recorded(tm
     assert fake_bucket.record(FILM)["state"] == "failed" and RUN not in fake_bucket.objects
 
 
-def test_a_tick_that_raises_still_removes_its_running_record(tmp_path, fake_bucket):
-    """A tick that dies on its way (here the stories sheet cannot be read) must not leave its record behind: the
-    board would show it live until Cloud Run ends it, and "left behind" for hours after."""
+def test_a_tick_that_raises_still_removes_its_running_record(tmp_path, fake_bucket, monkeypatch):
+    """A tick that dies on its way (here the references sheet cannot be written) must not leave its record behind:
+    the board would show it live until Cloud Run ends it, and "left behind" for hours after."""
     st, rf, template = _queues(tmp_path)
+
+    def unwritable(uri, row):
+        raise IsADirectoryError(uri)
+    monkeypatch.setattr(queue, "write_reference", unwritable)
     with pytest.raises(IsADirectoryError):
-        queue.tick(str(tmp_path), rf, tmp_path / "projects", bucket="b", produce_fn=None,
+        queue.tick(st, rf, tmp_path / "projects", bucket="b", produce_fn=None,
                    learn_fn=lambda *a: tmp_path / "p.json", template=template, log=lambda *_: None)
     assert "reference" in [c[2] for c in fake_bucket.calls]
     assert RUN not in fake_bucket.objects and fake_bucket.calls[-1] == ("del", RUN, None)
+    with pytest.raises(IsADirectoryError):                                  # dying on the very first read: the same
+        queue.tick(str(tmp_path), rf, tmp_path / "projects", bucket="b", produce_fn=None,
+                   learn_fn=lambda *a: tmp_path / "p.json", template=template, log=lambda *_: None)
+    assert RUN not in fake_bucket.objects
 
 
 def test_a_tick_with_nothing_to_do_says_idle_and_one_without_a_bucket_records_nothing(tmp_path, fake_bucket,
@@ -343,7 +357,7 @@ def test_a_tick_with_nothing_to_do_says_idle_and_one_without_a_bucket_records_no
     queue.save(st, [], queue.STORY_COLUMNS)
     queue.save(rf, [], queue.REFERENCE_COLUMNS)
     queue.tick(st, rf, tmp_path / "projects", bucket="b", produce_fn=None, learn_fn=None, log=lambda *_: None)
-    assert [c[2] for c in fake_bucket.calls if c[0] == "put"] == ["library-restore", "idle"]
+    assert [c[2] for c in fake_bucket.calls if c[0] == "put"] == ["idle"]           # no library work when idle
     assert fake_bucket.calls[-1] == ("del", RUN, None)
 
     def no_tracker(*a, **k):

@@ -207,10 +207,10 @@ def test_approve_retry_and_row_edits_write_only_the_sheet(client, root):
     assert row["budget_usd"] == "75" and row["publish"] == "unlisted" and row["gates"] == "ask"
     assert client.post("/film/demo/row", data={"budget": "-5"}).status_code == 400
     client.post("/film/demo/retry")
-    assert rows(root)[0]["state"] == "retry"
+    assert rows(root)[0]["state"] == "retry" and client.started == ["nraiorbit-runner"] * 2   # retry starts one too
     assert not (root / "demo" / "reviews" / "faces.approved").exists()          # the runner does the file work
     r = client.post("/tick", data={"next": "/film/demo"}, follow_redirects=False)
-    assert r.status_code == 303 and client.started == ["nraiorbit-runner", "nraiorbit-runner"]
+    assert r.status_code == 303 and client.started == ["nraiorbit-runner"] * 3
 
 
 def test_a_cut_from_before_the_shots_is_stale_and_a_film_without_providers_is_an_animatic(client, root):
@@ -229,9 +229,10 @@ def test_a_cut_from_before_the_shots_is_stale_and_a_film_without_providers_is_an
     assert "Animatic" not in html and "2026-10-17 06:00 EDT" in html         # the runner's 10:00 UTC, on the studio's clock
     (proj / "project" / "pipeline.yaml").write_text(yaml.safe_dump({"film": {"runtime_minutes": 3}, "budget": {"max_usd": 40}}))
     html = client.get("/film/demo").text
-    assert "<b>Animatic.</b>" in html and "no first frames: mock video" in html and "nothing to pay: mock providers" in html
+    assert "Renders on mocks: picture, voices, music · lips: none" in html and "names no providers" in html
+    assert "no first frames: mock video" in html and "nothing to pay: mock providers" in html
     assert 'class="badge skipped">skipped' in html and "film (animatic)" in html and 'class="badge stale">' not in html
-    assert 'class="badge held">animatic' in client.get("/").text
+    assert 'class="badge held" title="Renders on mocks' in client.get("/").text
     # a delivered, uploaded film whose QA flagged something or never ran: QA is advisory, nothing after it is stale
     (proj / "project" / "pipeline.yaml").write_text(yaml.safe_dump({"film": {"runtime_minutes": 3}, "budget": {"max_usd": 40},
                                                                      "providers": {"video": "veo", "music": "lyria"}}))
@@ -578,7 +579,8 @@ def test_the_runners_progress_record_marks_the_stage_under_way(client, root, mon
     assert d["gates"] == [] and d["gate_for"] == {}
     monkeypatch.setattr(runner_mod, "executions", lambda *a, **k: [running_exec("nraiorbit-runner-mfkkm")])
     html = client.get("/film/demo").text
-    assert "Running <b>Scenes &amp; dialogue</b> since 02:48 EDT · last: sc010: 3 lines (" in html
+    assert ("Running <b>Scenes &amp; dialogue</b> · Claude Opus 5.5 · Claude Opus 5.5 (critic) · since 02:48 EDT · "
+            "last: sc010: 3 lines (") in html
     assert "execution <span class=\"mono\">nraiorbit-runner-mfkkm</span>" in html
     assert 'class="node executing"' in html and 'class="badge executing live">running</span>' in html
     assert 'Scenes &amp; dialogue<span class="badge executing live"' in card(html, "scenes")
@@ -713,3 +715,131 @@ def test_ago_reads_a_timestamp_as_its_age():
     for bad in ("", None, "yesterday", 17):
         assert films.ago(bad, now) == ""
     assert films.clock("2026-10-19T08:48:10+01:00") == "07:48 UTC" and films.clock("nope") == ""
+
+
+def node(html: str, label: str) -> str:
+    """One pipeline node on the film page, from its link to the end of its list item."""
+    i = html.index(f'title="{label}: details"')
+    return html[i: html.index("</li>", i)]
+
+
+def test_each_stage_names_the_service_or_model_behind_it(client, root):
+    """The film's own config decides: one that names no providers renders on mocks, and the page says so in the
+    render node and the note; one with the template's providers names Veo, the voices, Lyria and sync.so."""
+    from nraiorbit import tools
+    proj = root / "demo"
+    (proj / "project" / "pipeline.yaml").write_text(yaml.safe_dump(
+        {"film": {"runtime_minutes": 3}, "budget": {"max_usd": 30}, "policy": {"gates": "ask", "publish": "private"}}))
+    html = client.get("/film/demo").text
+    render = node(html, "Picture, voices, music, lips")
+    assert 'class="tool mock" title="mock · colour cards (ffmpeg)">picture: mock (no paid call)</span>' in render
+    assert "lips: none" in render and "Veo" not in render
+    assert "Renders on mocks: picture, voices, music · lips: none." in html and "Claude planning is still billed" in html
+    assert 'title="claude-opus-5-5 (story_analyst) · effort high">Claude Opus 5.5</span>' in node(html, "Story bible")
+    assert "not used (video: mock)" in node(html, "First frames")
+    assert "YouTube Data API v3 (private)" in node(html, "YouTube")
+    assert "Tools:" in card(html, "render") and "planned" not in render
+    (proj / "project" / "pipeline.yaml").write_text(yaml.safe_dump(tools.template()))
+    html = client.get("/film/demo").text
+    render = node(html, "Picture, voices, music, lips")
+    assert "Veo 3.1 Fast 720p" in render and "sync.so sync-3" in render and "ElevenLabs eleven_v4" in render
+    assert "Renders on mocks" not in html and "Gemini image gemini-2.5-flash-image" in node(html, "First frames")
+    assert any(f"Picture, voices, music, lips: {s} · Claude Opus 5.5 (cue sheet) · Veo 3.1 Fast 720p" in html
+               for s in ("todo", "partial"))                                              # the compact strip
+    board = client.get("/").text
+    assert "Render: Veo 3.1 Fast 720p · inbox recordings" in board and ">mock</span>" not in board
+
+
+def test_a_config_that_cannot_be_read_still_renders(client, root):
+    """A hand-edited pipeline.yaml that is not YAML, or not a mapping, must not take the page or the board down."""
+    for text in ("providers: [veo\n", "just a line of text\n", "- a\n- list\n"):
+        (root / "demo" / "project" / "pipeline.yaml").write_text(text)
+        r = client.get("/film/demo")
+        assert r.status_code == 200 and "Tools:" in r.text
+        assert client.get("/").status_code == 200
+
+
+def test_a_film_made_by_hand_without_a_config_runs_on_the_defaults(client, root):
+    """`nraiorbit new --bare` makes a project with no pipeline.yaml and no queue row: no tick ever gives it the
+    template, so the page shows the defaults it runs on (mocks), never a plan."""
+    (root / "demo" / "project" / "pipeline.yaml").unlink()
+    (root / "queue" / "stories.csv").write_text(csv_text([], queue.STORY_COLUMNS))
+    html = client.get("/film/demo").text
+    assert "Renders on mocks: picture, voices, music · lips: none" in html and "Tools shown are planned" not in html
+    assert "names no providers" in html and "Add the providers to its pipeline.yaml" in html
+    assert "Queue it again" not in html and 'class="tool planned"' not in html
+    board = client.get("/").text
+    assert "Render: picture: mock (no paid call) · voices: mock (no paid call)" in board and ">planned</span>" not in board
+
+
+def test_used_shows_what_the_reports_say_was_called(client, root):
+    proj = root / "demo"
+    (proj / "reports" / "llm_usage.jsonl").write_text("".join(json.dumps(r) + "\n" for r in [
+        {"agent": "story_analyst", "schema": "StoryBible", "model": "claude-opus-5-5"},
+        {"agent": "director", "schema": "ShotList", "model": "claude-sonnet-4-6"}]))
+    html = client.get("/film/demo").text
+    assert "Used: <span>Claude Opus 5.5 x1</span>" in card(html, "story")
+    assert 'style="color:var(--warn)"' in card(html, "shots") and "Claude Sonnet 4.6 x1" in card(html, "shots")
+    assert "veo x1 ($1.20)" in card(html, "render") and "gemini_image x1 ($0.15)" in card(html, "faces")
+
+
+def test_a_queued_film_without_its_config_shows_the_template_as_planned(client, root):
+    """Before its first tick a film has no project/pipeline.yaml: the page shows what the runner will make of it
+    (the template, the story's overrides, the row), marked planned. The board does the same without the overrides."""
+    (root / "stories").mkdir()
+    (root / "stories" / "rain.md").write_text("Rain on the river.")
+    (root / "stories" / "rain.overrides.yaml").write_text(yaml.safe_dump({"voice": {"inbox_fallback": "mock"}}))
+    rs = rows(root)
+    rs.append({"slug": "rain", "story_uri": str(root / "stories" / "rain.md"), "budget_usd": "20", "gates": "auto",
+               "publish": "none", "state": "new", "note": "", "updated": queue.now()})
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    html = client.get("/film/rain").text
+    assert "planned (the template&#39;s choices; the first tick writes the film&#39;s own config)" in html
+    assert 'class="tool planned"' in html and "Tools shown are planned" in html
+    assert 'class="tag bl"' not in html                       # the hero frame does not shout the planned note
+    render = node(html, "Picture, voices, music, lips")
+    assert "Veo 3.1 Fast 720p" in render and "first frames during render" in render     # the row's gates: auto
+    assert "Voices without an inbox recording fall back to mock." in html                 # the story's overrides
+    assert "YouTube Data API v3" not in node(html, "YouTube")
+    board = client.get("/").text
+    assert ">planned</span>" in board and "Render: <i>Gemini image" in board
+
+
+def test_the_hero_names_the_tools_of_the_phase_under_way(client, root, monkeypatch):
+    from nraiorbit.ui import films
+    producing(root, {**PROGRESS, "phase": "render", "updated": now_iso(10)})
+    monkeypatch.setattr(runner_mod, "executions", lambda *a, **k: [running_exec("nraiorbit-runner-mfkkm")])
+    html = client.get("/film/demo").text
+    assert ("Running <b>Picture, voices, music, lips</b> · Veo 3.1 Fast 720p · voices: mock (no paid call) · "
+            "Lyria 3 lyria-3-pro-preview · lips: none · since 02:48 EDT") in html
+    (root / "demo" / "reports" / "progress.json").write_text(json.dumps({**PROGRESS, "phase": "music_plan"}))
+    assert "Running <b>Picture, voices, music, lips</b> · Claude Opus 5.5 (cue sheet) · since" in \
+        client.get("/film/demo").text
+    (root / "demo" / "reports" / "progress.json").write_text(json.dumps({**PROGRESS, "phase": "trailer"}))
+    assert "Running <b>Film &amp; trailer</b> · Lyria 3 lyria-3-pro-preview · since" in client.get("/film/demo").text
+    for phase in (None, "backup"):                         # no stage: the header only, and no tools line
+        (root / "demo" / "reports" / "progress.json").write_text(json.dumps({**PROGRESS, "phase": phase}))
+        r = client.get("/film/demo")
+        assert r.status_code == 200 and ("Running since 02:48 EDT" in r.text if phase is None
+                                         else "Running <b>backup</b> since 02:48 EDT" in r.text)
+        d = films.detail(Store(str(root)), "demo", rows(root)[0], {"nraiorbit-runner-mfkkm"})
+        assert d["live"] and "tools_line" not in d["live"]
+
+
+def test_retry_starts_a_tick_unless_one_runs(client, root, monkeypatch):
+    from urllib.parse import unquote
+    rs = rows(root)
+    rs[0]["state"] = "blocked: RateLimitError"
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    r = client.post("/film/demo/retry", follow_redirects=False)
+    assert "set to retry; a tick started (nraiorbit-runner-new)" in unquote(r.headers["location"])
+    assert rows(root)[0]["state"] == "retry" and client.started == ["nraiorbit-runner"]
+    monkeypatch.setattr(runner_mod, "executions", lambda *a, **k: [running_exec("nraiorbit-runner-busy")])
+    monkeypatch.setattr(runner_mod, "run", lambda *a: pytest.fail("a second tick was started"))
+    r = client.post("/film/demo/retry", follow_redirects=False)
+    assert "set to retry; a tick is running (nraiorbit-runner-busy); the next one runs it" in \
+        unquote(r.headers["location"])
+    local = TestClient(create_app(Store(str(root)), Settings(allowed_emails={"owner@example.com"}, auth=True)),
+                       headers={IAP: "owner@example.com"})
+    r = local.post("/film/demo/retry", follow_redirects=False)
+    assert "set to retry; the next tick runs it again" in unquote(r.headers["location"])

@@ -1,3 +1,5 @@
+import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -120,3 +122,61 @@ def test_client_names_the_workspace_when_the_key_is_organization_level(monkeypat
     monkeypatch.delenv("ANTHROPIC_WORKSPACE_ID")
     assert "anthropic-workspace-id" not in ClaudeClient().client.default_headers
 
+
+def test_the_warm_start_loses_nothing_with_the_real_sdk(tmp_path, monkeypatch):
+    """On ordered_map's warm thread ClaudeClient reads the first stream event before get_final_message, so the other
+    calls start once the prompt cache is being written. With the real SDK over a mock transport (no network) that
+    answers a 429 first, then a reply streamed once, an event at a time, the reply parses whole and its usage row is
+    complete: the event read early (message_start, which carries the input and cache tokens) is not lost."""
+    anthropic = pytest.importorskip("anthropic")
+    httpx2 = pytest.importorskip("httpx2")
+    from nraiorbit import concurrency
+
+    answer = S.Critique(score=7, issues=["a", "b" * 50], revision_instructions=["c" * 40, "d"])
+    text = answer.model_dump_json()
+    usage = {"input_tokens": 10, "output_tokens": 1, "cache_creation_input_tokens": 5, "cache_read_input_tokens": 0}
+    events = [{"type": "message_start", "message": {"id": "msg_1", "type": "message", "role": "assistant",
+                                                    "content": [], "model": "claude-opus-5-5", "stop_reason": None,
+                                                    "stop_sequence": None, "usage": usage}},
+              {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+              {"type": "ping"},
+              *({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": text[i:i + 7]}}
+                for i in range(0, len(text), 7)),
+              {"type": "content_block_stop", "index": 0},
+              {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+               "usage": {"output_tokens": 42}},
+              {"type": "message_stop"}]
+
+    def body():                                 # a one-shot stream, as from the network: it cannot be read twice
+        for e in events:
+            yield f"event: {e['type']}\ndata: {json.dumps(e)}\n\n".encode()
+    asked, lock = [], threading.Lock()
+
+    def handler(request):
+        with lock:
+            asked.append(json.loads(request.content)["messages"][0]["content"][-1]["text"])
+            first = len(asked) == 1
+        if first:
+            return httpx2.Response(429, headers={"retry-after-ms": "10"},
+                                   json={"type": "error", "error": {"type": "rate_limit_error", "message": "slow down"}})
+        return httpx2.Response(200, content=body(), headers={
+            "content-type": "text/event-stream", "anthropic-ratelimit-output-tokens-limit": "80000",
+            "anthropic-ratelimit-output-tokens-remaining": "70000"})
+
+    marks, mark = [], concurrency.mark_started
+
+    def spy():                                  # who told the waiting calls to start, and whether anyone waited
+        marks.append(concurrency.started_event() is not None)
+        mark()
+    monkeypatch.setattr(concurrency, "mark_started", spy)
+    sdk = anthropic.Anthropic(api_key="test", base_url="http://test.local",
+                              http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+    client = ClaudeClient(client=sdk, usage_log=tmp_path / "usage.jsonl")
+    out = list(concurrency.ordered_map(
+        lambda task: client.generate(schema=S.Critique, system="S", context="C", task=task), ["t0", "t1"], 2))
+    assert [(i, o.error, o.value) for i, o in out] == [(0, None, answer), (1, None, answer)]
+    assert marks == [True]                      # t0 read its first event on the warm thread; t1 had no one waiting
+    assert asked == ["t0", "t0", "t1"]          # the warm call's 429 and its retry; t1 only once t0 was streaming
+    rows = [json.loads(x) for x in (tmp_path / "usage.jsonl").read_text().splitlines()]
+    assert [(r["input_tokens"], r["cache_creation_input_tokens"], r["output_tokens"], r["rl_output_limit"],
+             r["rl_output_remaining"]) for r in rows] == [(10, 5, 42, "80000", "70000")] * 2

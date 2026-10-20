@@ -74,6 +74,11 @@ p { margin:0 0 10px } p:last-child { margin-bottom:0 }
 .badge.live::before { animation:pulse 2s ease-out infinite }
 .badge.executing { background:var(--gold-soft); color:var(--gold) } .badge.executing.live::before { animation:pulse-gold 1.6s ease-out infinite }
 
+/* ---------- tools: the service or model behind a stage ---------- */
+.tools { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; min-width:0 } .tools-head .tools { display:inline-flex; vertical-align:middle; margin-top:0 }
+.tool { display:inline-block; max-width:100%; padding:2px 8px; border-radius:999px; background:var(--chip); border:1px solid var(--line); color:var(--ink); font-size:11px; line-height:1.5; font-weight:600; overflow-wrap:anywhere }
+.tool.free { color:var(--muted) } .tool.mock { color:var(--warn); border-color:rgba(242,181,68,.35) } .tool.planned { opacity:.7; font-style:italic }
+
 /* ---------- controls ---------- */
 button, .btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; height:42px; padding:0 18px; border-radius:12px; border:0;
   background:var(--gold); color:var(--gold-ink); font:inherit; font-weight:800; font-size:14px; cursor:pointer; white-space:nowrap;

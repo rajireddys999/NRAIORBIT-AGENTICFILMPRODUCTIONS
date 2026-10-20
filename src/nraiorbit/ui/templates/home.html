@@ -60,7 +60,8 @@
     <div class="row">
       <span class="badge {{ featured.state.split(':')[0] }} {% if featured.state.split(':')[0] in ['producing','new','approved','retry'] %}live{% endif %}">{{ featured.state }}</span>
       {% if featured.has_film %}<span class="badge done">film</span>{% endif %}{% if featured.has_trailer %}<span class="badge done">trailer</span>{% endif %}
-      {% if featured.animatic %}<span class="badge held">animatic</span>{% endif %}
+      {% if featured.render_note and 'mock' in featured.render_note %}<span class="badge held" title="{{ featured.render_note }}">mock</span>{% endif %}
+      {% if featured.tools_planned %}<span class="badge plain" title="the template's choices; the first tick writes the film's own config">planned</span>{% endif %}
       {% if featured.updated %}<span class="mono dim tiny">updated {{ featured.updated|local }}</span>{% endif %}
     </div>
     <div>
@@ -69,6 +70,7 @@
       {% if featured.logline %}<p class="muted" style="margin-top:10px">{{ featured.logline }}</p>{% endif %}
     </div>
     <div>{{ money_line(featured.money) }}</div>
+    {% if featured.tools_line_render %}<p class="tiny muted"{% if featured.render_note %} title="{{ featured.render_note }}"{% endif %}>Render: {% if featured.tools_planned %}<i>{{ featured.tools_line_render }}</i>{% else %}{{ featured.tools_line_render }}{% endif %}</p>{% endif %}
     {% if featured.note %}<p class="small dim">{{ featured.note|short(160) }}</p>{% endif %}
     <div class="actions" style="margin-top:auto">
       <a class="btn" href="/film/{{ featured.slug }}">Open production desk</a>
@@ -145,8 +147,10 @@
         </div>
         {% if f.logline %}<p class="logline">{{ f.logline }}</p>{% endif %}
         <div>{{ money_line(f.money) }}</div>
+        {% if f.tools_line_render %}<p class="tiny muted"{% if f.render_note %} title="{{ f.render_note }}"{% endif %}>Render: {% if f.tools_planned %}<i>{{ f.tools_line_render }}</i>{% else %}{{ f.tools_line_render }}{% endif %}</p>{% endif %}
         <div class="meta">
-          {% if f.animatic %}<span class="badge held">animatic</span>{% endif %}
+          {% if f.render_note and 'mock' in f.render_note %}<span class="badge held" title="{{ f.render_note }}">mock</span>{% endif %}
+          {% if f.tools_planned %}<span class="badge plain" title="the template's choices; the first tick writes the film's own config">planned</span>{% endif %}
           {% if f.has_film %}<span class="badge done">film</span>{% endif %}{% if f.has_trailer %}<span class="badge done">trailer</span>{% endif %}
           {% if f.updated %}<span>updated {{ f.updated|local }}</span>{% endif %}
           {% if f.hint %}<span class="bad" title="{{ f.note }}">· {{ f.hint }}</span>{% elif f.note %}<span title="{{ f.note }}">· {{ f.note|short(70) }}</span>{% endif %}

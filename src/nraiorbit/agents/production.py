@@ -18,7 +18,11 @@ def _character_query_tags(spec: CharacterSpec) -> list[str]:
 
 
 class CastingAgent(Agent):
-    """Library-first casting. Unmatched characters get an identity-pack brief."""
+    """Library-first casting. Unmatched characters get an identity-pack brief.
+
+    Briefs are written one at a time: none is saved until every one is written, so a brief running beside one that
+    fails would be paid for, thrown away and paid for again on the retry.
+    """
 
     name = "casting"
 

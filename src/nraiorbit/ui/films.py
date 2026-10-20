@@ -12,6 +12,8 @@ from collections import Counter, defaultdict
 
 import yaml
 
+from .. import tools
+from ..service import queue
 from .store import Store
 
 STAGES = [
@@ -29,27 +31,17 @@ PHASES = {"story_bible": "story", "outline": "outline", "scenes": "scenes", "cas
           "faces": "faces", "qa": "qa", "deliver": "deliver", "publish": "publish"}
 RUNNING = {"new", "approved", "retry", "producing"}       # row states in which the runner is, or is about to be, on it
 SETTLED = {"done", "skipped", "held"}                     # statuses that let the next step count
-
-
-def _base_providers() -> dict:
-    """The providers the base config supplies for whatever a project leaves out (all mock, today)."""
-    try:
-        from ..config import load_pipeline_config
-        return dict(load_pipeline_config(None).get("providers") or {})
-    except Exception:
-        return {}
-
-
-BASE_PROVIDERS = _base_providers()
 ADVISORY = {"qa"}                                         # steps that never stop the run: no later step waits on them
+PLANNED = "planned (the template's choices; the first tick writes the film's own config)"
 
 
-def animatic(cfg: dict) -> bool:
-    """A film whose providers are all mock or none runs as an animatic: placeholder picture, silent voices, mock
-    music, nothing paid (the pipeline's own rule, with the base config's defaults for what the project leaves out).
-    A film queued without a template looks exactly like this: its pipeline.yaml names no providers."""
-    prov = {**BASE_PROVIDERS, **(cfg.get("providers") or {})}
-    return all(prov.get(k, "mock") in ("mock", "none") for k in ("keyframe", "video", "tts", "music"))
+def run_config(cfg: dict, row: dict | None, overrides: dict | None = None) -> tuple[dict, bool]:
+    """(the config the runner runs this film on, whether that is only planned). A queued film with no pipeline.yaml
+    yet gets one from the template on its first tick; a film made by hand without one (`nraiorbit new --bare`)
+    runs on the defaults as they are, which is no plan but the fact."""
+    if not cfg and row is None:
+        return tools.resolve(None, use_template=False)[0], False
+    return tools.resolve(cfg, overrides=overrides, row=row)
 
 
 def in_order(stage: dict) -> None:
@@ -145,6 +137,13 @@ def _yaml(store: Store, rel: str):
         return None
 
 
+def _config(store: Store, slug: str) -> dict:
+    """The film's own pipeline.yaml; {} when it is missing, not YAML, or not a mapping (a half-written upload), so the
+    page still renders."""
+    cfg = _yaml(store, f"{slug}/project/pipeline.yaml")
+    return cfg if isinstance(cfg, dict) else {}
+
+
 def _jsonl(store: Store, rel: str) -> list[dict]:
     text = store.read_text(rel) or ""
     out = []
@@ -186,6 +185,7 @@ def money(store: Store, slug: str, cfg: dict, row: dict | None, produce: dict | 
             pass
     est = ((produce or {}).get("steps") or {}).get("estimate") if produce else None
     return {"spent": spent, "cap": cap, "by_provider": sorted(by.items(), key=lambda t: -t[1]), "items": len(costs),
+            "rows": costs,
             "estimate": est if isinstance(est, dict) else None,
             "left": round(float(cap) - spent, 2) if cap else None}
 
@@ -221,14 +221,34 @@ def explain_note(note: str | None) -> str | None:
     return None
 
 
+def story_overrides(store: Store, row: dict | None) -> dict | None:
+    """The story's .overrides.yaml (what the runner merges into a new project), read through the store only when it
+    lives there; None when there is none or it cannot be read."""
+    uri = (row or {}).get("story_uri") or ""
+    if not uri:
+        return None
+    target = queue.overrides_uri(uri)
+    for base in (store.root, store.uri("").rstrip("/")):
+        rel = target[len(base) + 1:] if base and target.startswith(base + "/") else ""
+        if rel and ".." not in rel.split("/"):                   # never a file outside the store
+            try:
+                data = yaml.safe_load(store.read_text(rel) or "")
+            except Exception:
+                return None
+            return data if isinstance(data, dict) else None
+    return None
+
+
 def summary(store: Store, slug: str, row: dict | None) -> dict:
     """The board row: title, state, gates, money. Cheap: a handful of reads."""
-    cfg = _yaml(store, f"{slug}/project/pipeline.yaml") or {}
+    cfg = _config(store, slug)
     bible = _json(store, f"{slug}/project/01_story_bible.json")
     produce = _json(store, f"{slug}/reports/produce.json")
     master = store.list(f"{slug}/11_master/")
     gates = pending_gates(store, slug, produce, row)
     state = (row or {}).get("state") or (produce or {}).get("state") or ("made by hand" if bible else "new")
+    resolved, planned = run_config(cfg, row)                    # no overrides read: the board stays cheap
+    render = tools.phase_tools(tools.stage_tools(resolved, planned)["render"], "render")
     return {
         "slug": slug, "row": row, "title": (bible or {}).get("title_en") or slug, "title_te": (bible or {}).get("title_te"),
         "logline": (bible or {}).get("logline"), "state": state, "gates": gates,
@@ -238,14 +258,14 @@ def summary(store: Store, slug: str, row: dict | None) -> dict:
         "has_trailer": any(n.endswith("/trailer.mp4") for n in master),
         "updated": (row or {}).get("updated") or (produce or {}).get("finished"),
         "note": (row or {}).get("note"), "hint": explain_note((row or {}).get("note")), "produce": produce,
-        "animatic": animatic(cfg),
+        "render_note": tools.render_note(resolved), "tools_line_render": tools.line(render), "tools_planned": planned,
     }
 
 
 def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> dict:
     """Everything the film page shows. `running` is the set of execution names Cloud Run reports as running: the
     runner's progress record counts as live only while its execution is among them."""
-    cfg = _yaml(store, f"{slug}/project/pipeline.yaml") or {}
+    cfg = _config(store, slug)
     bible = _json(store, f"{slug}/project/01_story_bible.json") or {}
     outline = _json(store, f"{slug}/project/02_outline.json") or {}
     cast = _yaml(store, f"{slug}/project/cast.lock.yaml") or {}
@@ -280,6 +300,9 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
     steps = (produce or {}).get("steps") or {}
     cash = money(store, slug, cfg, row, produce)
     state = (row or {}).get("state") or (produce or {}).get("state") or ("made by hand" if bible else "new")
+    # the raw file stays the source for money and policy; the tools are read from what the runner resolves
+    resolved, planned = run_config(cfg, row, None if cfg else story_overrides(store, row))
+    stage_tools = tools.stage_tools(resolved, planned, shots=shots)
 
     with_leads = [sh for sh in shots if sh.get("characters_in_frame")]
     speaking_needed = len(synced)
@@ -302,7 +325,7 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
     framed = sum(1 for sh in with_leads if sh.get("shot_id") in keyframes)
     filmed = sum(1 for sh in shots if sh.get("shot_id") in clips)
     all_filmed = bool(shots) and filmed >= len(shots)
-    mock = animatic(cfg)
+    mock = tools.is_animatic(resolved)
     est = cash["estimate"]
     cost_step = str(steps.get("cost") or "")
     if mock:
@@ -381,6 +404,10 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
             stage[key]["status"] = "awaiting"
             gate_for[key] = g
     in_order(stage)
+    if planned:                                               # nothing of the film's own yet: say whose choices these are
+        for key, _ in STAGES:
+            if stage[key]["status"] == "todo" and not stage[key]["text"]:
+                stage[key]["text"] = PLANNED
     # the step the runner is on (or about to pick up): the first unfinished stage while nothing waits on the owner
     next_stage = None
     if state.split(":")[0] in RUNNING and not gates:
@@ -394,6 +421,8 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         stage[live["stage_key"]] = {"status": "executing", "text": text}
         gate_for.pop(live["stage_key"], None)
         next_stage = live["stage_key"]
+    if live and live.get("stage_key") in stage_tools:          # the tools of the phase under way (music plan, trailer)
+        live["tools_line"] = tools.line(tools.phase_tools(stage_tools[live["stage_key"]], live["phase"]))
 
     def img(rel):
         return store.url(rel)
@@ -461,4 +490,7 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         "hint": explain_note((row or {}).get("note")),
         "policy": cfg.get("policy") or {}, "runtime": (cfg.get("film") or {}).get("runtime_minutes"),
         "story_text": store.read_text(f"{slug}/project/input/story.md") or "",
+        "tools": stage_tools, "tools_line": {k: tools.line(v) for k, v in stage_tools.items()},
+        "tools_planned": planned, "render_note": tools.render_note(resolved),
+        "used": tools.used(_jsonl(store, f"{slug}/reports/llm_usage.jsonl"), cash["rows"], resolved),
     }

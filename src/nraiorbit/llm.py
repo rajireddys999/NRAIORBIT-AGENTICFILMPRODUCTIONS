@@ -10,11 +10,14 @@ schema), adaptive thinking, streaming, prompt caching on the stable prefix
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Protocol, TypeVar
 
 from pydantic import BaseModel
+
+from . import concurrency
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -65,19 +68,23 @@ class ClaudeClient:
         self.model = model
         self.max_tokens = max_tokens
         self.usage_log = usage_log
+        self._lock = threading.Lock()   # shot lists may call from several threads (concurrency.py)
 
     @property
     def client(self):
-        if self._client is None:
-            import os
+        with self._lock:
+            if self._client is None:
+                import os
 
-            import anthropic
+                import anthropic
 
-            # An organization-level key (one not made inside a workspace) must name the workspace on every request;
-            # ANTHROPIC_WORKSPACE_ID (wrkspc_...) does that. A workspace-scoped key needs nothing.
-            workspace = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
-            self._client = anthropic.Anthropic(default_headers={"anthropic-workspace-id": workspace} if workspace else None)
-        return self._client
+                # An organization-level key (one not made inside a workspace) must name the workspace on every
+                # request; ANTHROPIC_WORKSPACE_ID (wrkspc_...) does that. A workspace-scoped key needs nothing.
+                # max_retries=6: concurrent calls meet rate limits more often; the SDK backs off and retries them.
+                workspace = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
+                self._client = anthropic.Anthropic(
+                    default_headers={"anthropic-workspace-id": workspace} if workspace else None, max_retries=6)
+            return self._client
 
     def generate(self, *, schema, system, context, task, effort="high", agent="agent"):
         content: list[dict] = []
@@ -97,9 +104,16 @@ class ClaudeClient:
             betas=[FALLBACK_BETA],
             fallbacks="default",
         ) as stream:
+            if concurrency.started_event() is not None:
+                # the first stream event means the prompt cache this call writes is readable: let the others start
+                next(iter(stream), None)
+                concurrency.mark_started()
             message = stream.get_final_message()
+            headers = getattr(getattr(stream, "response", None), "headers", None) or {}
 
-        self._log_usage(agent, schema.__name__, message, time.time() - started)
+        self._log_usage(agent, schema.__name__, message, time.time() - started,
+                        rl_output_limit=headers.get("anthropic-ratelimit-output-tokens-limit"),
+                        rl_output_remaining=headers.get("anthropic-ratelimit-output-tokens-remaining"))
 
         if message.stop_reason == "refusal":
             details = getattr(message, "stop_details", None)
@@ -111,7 +125,8 @@ class ClaudeClient:
             raise LLMError(f"{agent}: no structured output returned (stop_reason={message.stop_reason})")
         return parsed
 
-    def _log_usage(self, agent: str, schema_name: str, message: Any, seconds: float) -> None:
+    def _log_usage(self, agent: str, schema_name: str, message: Any, seconds: float, *,
+                   rl_output_limit: str | None = None, rl_output_remaining: str | None = None) -> None:
         if self.usage_log is None:
             return
         usage = message.usage
@@ -126,10 +141,14 @@ class ClaudeClient:
             "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", None),
             "seconds": round(seconds, 2),
             "request_id": getattr(message, "_request_id", None),
+            # the output-token rate limit and what was left, so llm.concurrency can be raised on evidence
+            "rl_output_limit": rl_output_limit,
+            "rl_output_remaining": rl_output_remaining,
         }
-        self.usage_log.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.usage_log, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record) + "\n")
+        with self._lock:
+            self.usage_log.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.usage_log, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record) + "\n")
 
 
 Fixture = dict | Callable[[str], dict]
@@ -145,10 +164,12 @@ class ReplayLLM:
     def __init__(self, fixtures: dict[str, Fixture]):
         self.fixtures = fixtures
         self.calls: list[tuple[str, str]] = []
+        self._lock = threading.Lock()
 
     def generate(self, *, schema, system, context, task, effort="high", agent="agent"):
         name = schema.__name__
-        self.calls.append((agent, name))
+        with self._lock:
+            self.calls.append((agent, name))
         if name not in self.fixtures:
             raise LLMError(f"ReplayLLM has no fixture for {name} (agent={agent})")
         fixture = self.fixtures[name]

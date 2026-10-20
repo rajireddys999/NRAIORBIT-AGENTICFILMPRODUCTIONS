@@ -136,3 +136,153 @@ def test_rebalance_on_an_even_step_keeps_the_runtime_and_even_scenes(outline):
     plain = rebalance_outline(outline, 10)
     assert sum(s.target_seconds for s in plain.scenes) == 600
     assert all(abs(a.target_seconds - b.target_seconds) <= 2 for a, b in zip(even.scenes, plain.scenes))
+
+
+def thirteen_scenes(outline, lengths):
+    first = outline.scenes[0]
+    return Outline(scenes=[first.model_copy(update={"scene_id": f"sc{i + 1:03d}", "target_seconds": t})
+                           for i, t in enumerate(lengths)])
+
+
+def test_many_scenes_in_a_short_film_get_a_floor_that_fits_never_a_negative_scene(outline):
+    """13 scenes in a 3-minute film: 13 x 20 s would not fit, so the 20 s floor gave way by pushing one scene to -60 s
+    (its shots one frame each). The floor now fits the runtime and the drift is spread, never below it."""
+    live = thirteen_scenes(outline, [-60] + [20] * 12)                   # the live film's outline, as rebalanced before
+    fixed = rebalance_outline(live, 3, step=2)
+    lengths = [s.target_seconds for s in fixed.scenes]
+    assert sum(lengths) == 180 and min(lengths) >= 12 and all(t % 2 == 0 for t in lengths)
+    planned = rebalance_outline(thirteen_scenes(outline, [10, 25, 15, 30, 12, 18, 20, 22, 16, 14, 26, 40, 20]), 3, step=2)
+    lengths = [s.target_seconds for s in planned.scenes]
+    assert sum(lengths) == 180 and min(lengths) >= 12 and all(t % 2 == 0 for t in lengths)
+    roomy = rebalance_outline(thirteen_scenes(outline, [30] * 13), 10, step=2)   # room for 20 s each: the floor holds
+    assert min(s.target_seconds for s in roomy.scenes) >= 20 and sum(s.target_seconds for s in roomy.scenes) == 600
+
+
+def test_the_director_hears_the_clip_lengths_and_the_shot_budget(outline, bible):
+    from nraiorbit.agents.production import Director, most_shots
+    from nraiorbit.schemas import CastLock, SceneScript
+    seen = []
+
+    class Recorder:
+        def generate(self, *, schema, system, context, task, effort, agent):
+            seen.append(task)
+            return ShotList(scene_id="sc001", shots=[])
+    director = Director(Recorder(), {})
+    sc = outline.scenes[0].model_copy(update={"target_seconds": 20})
+    script = SceneScript(scene_id="sc001", heading="h", synopsis="s", rasa_primary=sc.rasa_primary, intensity=5,
+                         blocks=[])
+    director.shots(bible, CastLock(characters={}), sc, script, [], {})
+    director.shots(bible, CastLock(characters={}), sc, script, [], {}, clip_lengths=[4, 6, 8], issue="too many")
+    assert "at most" not in seen[0]                                       # no grid: the plan as before
+    assert "between 3 and 5 shots, each duration_s one of 4, 6, 8, adding up to 20 s" in seen[1]
+    assert "could not be used: too many" in seen[1]
+    assert most_shots(20, [4, 6, 8]) == 5 and most_shots(-60, [4, 6, 8]) == 1 and most_shots(14, [8]) == 1
+    from nraiorbit.agents.production import least_shots, shots_fit
+    assert least_shots(36, [4, 6, 8]) == 5 and not shots_fit(3, 36, [4, 6, 8]) and shots_fit(5, 36, [4, 6, 8])
+    assert least_shots(14, [8]) == 1                                      # never more than the most
+
+
+def test_a_shot_list_too_long_for_the_clip_grid_is_asked_for_once_more(tmp_path, outline, bible):
+    from types import SimpleNamespace
+
+    from nraiorbit.pipeline import Pipeline, ProjectPaths
+    from nraiorbit.schemas import CastLock, SceneScript
+    paths = ProjectPaths(tmp_path)
+    sc = outline.scenes[0].model_copy(update={"target_seconds": 20})
+    paths.outline.parent.mkdir(parents=True, exist_ok=True)
+    paths.outline.write_text(Outline(scenes=[sc]).model_dump_json(), encoding="utf-8")
+    paths.bible.write_text(bible.model_dump_json(), encoding="utf-8")
+    paths.scenes.mkdir(parents=True)
+    script = SceneScript(scene_id=sc.scene_id, heading="h", synopsis="s", rasa_primary=sc.rasa_primary, intensity=5,
+                         blocks=[])
+    (paths.scenes / f"{sc.scene_id}.json").write_text(script.model_dump_json(), encoding="utf-8")
+    one = ShotList.model_validate({"scene_id": "sc001", "shots": SHOTS["sc001"][:1]}).shots[0]
+    calls = []
+
+    def plan(n):
+        return ShotList(scene_id=sc.scene_id, shots=[one.model_copy(update={"shot_id": f"{sc.scene_id}_s{i:03d}"})
+                                                     for i in range(1, n + 1)])
+
+    def shots(bible, lock, scene, script, actions, camera, clip_lengths=None, issue=""):
+        calls.append((clip_lengths, issue))
+        return plan(9 if not issue else 3)
+    saved = {}
+    p = SimpleNamespace(p=paths, cfg={}, log=lambda *_: None, director=SimpleNamespace(shots=shots),
+                        _load=lambda path, model: model.model_validate_json(path.read_text()),
+                        _lock=lambda: CastLock(characters={}), library=SimpleNamespace(search=lambda *a, **k: []),
+                        navarasa={"rasas": {sc.rasa_primary: {"camera": {}}}}, _grid_lengths=lambda: [4, 6, 8],
+                        _clean_shots=lambda shots, script, lock: shots, _fit_shots=lambda shots, sc: shots,
+                        _save=lambda path, model: saved.update({path.name: model}))
+    Pipeline._shots(p)
+    assert [c[0] for c in calls] == [[4, 6, 8], [4, 6, 8]] and "9 shots" in calls[1][1] and "between 3 and 5" in calls[1][1]
+    assert len(saved[f"{sc.scene_id}.json"].shots) == 3                   # the second plan, which fits the grid
+
+
+def test_a_failed_second_ask_keeps_the_first_plan_and_every_other_scene(tmp_path, outline, bible):
+    """A refusal or an API error on the second ask must not lose the scene, nor the scenes planned beside it: the
+    first plan is fitted as before and the failure is reported."""
+    from types import SimpleNamespace
+
+    from nraiorbit.pipeline import Pipeline, ProjectPaths
+    from nraiorbit.schemas import CastLock, SceneScript
+    paths = ProjectPaths(tmp_path)
+    scenes = [outline.scenes[0].model_copy(update={"scene_id": sid, "target_seconds": 20}) for sid in ("sc001", "sc002")]
+    paths.outline.parent.mkdir(parents=True, exist_ok=True)
+    paths.outline.write_text(Outline(scenes=scenes).model_dump_json(), encoding="utf-8")
+    paths.bible.write_text(bible.model_dump_json(), encoding="utf-8")
+    paths.scenes.mkdir(parents=True)
+    for sc in scenes:
+        script = SceneScript(scene_id=sc.scene_id, heading="h", synopsis="s", rasa_primary=sc.rasa_primary,
+                             intensity=5, blocks=[])
+        (paths.scenes / f"{sc.scene_id}.json").write_text(script.model_dump_json(), encoding="utf-8")
+    one = ShotList.model_validate({"scene_id": "sc001", "shots": SHOTS["sc001"][:1]}).shots[0]
+
+    def shots(bible, lock, scene, script, actions, camera, clip_lengths=None, issue=""):
+        if issue:
+            raise RuntimeError("refused")
+        n = 9 if scene.scene_id == "sc001" else 4                         # sc001 off the grid, sc002 on it
+        return ShotList(scene_id=scene.scene_id, shots=[one.model_copy(update={"shot_id": f"{scene.scene_id}_s{i}"})
+                                                        for i in range(n)])
+    saved, reported = {}, []
+    p = SimpleNamespace(p=paths, cfg={}, log=lambda *_: None, director=SimpleNamespace(shots=shots),
+                        _load=lambda path, model: model.model_validate_json(path.read_text()),
+                        _lock=lambda: CastLock(characters={}), library=SimpleNamespace(search=lambda *a, **k: []),
+                        navarasa={"rasas": {scenes[0].rasa_primary: {"camera": {}}}}, _grid_lengths=lambda: [4, 6, 8],
+                        _clean_shots=lambda shots, script, lock: shots, _fit_shots=lambda shots, sc: shots,
+                        _save=lambda path, model: saved.update({path.name: model}),
+                        _report=lambda name, record: reported.append((name, record)))
+    Pipeline._shots(p)
+    assert len(saved["sc001.json"].shots) == 9 and len(saved["sc002.json"].shots) == 4
+    assert reported and reported[0][1]["scene_id"] == "sc001" and "failed (RuntimeError)" in reported[0][1]["billable_grid"]
+
+
+def test_the_balancer_reaches_an_odd_minimum_and_places_an_odd_second(outline):
+    four = Outline(scenes=[outline.scenes[0].model_copy(update={"scene_id": f"sc{i}", "target_seconds": 15})
+                           for i in range(4)])
+    assert sum(s.target_seconds for s in rebalance_outline(four, 1, min_scene_s=15, step=2).scenes) == 60
+    odd = rebalance_outline(thirteen_scenes(outline, [12] * 13), 181 / 60, step=2)        # 181 s: one odd second
+    assert sum(s.target_seconds for s in odd.scenes) == 181 and min(s.target_seconds for s in odd.scenes) >= 12
+    eights = rebalance_outline(thirteen_scenes(outline, [20] * 13), 4, step=8)            # 1080p: 8 s clips only
+    assert all(s.target_seconds % 8 == 0 for s in eights.scenes) and min(s.target_seconds for s in eights.scenes) >= 8
+
+
+def test_the_outline_steps_by_what_the_clips_can_add_up_to(tmp_path, outline, bible):
+    """A project whose default Veo resolution is 1080p bills 8 s clips only: scene targets come in steps of 8 s
+    (4, 6 and 8 s clips: steps of 2), so every scene can be filled with whole clips."""
+    from types import SimpleNamespace
+
+    from nraiorbit.pipeline import Pipeline, ProjectPaths
+    paths = ProjectPaths(tmp_path)
+    paths.bible.parent.mkdir(parents=True, exist_ok=True)
+    paths.bible.write_text(bible.model_dump_json(), encoding="utf-8")
+    for grid, runtime, step in (([8], 4, 8), ([4, 6, 8], 3, 2)):
+        paths.outline.unlink(missing_ok=True)
+        saved = {}
+        p = SimpleNamespace(p=paths, log=lambda *_: None, _report=lambda *a: None, _grid_lengths=lambda g=grid: g,
+                            _film={"runtime_minutes": runtime, "runtime_tolerance_minutes": 0.5},
+                            _load=lambda path, model: model.model_validate_json(path.read_text()),
+                            screenwriter=SimpleNamespace(outline=lambda *a, **k: outline),
+                            _save=lambda path, model: saved.update(outline=model))
+        Pipeline._outline(p)
+        lengths = [s.target_seconds for s in saved["outline"].scenes]
+        assert sum(lengths) == runtime * 60 and all(t % step == 0 for t in lengths), (grid, lengths)

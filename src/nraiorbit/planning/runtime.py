@@ -90,19 +90,38 @@ def scene_start_times(outline: Outline) -> dict[str, float]:
 
 def rebalance_outline(outline: Outline, runtime_minutes: float, min_scene_s: int = 20, step: int = 1) -> Outline:
     """Scale scene durations so they sum to exactly runtime_minutes. With step 2 every scene lands on an even number
-    of seconds (what shots of 4, 6 and 8 s can add up to); the drift goes to the longest scene."""
+    of seconds (what shots of 4, 6 and 8 s can add up to). No scene is shorter than min_scene_s, lowered when that many
+    scenes at that length would not fit the runtime (13 scenes in 3 minutes get about 13 s each, never a negative
+    one); what rounding leaves over is spread a step at a time over the longest scenes, never below that floor."""
     target = int(round(runtime_minutes * 60))
     current = sum(s.target_seconds for s in outline.scenes)
     if current <= 0:
         raise ValueError("outline has no duration")
     factor = target / current
     step = max(1, int(step))
-    scenes = [s.model_copy(update={"target_seconds": max(min_scene_s, int(round(s.target_seconds * factor / step)) * step)})
-              for s in outline.scenes]
-    drift = target - sum(s.target_seconds for s in scenes)
-    longest = max(range(len(scenes)), key=lambda i: scenes[i].target_seconds)
-    scenes[longest] = scenes[longest].model_copy(update={"target_seconds": scenes[longest].target_seconds + drift})
-    return Outline(scenes=scenes)
+    n = len(outline.scenes)
+    floor = -(-min_scene_s // step) * step                  # on the step, so the steps can reach it
+    if n * floor > target:
+        floor = max(step, target // n // step * step)
+    lengths = [max(floor, int(round(s.target_seconds * factor / step)) * step) for s in outline.scenes]
+    drift = target - sum(lengths)
+    order = sorted(range(n), key=lambda i: -lengths[i])
+    while abs(drift) >= step:
+        moved = False
+        for i in order:
+            if abs(drift) < step:
+                break
+            delta = step if drift > 0 else -step
+            if lengths[i] + delta >= floor:
+                lengths[i] += delta
+                drift -= delta
+                moved = True
+        if not moved:
+            break
+    longest = max(range(n), key=lengths.__getitem__)
+    if drift and lengths[longest] + drift >= floor:        # an odd second on an even step: the longest takes it
+        lengths[longest] += drift
+    return Outline(scenes=[s.model_copy(update={"target_seconds": t}) for s, t in zip(outline.scenes, lengths)])
 
 
 def validate_outline(outline: Outline, runtime_minutes: float, tolerance_minutes: float) -> list[str]:

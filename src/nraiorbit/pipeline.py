@@ -9,6 +9,7 @@ activities (docs/INFRA_COST_ROADMAP.md); the contracts do not change.
 from __future__ import annotations
 
 import json
+import math
 import shutil
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -20,6 +21,7 @@ import yaml
 from pydantic import BaseModel
 
 from .agents import CastingAgent, DialogueCritic, Director, MusicDirector, Screenwriter, StoryAnalyst
+from .agents.production import least_shots, most_shots, shots_fit
 from .concurrency import ordered_map, workers
 from .config import REPO_ROOT, load_navarasa, load_pipeline_config
 from .costing import BudgetExceeded, SpendLedger, crowd_voices, load_pricing, load_takes
@@ -237,7 +239,8 @@ class Pipeline:
                 issues += [f"{sc.scene_id}: unknown character '{c}'" for c in sc.characters if c not in known]
             return issues
 
-        step = 2 if self._billable_grid() else 1          # even scene targets: sums of 4, 6 and 8 s shots
+        grid = self._grid_lengths()                       # scene targets the clips can add up to: even for 4, 6
+        step = math.gcd(*grid) if grid else 1              # and 8 s, a multiple of 8 when 8 s is the only length
         outline = rebalance_outline(self.screenwriter.outline(bible, runtime, guide), runtime, step=step)
         issues = check(outline)
         if issues:
@@ -404,13 +407,35 @@ class Pipeline:
                 break
             prepared.append(SimpleNamespace(sc=sc, script=script, actions=actions, camera=camera))
         error = None
-        for i, out in ordered_map(lambda p: self.director.shots(bible, lock, p.sc, p.script, p.actions, p.camera),
+        lengths = self._grid_lengths()
+        kw = {"clip_lengths": lengths} if lengths else {}
+        plans = {}
+        for i, out in ordered_map(lambda p: self.director.shots(bible, lock, p.sc, p.script, p.actions, p.camera, **kw),
                                   prepared, workers(self.cfg), warm_first=True):
             if out.error is not None:
                 error = error or out.error
                 continue
-            sc, script = prepared[i].sc, prepared[i].script
-            shots = self._clean_shots(out.value.model_copy(update={"scene_id": sc.scene_id}), script, lock)
+            plans[i] = out.value
+        if lengths:                         # plans the clip grid cannot take: asked once more, together; a failed ask
+            off = [i for i, plan in plans.items()                         # keeps the first plan, fitted as before
+                   if not shots_fit(len(plan.shots), prepared[i].sc.target_seconds, lengths)]
+
+            def again(i):
+                p, n = prepared[i], len(plans[i].shots)
+                return self.director.shots(bible, lock, p.sc, p.script, p.actions, p.camera, **kw, issue=(
+                    f"{n} shots, but a {p.sc.target_seconds} s scene takes between "
+                    f"{least_shots(p.sc.target_seconds, lengths)} and {most_shots(p.sc.target_seconds, lengths)} clips "
+                    f"of {min(lengths)} to {max(lengths)} s."))
+            for j, out in ordered_map(again, off, workers(self.cfg)):
+                if out.error is None:
+                    plans[off[j]] = out.value
+                else:
+                    self._report("shot_issues", {"scene_id": prepared[off[j]].sc.scene_id, "billable_grid": (
+                        f"asked again for a plan on the clip grid, which failed ({type(out.error).__name__}); "
+                        "the first plan is fitted")})
+        for i in sorted(plans):
+            sc, script, plan = prepared[i].sc, prepared[i].script, plans[i]
+            shots = self._clean_shots(plan.model_copy(update={"scene_id": sc.scene_id}), script, lock)
             shots = self._fit_shots(shots, sc)
             self._save(self.p.shots / f"{sc.scene_id}.json", shots)
             self.log(f"  {sc.scene_id}: {len(shots.shots)} shots")
@@ -418,6 +443,13 @@ class Pipeline:
             raise error
         if prep_error is not None:
             raise prep_error
+
+    def _grid_lengths(self) -> list[int] | None:
+        """The clip lengths the video model bills, when shots.billable_grid asks for shots on them; else None."""
+        if not self._billable_grid():
+            return None
+        from .costing import veo_durations, veo_settings
+        return veo_durations(self.pricing, veo_settings(self.cfg.get("google", {}))[2])
 
     def _billable_grid(self) -> bool:
         """shots.billable_grid: shot lengths on the video model's billed clip lengths (Veo 4/6/8 s), so no paid

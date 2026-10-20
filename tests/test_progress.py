@@ -326,6 +326,34 @@ def test_a_two_argument_produce_fn_gets_no_progress_and_a_failure_is_recorded(tm
     assert fake_bucket.record(FILM)["state"] == "failed" and RUN not in fake_bucket.objects
 
 
+def test_a_failure_before_produce_overwrites_the_last_runs_record(tmp_path, fake_bucket, monkeypatch):
+    """The film's record exists from the claim on. A tick that fails in its restore or its setup, before produce,
+    leaves a record saying so, never the previous run's last phase: the control room names the step that failed."""
+    from nraiorbit.ops import backup
+    st, rf, template = _queues(tmp_path)
+    fake_bucket.objects[FILM] = json.dumps({"slug": "rain", "execution": "ex0", "state": "blocked", "phase": "trailer",
+                                            "updated": "2026-10-19T20:14:00+00:00"})
+    never = []
+
+    def produce_fn(root, bucket, progress=None):
+        never.append(root)
+    monkeypatch.setattr(backup, "restore_report", lambda root, b, log=None: (0, ["inbox"]))
+    out = queue.tick(st, rf, tmp_path / "projects", bucket="b", produce_fn=produce_fn, learn_fn=None,
+                     template=template, log=lambda *_: None)
+    assert out["story"]["state"] == "new" and not never                        # one strike: the row goes back
+    rec = fake_bucket.record(FILM)
+    assert rec["phase"] == "restore" and rec["state"] == "failed" and rec["execution"] == "ex1"
+    # the restore is fine but the template is gone: the setup fails, and the record says setup, not trailer
+    monkeypatch.setattr(backup, "restore_report", lambda root, b, log=None: (0, []))
+    import shutil
+    shutil.rmtree(template)
+    out = queue.tick(st, rf, tmp_path / "projects", bucket="b", produce_fn=produce_fn, learn_fn=None,
+                     template=template, log=lambda *_: None)
+    assert out["story"]["state"] == "blocked:FileNotFoundError" and not never
+    rec = fake_bucket.record(FILM)
+    assert rec["phase"] == "setup" and rec["state"] == "failed"
+
+
 def test_a_tick_that_raises_still_removes_its_running_record(tmp_path, fake_bucket):
     """A tick that dies on its way (here the stories sheet cannot be read) must not leave its record behind: the
     board would show it live until Cloud Run ends it, and "left behind" for hours after."""

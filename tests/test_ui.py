@@ -18,6 +18,7 @@ fastapi = pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from nraiorbit.ui import app as app_mod  # noqa: E402
+from nraiorbit.ui import films  # noqa: E402
 from nraiorbit.ui import runner as runner_mod  # noqa: E402
 from nraiorbit.ui.app import Settings, create_app  # noqa: E402
 
@@ -206,11 +207,19 @@ def test_approve_retry_and_row_edits_write_only_the_sheet(client, root):
     row = rows(root)[0]
     assert row["budget_usd"] == "75" and row["publish"] == "unlisted" and row["gates"] == "ask"
     assert client.post("/film/demo/row", data={"budget": "-5"}).status_code == 400
-    client.post("/film/demo/retry")
-    assert rows(root)[0]["state"] == "retry"
+    from urllib.parse import unquote
+    r = client.post("/film/demo/retry", follow_redirects=False)                 # approved: a retry would lose it
+    assert "already on it (approved)" in unquote(r.headers["location"]) and rows(root)[0]["state"] == "approved"
+    assert client.started == ["nraiorbit-runner"]
+    rs = rows(root)
+    rs[0].update(state="blocked:FFmpegError", note="ffmpeg failed (254)")
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    r = client.post("/film/demo/retry", follow_redirects=False)                 # blocked: run again, now
+    assert rows(root)[0]["state"] == "retry" and "tick started (nraiorbit-runner-new)" in unquote(r.headers["location"])
+    assert client.started == ["nraiorbit-runner", "nraiorbit-runner"]
     assert not (root / "demo" / "reviews" / "faces.approved").exists()          # the runner does the file work
     r = client.post("/tick", data={"next": "/film/demo"}, follow_redirects=False)
-    assert r.status_code == 303 and client.started == ["nraiorbit-runner", "nraiorbit-runner"]
+    assert r.status_code == 303 and client.started == ["nraiorbit-runner"] * 3
 
 
 def test_a_cut_from_before_the_shots_is_stale_and_a_film_without_providers_is_an_animatic(client, root):
@@ -255,19 +264,106 @@ def test_a_cut_from_before_the_shots_is_stale_and_a_film_without_providers_is_an
     assert 'class="badge partial">partial' in html and 'class="badge stale">' not in html
 
 
-def test_a_run_under_way_offers_no_button_and_a_stale_click_changes_nothing(client, root):
+def test_a_run_under_way_offers_no_button_and_a_stale_click_changes_nothing(client, root, monkeypatch):
     """While a tick renders, the bucket still holds the previous stop's report and marker (awaiting:faces,
     faces.pending). The page must not offer that gate again, the board neither, and a click from a stale page must
-    not turn the runner's claim back into an approval: that would let the next scheduled tick pay for the step twice."""
+    not turn the runner's claim back into an approval: that would let the next scheduled tick pay for the step twice.
+    A re-run is refused too while the run is under way; once nothing runs, the claim is a run that stopped, the
+    page says so, and a re-run is allowed."""
+    from urllib.parse import unquote
     rs = rows(root)
     rs[0].update(state="producing", updated=queue.now())
     (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    monkeypatch.setattr(runner_mod, "executions", lambda *a, **k: [running_exec("nraiorbit-runner-busy")])
     html = client.get("/film/demo").text
     assert 'name="gate"' not in html and "Approve faces" not in html and "The runner is on it" in html
     assert "Approve faces" not in client.get("/").text
     r = client.post("/film/demo/approve", data={"gate": "faces"}, follow_redirects=False)
     assert r.status_code == 303 and "nothing waits" in r.headers["location"].replace("%20", " ")
+    r = client.post("/film/demo/retry", follow_redirects=False)
+    assert "already on it (producing)" in unquote(r.headers["location"])
     assert rows(root)[0]["state"] == "producing" and client.started == []
+    monkeypatch.setattr(runner_mod, "executions", lambda *a, **k: [running_exec("nraiorbit-runner-old", state="ok")])
+    html = client.get("/film/demo").text                                        # the claim is held by no one now
+    assert "The last run stopped without finishing" in html and "Re-run it now" in html
+    assert "The runner is on it" not in html
+    r = client.post("/film/demo/retry", follow_redirects=False)
+    assert rows(root)[0]["state"] == "retry" and client.started == ["nraiorbit-runner"]
+
+
+def test_a_long_render_beyond_the_listing_window_is_never_offered_a_rerun(client, root, monkeypatch):
+    """A render that outlasts six scheduled ticks is the seventh-newest execution or older. "Not among the newest
+    few" must never read as "nothing running": a re-run then would drop the claim and pay for the same render
+    twice. The film's own record names its execution; only an execution the listing shows finished frees the
+    claim, and the listing looks far enough back to find it."""
+    from urllib.parse import unquote
+    rs = rows(root)
+    rs[0].update(state="producing", updated=queue.now())
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    (root / "demo" / "reviews" / "faces.pending").unlink()
+    (root / "demo" / "reports" / "progress.json").write_text(json.dumps(
+        {**PROGRESS, "execution": "nraiorbit-runner-long", "phase": "render", "updated": now_iso(30)}))
+    listed = [running_exec(f"nraiorbit-runner-quick{i}", state="ok") for i in range(6)]   # the quick ticks since
+    limits = []
+
+    def listing(p, r, j, limit=6):
+        limits.append(limit)
+        return listed[:limit]
+    monkeypatch.setattr(runner_mod, "executions", listing)
+    html = client.get("/film/demo").text
+    assert "The runner is on it" in html and "Re-run it now" not in html and "stopped without finishing" not in html
+    r = client.post("/film/demo/retry", follow_redirects=False)
+    assert "already on it (producing)" in unquote(r.headers["location"])
+    assert rows(root)[0]["state"] == "producing" and client.started == []
+    assert limits and min(limits) >= 24                 # six hours of ticks at one every 15 minutes, and then some
+    listed.append(running_exec("nraiorbit-runner-long", state="failed"))   # the listing reaches it: it is over
+    html = client.get("/film/demo").text
+    assert "stopped without finishing" in html and "Re-run it now" in html
+    r = client.post("/film/demo/retry", follow_redirects=False)
+    assert rows(root)[0]["state"] == "retry" and client.started == ["nraiorbit-runner"]
+
+
+def test_no_rerun_over_a_claim_when_cloud_run_cannot_be_asked_or_there_is_no_runner(client, root, monkeypatch):
+    from urllib.parse import unquote
+    rs = rows(root)
+    rs[0].update(state="producing", updated=queue.now())
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+
+    def unreachable(*a, **k):
+        raise PermissionError("no run.viewer role")
+    monkeypatch.setattr(runner_mod, "executions", unreachable)
+    html = client.get("/film/demo").text
+    assert "Re-run it now" not in html and "stopped without finishing" not in html
+    r = client.post("/film/demo/retry", follow_redirects=False)
+    assert "already on it (producing)" in unquote(r.headers["location"]) and client.started == []
+    # a local control room has no runner to ask: a claim is a claim
+    monkeypatch.setattr(runner_mod, "executions", lambda *a, **k: [])
+    local = TestClient(create_app(Store(str(root)), Settings(allowed_emails={"owner@example.com"}, auth=True)),
+                       headers={IAP: "owner@example.com"})
+    assert "Re-run it now" not in local.get("/film/demo").text
+    r = local.post("/film/demo/retry", follow_redirects=False)
+    assert "already on it (producing)" in unquote(r.headers["location"]) and rows(root)[0]["state"] == "producing"
+
+
+def test_a_claim_renewed_while_the_page_decides_is_kept(client, root, monkeypatch):
+    """The narrow race: a crashed run's claim has just expired and the scheduled tick claims the row afresh in the
+    seconds the route spends listing executions. The click must not turn that new claim into a retry."""
+    from urllib.parse import unquote
+    rs = rows(root)
+    rs[0].update(state="producing", updated="2026-10-19T10:00:00+00:00")
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    (root / "demo" / "reviews" / "faces.pending").unlink()
+
+    def listing(*a, **k):                                 # while the page lists executions, a tick claims the row
+        fresh = rows(root)
+        fresh[0].update(state="producing", updated=queue.now())
+        (root / "queue" / "stories.csv").write_text(csv_text(fresh, queue.STORY_COLUMNS))
+        return [running_exec("nraiorbit-runner-old", state="ok")]
+    monkeypatch.setattr(runner_mod, "executions", listing)
+    r = client.post("/film/demo/retry", follow_redirects=False)
+    assert "already on it (producing)" in unquote(r.headers["location"])
+    assert rows(root)[0]["state"] == "producing" and client.started == []
+    assert len(client.get("/").text.split('<tr><td class="mono">')) <= 8   # the board lists a handful, not forty
 
 
 def test_the_pipeline_flow_shows_the_gates_and_the_step_under_way(client, root, monkeypatch):
@@ -713,3 +809,80 @@ def test_ago_reads_a_timestamp_as_its_age():
     for bad in ("", None, "yesterday", 17):
         assert films.ago(bad, now) == ""
     assert films.clock("2026-10-19T08:48:10+01:00") == "07:48 UTC" and films.clock("nope") == ""
+
+
+def flow_node(html: str, key: str) -> str:
+    """One step's node in the pipeline flow: from its anchor to the next node."""
+    start = html.index('<ol class="flow">')                 # past the mini strip, which uses the same anchors
+    i = html.index(f'href="#{"money" if key == "cost" else key}" title=', start)
+    i = html.rindex("<li class=\"node", start, i)
+    j = html.find("<li class=\"node", i + 1)
+    return html[i: j if j != -1 else len(html)]
+
+
+def test_a_blocked_film_names_the_failed_step_on_its_card_and_reruns_from_there(client, root, monkeypatch):
+    from urllib.parse import unquote
+    rs = rows(root)
+    rs[0].update(state="blocked:FFmpegError", note="ffmpeg failed (254): ffmpeg -hide_banner -i 10_edit/film_dialogue.mp4")
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    (root / "demo" / "reviews" / "faces.pending").unlink()
+    # the runner's progress record ended on the trailer: that is the step that failed, whatever the cut looks like
+    (root / "demo" / "reports" / "progress.json").write_text(json.dumps({**PROGRESS, "state": "blocked", "phase": "trailer"}))
+    html = client.get("/film/demo").text
+    node = flow_node(html, "assemble")
+    assert 'class="badge blocked">blocked' in node and "ffmpeg failed (254)" in node
+    assert "Failed here: FFmpegError." in node and "Fix is in place, re-run from here" in node
+    assert "keeps the finished steps, redoes this one and the rest" in node
+    assert "Fix is in place, re-run from here" not in flow_node(html, "render")   # one card carries the failure
+    # without a progress record the first open step is the one named
+    (root / "demo" / "reports" / "progress.json").unlink()
+    html = client.get("/film/demo").text
+    assert "Fix is in place, re-run from here" in flow_node(html, "faces")
+    r = client.post("/film/demo/retry", follow_redirects=False)
+    assert rows(root)[0]["state"] == "retry" and client.started == ["nraiorbit-runner"]
+    assert "the pipeline shows the step under way" in unquote(r.headers["location"])
+    html = client.get("/film/demo").text                                        # queued again: no second re-run button
+    assert "re-run from here" not in html and "Re-run the film" not in html
+
+
+def test_the_youtube_step_offers_a_rerun_once_the_film_is_settled(client, root):
+    rs = rows(root)
+    (root / "demo" / "reviews" / "faces.pending").unlink()
+    (root / "demo" / "11_master").mkdir()
+    (root / "demo" / "11_master" / "movie.mp4").write_bytes(b"film")
+    for state in ("awaiting:publish", "done"):
+        rs[0].update(state=state)
+        (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+        node = flow_node(client.get("/film/demo").text, "publish")
+        assert "Re-run the film" in node and "finished ones are kept, missing or failed ones are redone" in node
+        assert ("Approve YouTube" in node) == (state == "awaiting:publish")
+        assert "View the film" in node
+    rs[0].update(state="producing")                                             # a run under way: never a second one
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    assert "Re-run the film" not in client.get("/film/demo").text
+
+
+def test_an_animatic_says_so_on_the_film_and_youtube_steps(client, root):
+    cfg = yaml.safe_load((root / "demo" / "project" / "pipeline.yaml").read_text())
+    cfg.pop("providers")                                                        # no providers: the mock ones
+    (root / "demo" / "project" / "pipeline.yaml").write_text(yaml.safe_dump(cfg))
+    html = client.get("/film/demo").text
+    assert "animatic: placeholder picture and mock voices; approving uploads it as it is" in flow_node(html, "publish")
+    assert "animatic: placeholder picture and mock voices" in flow_node(html, "assemble")
+    assert "animatic:" not in flow_node(html, "cost")
+    assert films.cost_lines({"video_usd": 1.0}, {}, [], [], [], []) == [{"name": "video", "usd": 1.0, "why": ""}]
+
+
+def test_the_cost_step_carries_the_money_analysis(client, root):
+    html = client.get("/film/demo").text
+    node = flow_node(html, "cost")
+    assert "video <b>$10.00</b>" in node and "lip sync <b>$2.50</b>" in node and "voices" not in node   # only what costs
+    assert "s billed for" in node and "s on screen" in node                     # Veo bills the next clip length up
+    shots = [{"duration_s": 1.7}] * 10                                         # ten short shots: 40 s billed for 17 s
+    scenes = [{"blocks": [{"kind": "dialogue"}, {"kind": "action"}, {"kind": "dialogue"}]}]
+    lines = films.cost_lines({"video_usd": 4.0, "tts_usd": 0.1}, {}, shots, [], scenes, [])
+    assert [line["name"] for line in lines] == ["video", "voices"]
+    assert lines[0]["why"].startswith("10 shots to film · 40 s billed for 17 s on screen") and "trimmed away" in lines[0]["why"]
+    assert lines[1]["why"] == "2 lines"                                        # dialogue only, never the action
+    long = [{"duration_s": 30.0, "characters_in_frame": ["a"]}]                 # as produce prices it: one clip, capped
+    assert "8 s billed for 30 s on screen" in films.cost_lines({"video_usd": 1.0}, {}, long, [], [], [])[0]["why"]

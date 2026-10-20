@@ -612,6 +612,8 @@ def test_auto_runs_every_step_but_waits_for_the_cost_and_the_youtube_upload(tmp_
     produce.approve(pipeline, "publish", "approved in the control room\n")
     report = produce.produce(pipeline, log=lambda *_: None)
     assert report["state"] == "done" and uploads == ["private"]
+    # the film check's verdict is kept where the control room's QA card reads it, as `nraiorbit qa film` keeps it
+    assert _json.loads((paths.reports / "qa" / "film.json").read_text()) == {"ok": True}
 
 
 def test_ask_still_stops_at_every_step_and_a_grown_estimate_is_asked_again_under_auto(tmp_path, monkeypatch):

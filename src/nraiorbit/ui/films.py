@@ -448,8 +448,19 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         rows = qa_lip if isinstance(qa_lip, list) else qa_lip.get("shots") or qa_lip.get("rows") or []
         flagged = sum(1 for r in rows if isinstance(r, dict) and r.get("flags"))
         qa_bits.append(f"lip-sync: {flagged} of {len(rows)} shots flagged")
-    put("qa", ("done" if qa_film is None or qa_film.get("ok") else "partial") if (qa_film is not None or qa_lip) else "todo",
-        "; ".join(qa_bits))
+    qa_status = ("done" if qa_film is None or qa_film.get("ok") else "partial") if (qa_film is not None or qa_lip) \
+        else "todo"
+    if qa_status == "todo":                               # no QA files: the run report still says how QA went (a film
+        said = str(steps.get("qa_film") or "")            # the runner checked before it kept the file, or a skipped QA)
+        if said in ("ok", "look"):
+            qa_status = "done" if said == "ok" else "partial"
+            qa_bits.append("film check " + ("ok" if said == "ok" else "needs a look"))
+            if steps.get("qa_lipsync"):
+                qa_bits.append(f"lip-sync: {steps['qa_lipsync']}")
+        elif str(steps.get("qa") or "").startswith("skipped"):
+            qa_status = "skipped"
+            qa_bits.append(str(steps["qa"])[:120])
+    put("qa", qa_status, "; ".join(qa_bits))
     put("deliver", "done" if delivery else "todo",
         f"{len(delivery)} files" if isinstance(delivery, list) else ("" if not delivery else "delivered"))
     pub = steps.get("publish")

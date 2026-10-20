@@ -211,6 +211,9 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
         from ..qa import film
         fc = film.check(root, log=log)
         report["steps"]["qa_film"] = "ok" if fc.get("ok") else "look"
+        qa_file = pipeline.p.reports / "qa" / "film.json"        # what `nraiorbit qa film` writes: the control room's
+        qa_file.parent.mkdir(parents=True, exist_ok=True)         # QA card reads it, and the reports set backs it up
+        qa_file.write_text(json.dumps(fc, indent=1, default=str), encoding="utf-8")
         if pipeline.cfg.get("providers", {}).get("lipsync", "none") != "none":
             from ..qa import lipsync
             rows = lipsync.review(root, log=log)

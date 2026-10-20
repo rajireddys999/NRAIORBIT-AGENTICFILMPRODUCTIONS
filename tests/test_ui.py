@@ -1011,3 +1011,21 @@ def test_cast_cards_find_the_pictures_of_a_locked_library_character(client, root
     lock_path.write_text(yaml.safe_dump(lock))
     html = client.get("/film/demo").text
     assert html.count("01_front.png") >= 1
+
+
+def test_qa_reads_the_run_report_when_its_files_are_missing(client, root):
+    """A runner film checked before the runner kept reports/qa/film.json: the run report still says how QA went, so
+    QA never shows "todo" between a finished cut and a delivery."""
+    report_path = root / "demo" / "reports" / "produce.json"
+    report = json.loads(report_path.read_text())
+    for steps, status, text in (({"qa_film": "look"}, "partial", "film check needs a look"),
+                                ({"qa_film": "ok", "qa_lipsync": "2 of 9 shots flagged"}, "done",
+                                 "film check ok; lip-sync: 2 of 9 shots flagged"),
+                                ({"qa": "skipped: ImportError: no mediapipe"}, "skipped", "skipped: ImportError"),
+                                ({}, "todo", "")):
+        report["steps"] = {"plan": "done", **steps}
+        report_path.write_text(json.dumps(report))
+        html = client.get("/film/demo").text
+        node = flow_node(html, "qa")
+        assert f'class="badge {status}">{status}' in node, (steps, node[:400])
+        assert text in node

@@ -91,7 +91,9 @@ def test_produce_stops_before_paying_when_the_estimate_passes_the_cap(tmp_path, 
 
 
 @needs_ffmpeg
-def test_produce_holds_publish_until_the_film_check_passes(tmp_path, monkeypatch):
+def test_produce_holds_publish_for_the_owner_and_says_when_the_film_check_failed(tmp_path, monkeypatch):
+    """The YouTube upload waits for the owner under every policy, auto too; a failed film check is said at the gate,
+    and the owner's approval uploads once at the policy's privacy."""
     monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
     from nraiorbit.qa import film
     monkeypatch.setattr(film, "check", lambda root, log=print: {"ok": False, "why": "a 90 ms lag"})
@@ -99,12 +101,11 @@ def test_produce_holds_publish_until_the_film_check_passes(tmp_path, monkeypatch
     monkeypatch.setattr(produce, "publish_youtube", lambda root, privacy: uploads.append(privacy) or {"film": "x"})
     p = _demo_pipeline(tmp_path, policy={"gates": "auto", "publish": "private"})
     report = produce.produce(p, log=lambda *_: None)
-    assert report["state"] == "done" and report["steps"]["qa_film"] == "look"
-    assert report["steps"]["publish"].startswith("held: the film check did not pass") and uploads == []
-    # with a passing check it publishes at the policy's privacy
-    monkeypatch.setattr(film, "check", lambda root, log=print: {"ok": True})
+    assert report["state"] == "awaiting:publish" and report["steps"]["qa_film"] == "look" and uploads == []
+    assert "The film check did not pass: look at QA first." in (p.p.reviews / "publish.pending").read_text()
+    produce.approve(p, "publish", "approved in the control room\n")
     report = produce.produce(p, log=lambda *_: None)
-    assert report["steps"]["publish"] == {"film": "x"} and uploads == ["private"]
+    assert report["state"] == "done" and report["steps"]["publish"] == {"film": "x"} and uploads == ["private"]
 
 
 # ------------------------------------------------------------------------------------- 2. Lyria under --offline

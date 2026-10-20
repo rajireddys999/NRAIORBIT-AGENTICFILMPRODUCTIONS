@@ -79,7 +79,7 @@ textarea.story { min-height:300px; font-size:16px; font-family:var(--te); border
       <div class="grid g2">
         <div>
           <label for="gates">Review gates</label>
-          <select id="gates" name="gates"><option value="ask" {% if form.gates != 'auto' %}selected{% endif %}>ask: stop at story, cast and first frames for my approval</option><option value="auto" {% if form.gates == 'auto' %}selected{% endif %}>auto: approve them as they come</option></select>
+          <select id="gates" name="gates"><option value="ask" {% if form.gates != 'auto' %}selected{% endif %}>ask: every step waits for my approval</option><option value="auto" {% if form.gates == 'auto' %}selected{% endif %}>auto: runs on its own; waits only for the cost and the YouTube upload</option></select>
         </div>
         <div>
           <label for="publish">YouTube</label>
@@ -112,10 +112,11 @@ textarea.story { min-height:300px; font-size:16px; font-family:var(--te); border
           <li><span><span class="d"></span>Scenes &amp; dialogue, cast</span><span class="mono tiny dim">Claude</span></li>
           <li><span><span class="d gate"></span>Cast gate</span><span class="mono tiny cyan" data-gate>waits for you</span></li>
           <li><span><span class="d"></span>Shot lists &amp; first frames</span><span class="mono tiny dim">priced first</span></li>
+          <li><span><span class="d gate"></span>Cost gate</span><span class="mono tiny cyan">always waits for you</span></li>
           <li><span><span class="d gate"></span>First-frames gate</span><span class="mono tiny cyan" data-gate>waits for you</span></li>
           <li><span><span class="d"></span>Picture, voices, music, lips</span><span class="mono tiny dim">under the cap</span></li>
           <li><span><span class="d"></span>Film, trailer, QA, delivery</span><span class="mono tiny dim">bucket</span></li>
-          <li><span><span class="d"></span>YouTube</span><span class="mono tiny dim" id="sl-publish2">private</span></li>
+          <li><span><span class="d gate"></span>YouTube gate · <span id="sl-publish2">private</span></span><span class="mono tiny cyan" id="sl-ytgate">always waits for you</span></li>
         </ol>
       </div>
       <div class="total"><span class="small muted">Hard stop</span><b id="sl-total">$150</b></div>
@@ -143,6 +144,7 @@ textarea.story { min-height:300px; font-size:16px; font-family:var(--te); border
     $('sl-budget').textContent = money(budget.value); $('sl-total').textContent = money(budget.value);
     $('sl-gates').textContent = gates.value; $('sl-publish').textContent = publish.value; $('sl-publish2').textContent = publish.value;
     document.querySelectorAll('[data-gate]').forEach(function (el) { el.textContent = gates.value === 'auto' ? 'auto-approved' : 'waits for you'; });
+    $('sl-ytgate').textContent = publish.value === 'none' ? 'no upload' : 'always waits for you';
     document.querySelectorAll('.chips[data-for=runtime] button').forEach(function (b) { b.classList.toggle('on', b.dataset.v === runtime.value); });
     var words = (story.value.trim().match(/\S+/g) || []).length;
     $('story-count').textContent = words + (words === 1 ? ' word' : ' words') + (story.value.trim().length < 40 && words ? ' · a little more' : '');

@@ -997,3 +997,17 @@ def test_the_cost_step_carries_the_money_analysis(client, root):
     assert lines[1]["why"] == "2 lines"                                        # dialogue only, never the action
     long = [{"duration_s": 30.0, "characters_in_frame": ["a"]}]                 # as produce prices it: one clip, capped
     assert "8 s billed for 30 s on screen" in films.cost_lines({"video_usd": 1.0}, {}, long, [], [], [])[0]["why"]
+
+
+def test_cast_cards_find_the_pictures_of_a_locked_library_character(client, root):
+    """A real cast lock names its library characters as "characters/<id>@v<n>": the card shows that character's
+    pictures, and a character still pending shows none."""
+    lock_path = root / "demo" / "project" / "cast.lock.yaml"
+    lock = yaml.safe_load(lock_path.read_text())
+    first, *rest = list(lock["characters"])
+    lock["characters"][first]["character_asset"] = f"characters/{first}_x@v1"
+    for cid in rest:
+        lock["characters"][cid]["character_asset"] = f"characters/{cid}@pending"
+    lock_path.write_text(yaml.safe_dump(lock))
+    html = client.get("/film/demo").text
+    assert html.count("01_front.png") >= 1

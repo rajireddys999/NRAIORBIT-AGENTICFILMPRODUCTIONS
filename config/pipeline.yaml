@@ -165,6 +165,11 @@ retakes:
   max_per_line: 3
   escalation: [new_seed, stronger_identity, simpler_motion, alt_provider]
 
+cast:
+  build_identity: false            # true: a film that makes first frames or video gets its new characters a library
+                                   # entry and reference pictures (Gemini, a few cents each, under the cap) before the
+                                   # cast gate (the runner's template sets it); false: `nraiorbit identity build`
+
 review_gates:
   story: {enabled: true, auto_approve: false}
   cast: {enabled: true, auto_approve: false}

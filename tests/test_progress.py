@@ -423,6 +423,9 @@ class FakePipeline:
         self.cfg = {"providers": {"video": "mock"}, "policy": {"gates": "auto", "publish": "none"}}
         self.log, self.on_stage = (lambda *_: None), None
 
+    def _voiceless(self):                                # mock speech: every speaker has a voice
+        return []
+
     def run(self, until=None, force=()):
         for stage in STAGES:
             self.log(f"[{stage}]")

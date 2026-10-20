@@ -305,12 +305,80 @@ class Pipeline:
                                    encoding="utf-8")
             for cid, entry in lock.characters.items():
                 self.log(f"  {cid} -> {entry.character_asset} / voice {entry.voice_asset}")
+        prov = self.cfg.get("providers") or {}
+        makes_pictures = any(prov.get(k, "mock") not in ("mock", "none") for k in ("keyframe", "video"))
+        if makes_pictures and (self.cfg.get("cast") or {}).get("build_identity"):
+            self._build_cast()                            # the pictures feed first frames and video, nothing else
         self.gate("cast")
         pending = [cid for cid, e in self._lock().characters.items() if e.character_asset.endswith("@pending")]
         if pending and not self._animatic():
             raise PipelineBlocked(
                 f"characters {pending} need identity packs (briefs in {self.p.briefs}). "
                 "Build the packs, register them in library/, then re-run with --force cast.")
+
+    def _build_cast(self) -> None:
+        """A real film's characters need reference pictures before any video is paid, so faces hold from shot to
+        shot. A character no library character fits gets a library entry of its own from the story bible; every cast
+        character still without pictures gets them (Gemini images, a few cents each, under the cap). The cast gate
+        then shows them. Pictures already there are kept: this costs nothing a second time."""
+        from .identity import build_identity_pack, images_to_make, plan_identity_pack, register_new_characters
+
+        bible = self._load(self.p.bible, StoryBible)
+        lock, self.library, added = register_new_characters(bible, self._lock(), self.library, film=self.p.root.name,
+                                                            log=self.log)
+        if added:
+            self.p.lock.write_text(yaml.safe_dump(lock.model_dump(), sort_keys=False, allow_unicode=True),
+                                   encoding="utf-8")
+        if images_to_make(plan_identity_pack(bible, lock, self.library, log=lambda m: None)):
+            build_identity_pack(bible, lock, self.library, self._identity_images(), log=self.log)
+        missing = [job.spec.id for job in plan_identity_pack(bible, lock, self.library, log=lambda m: None)
+                   if not job.front.exists()]
+        if missing:
+            raise PipelineBlocked(f"characters {missing} have no portrait: the image model refused or failed. "
+                                  "Soften their description in the story bible, then retry.")
+
+    def _voiceless(self) -> list[str]:
+        """Speaking characters ElevenLabs could not voice, checked before the cost gate: speech runs after each
+        scene's clips, so a missing voice would stop the film with video already paid. Counted: dialogue lines some
+        shot carries, that ElevenLabs speaks (directly, or for a line without a hand-made recording in inbox/dialogue;
+        a chant goes to voice.crowd_provider), whose speaker neither voice.cast, the character's library voice nor
+        voice.elevenlabs.default_voice gives a voice."""
+        prov, v = self.cfg.get("providers") or {}, self.cfg.get("voice") or {}
+        if not (prov.get("tts") == "elevenlabs" or (prov.get("tts") == "inbox" and v.get("inbox_fallback") == "elevenlabs")):
+            return []
+        if (v.get("elevenlabs") or {}).get("default_voice"):
+            return []
+        recorded = set()
+        if prov.get("tts") == "inbox":                    # hand-made recordings, in whatever format the inbox reads
+            from .providers.inbox import AUDIO_EXTS
+            from .shotpack import inbox_dir
+            folder = inbox_dir(self.p.root, "dialogue")
+            recorded = {f.stem for f in folder.iterdir() if f.suffix.lower() in AUDIO_EXTS} if folder.is_dir() else set()
+        carried = {b for path in self.p.shots.glob("*.json")
+                   for shot in ShotList.model_validate_json(path.read_text(encoding="utf-8")).shots for b in shot.block_ids}
+        chanted = set()                                   # chants go to voice.crowd_provider, not to ElevenLabs
+        if v.get("crowd_provider") not in (None, "elevenlabs"):
+            chanted = {bid for bid in (v.get("crowd") or {}) if crowd_voices(self.cfg, bid) > 1}
+        cast, lock, missing = v.get("cast") or {}, self._lock(), []
+        for path in sorted(self.p.scenes.glob("*.json")):
+            for b in SceneScript.model_validate_json(path.read_text(encoding="utf-8")).blocks:
+                cid = b.character_id
+                if b.kind != "dialogue" or not cid or cid in missing or cast.get(cid) or b.block_id in recorded \
+                        or b.block_id in chanted or (carried and b.block_id not in carried):
+                    continue
+                ref = getattr(lock.characters.get(cid), "voice_asset", None)
+                try:
+                    named = ref and getattr(self.library.resolve(ref), "elevenlabs_voice", None)
+                except (KeyError, ValueError):
+                    named = None
+                if not named:
+                    missing.append(cid)
+        return missing
+
+    def _identity_images(self):
+        from .providers.google_ai import GeminiImages, google_client
+        g = self.cfg.get("google", {}) or {}
+        return GeminiImages(google_client(g, "image"), g, self.pricing, self.ledger)
 
     # ------------------------------------------------------------------ S6 shots
 

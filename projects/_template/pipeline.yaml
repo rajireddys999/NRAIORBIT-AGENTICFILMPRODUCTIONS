@@ -38,7 +38,11 @@ shots:
 budget:
   max_usd: 0                       # nothing is paid until you set the cap (or pass --max-spend)
 
-review_gates:                      # every step waits for a look in the control room; policy.gates: auto waves them all
+cast:
+  build_identity: true             # new characters get a library entry and reference pictures before the cast gate
+
+review_gates:                      # every step waits for a look in the control room; policy.gates: auto waves
+                                   # them all but cost and publish, which always wait for the owner
   story: {auto_approve: false}
   outline: {auto_approve: false}
   scenes: {auto_approve: false}

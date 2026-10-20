@@ -53,10 +53,16 @@ what it saved. The log carries one timing line per project restore and backup, s
 A queued film is made from the projects folder's `_template` when it has one, else from the image's
 `/app/projects/_template` (the repository's): the runner's projects live on `/work/projects`, which has none.
 
-Before anything is paid, `produce` prices the row's run and blocks without a cap or over it (docs/FRAMEWORK.md §7):
+Before the paid stages (picture, voices, music, lip-sync), `produce` prices the row's run and blocks without a cap or over it (docs/FRAMEWORK.md §7):
 a row needs `budget_usd`. Watch a tick: `gcloud run jobs executions list --job nraiorbit-runner --region us-central1`
 and its logs in Cloud Logging; the per-project report is `reports/produce.json` in the project's backup.
 
-What the owner still decides, by design: approving the story, the cast and the faces when `gates` is `ask`, the cap
-per film, and flipping a YouTube upload from private to public. Reference profiles are craft notes written by Gemini
+The cast step of a runner film builds what the library lacks: a new character gets a library entry written from
+the story bible, and every cast character without reference pictures gets them (Gemini, a few cents each, under
+the row's cap; an animal is photographed as one). The cast gate then shows the faces. A picture the image model
+refuses blocks the row with the character's name.
+
+What the owner still decides, by design: every step when `gates` is `ask`; the cost estimate and the YouTube upload
+under either policy (`auto` approves everything else); the cap per film; and flipping a YouTube upload from private
+to public. Reference profiles are craft notes written by Gemini
 from public links; the runner never downloads or copies footage, voices or music (see `docs/FRAMEWORK.md`).

@@ -319,6 +319,7 @@ class VoiceAsset(AssetBase):
     timbre_tags: list[str] = []
     tts_speaker: str | None = None      # named speaker of the TTS model, for a consistent voice
     gemini_voice: str | None = None     # Gemini TTS prebuilt voice name
+    elevenlabs_voice: str | None = None  # ElevenLabs voice id: the voice of every film that casts this voice
     emotion_refs: dict[str, list[dict]] = {}
 
 

@@ -42,7 +42,7 @@ story.md ──> story_bible ──> outline ──> scenes ──> cast ──>
 |---|---|---|---|
 | Create the project from the template | `nraiorbit new <slug> --story story.md` | | |
 | Plan (bible, outline, scenes, cast, shots, cues) | `nraiorbit run <slug> --until shots` | story, cast (auto-approvable per policy) | Claude only |
-| Faces | `nraiorbit identity build`, `nraiorbit keyframes` | **faces approved before any video is paid** | images |
+| Faces | `nraiorbit identity build` (a runner film's cast step does it itself: `cast.build_identity`), `nraiorbit keyframes` | **faces approved before any video is paid** | images |
 | Voices | `providers.tts: elevenlabs` with `voice.cast` | lines approved | characters on the plan |
 | Picture, music, lip-sync | `nraiorbit run <slug> --yes --max-spend N` | cost preview, cap | Veo, Lyria, sync.so |
 | QA | `nraiorbit qa lipsync <slug>`, `nraiorbit qa film <slug>` | fixes go to `lipsync.shots` | |
@@ -124,8 +124,10 @@ voices. Reference profiles are tagged with their source URL so a profile can be 
 
 ## 6. What stays the owner's decision, by design
 
-Approving faces before video is bought, the voice cast, the budget cap per film, the final line of credits, and
-flipping a YouTube upload from private to public. Everything else is automated, logged and reversible.
+Approving the cost estimate before the paid stages (picture, voices, music, lip-sync) and the YouTube upload (both under every policy; `gates: auto`
+approves every other gate), faces before video is bought when `gates` is `ask`, the voice cast, the budget cap per
+film, the final line of credits, and flipping a YouTube upload from private to public. Everything else is automated,
+logged and reversible.
 
 ## 7. Guard rails on cost (2026-10-17)
 

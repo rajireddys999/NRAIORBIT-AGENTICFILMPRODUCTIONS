@@ -200,12 +200,15 @@ class GeminiImages:
         return out
 
 
-def keyframe_prompt(shot: Shot, base_prompt: str, n_refs_by_char: list[tuple[str, int]]) -> str:
+def keyframe_prompt(shot: Shot, base_prompt: str, n_refs_by_char: list[tuple]) -> str:
+    """(name, number of reference images[, is an animal]) per character in frame, in the order of the images."""
     who = []
     i = 1
-    for name, n in n_refs_by_char:
+    for name, n, *animal in n_refs_by_char:
         span = f"image {i}" if n == 1 else f"images {i}-{i + n - 1}"
-        who.append(f"{name} is the person in reference {span}: keep exactly the same face, skin tone, hair and build")
+        who.append(f"{name} is the animal in reference {span}: keep exactly the same face, fur, markings and build"
+                   if animal and animal[0] else
+                   f"{name} is the person in reference {span}: keep exactly the same face, skin tone, hair and build")
         i += n
     lead = "; ".join(who)
     return (f"Create one photorealistic 16:9 film still, the first frame of this shot. {lead + '. ' if lead else ''}"
@@ -274,7 +277,9 @@ class VeoVideo:
 
     def _keyframe(self, shot: Shot, prompt: str, refs: list[tuple[str, list[Path]]], keyframe: Path) -> Path:
         if not keyframe.exists():
-            self.images.generate(keyframe_prompt(shot, prompt, [(n, len(p)) for n, p in refs]), keyframe,
+            from ..identity import is_animal
+            animals = {c.name_en for c in self.bible.characters if is_animal(c)}
+            self.images.generate(keyframe_prompt(shot, prompt, [(n, len(p), n in animals) for n, p in refs]), keyframe,
                                  refs=[p for _, paths in refs for p in paths], item=f"keyframe {shot.shot_id}")
         return keyframe
 

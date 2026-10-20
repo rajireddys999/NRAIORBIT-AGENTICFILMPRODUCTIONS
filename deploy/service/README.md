@@ -37,8 +37,18 @@ each written whole. `queue/running/<execution>.json` (Cloud Run's `CLOUD_RUN_EXE
 doing (library-restore, reference, story, idle, library-backup), on which film and phase; the tick removes it when
 it exits and deletes any older than seven hours, left by a killed execution. `<slug>/reports/progress.json`, also in
 the project's `reports/` so the backup carries it, is the film's state (running, then done, awaiting, blocked or
-failed), its phase (a pipeline stage, or cost, faces, qa, deliver, publish, backup) and its last log line. A phase
-goes up at once, log lines at most every 15 s, and a failed upload is logged once while the run goes on.
+failed), its phase (a pipeline stage, or restore, setup, cost, faces, qa, deliver, publish, backup) and its last log
+line. A phase goes up at once, log lines at most every 15 s, and a failed upload is logged once while the run goes on.
+
+**Less waiting per tick (2026-10-20).** A tick reads the two sheets first; with nothing to do it exits without
+touching the library. With work, the library and then the project come down through the storage client, set by set.
+Each set runs `NRAIORBIT_SYNC_WORKERS` transfers at once (default 8). A folder moves only the files whose crc32c
+differs, in both directions. A download lands in a temporary file and replaces the local copy only once complete, so
+a failed one never touches the good copy. Where no client can be made, gcloud does the work as before. A sheet the
+client cannot read is read with gcloud, never taken as empty. After a failed library restore, the library backup
+sends up only files the bucket lacks (gcloud's `--no-clobber`). A run that fails after its restore still backs up
+what it saved. The log carries one timing line per project restore and backup, such as
+`restore: <n> sets in <s> s (slowest <set> <s> s)`. Retry in the control room starts a tick, as Approve does.
 
 A queued film is made from the projects folder's `_template` when it has one, else from the image's
 `/app/projects/_template` (the repository's): the runner's projects live on `/work/projects`, which has none.

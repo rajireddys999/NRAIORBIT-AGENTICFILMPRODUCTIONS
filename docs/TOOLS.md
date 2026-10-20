@@ -9,6 +9,10 @@ every few months, so **re-benchmark quarterly** on your own fixed test set: 20 s
 licence and terms before commercial use. Several popular open models have
 **non-commercial weights** even when the code is MIT/Apache. Those are flagged ⚠.
 
+**What a film really uses** is on its page in the control room. Every stage names its
+service or model, read from the film's resolved config, and a capability left on a mock
+says "mock (no paid call)" (docs/FRAMEWORK.md §10). This catalog is the wider menu.
+
 ---
 
 ## 1. Reasoning and language

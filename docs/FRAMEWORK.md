@@ -189,3 +189,70 @@ gates' review marks are backed up with the project; the sheet's cap, gates and p
 project on every tick, so a change in the control room reaches the run; a story may bring
 `<story>.overrides.yaml` (runtime, voice cast); a reference row carries the video's minutes for the cost guard.
 
+## 9. Concurrency and tick overhead (2026-10-20)
+
+Planning a film is mostly Claude calls made one after another, and every tick pays a fixed cost before it works.
+Both were cut without trading away quality or money. Speed-ups that trade either are not built: the owner turned
+them down (docs/PROJECT_STATUS.md, 2026-10-20).
+
+**Shot lists run side by side.** The director writes one shot list per scene, and no call reads another scene's
+shot list. So `llm.concurrency` of them run at once (`config/pipeline.yaml`, default 2; `src/nraiorbit/concurrency.py`).
+The default reaches every film whose own `pipeline.yaml` does not set it. `1` restores the one-at-a-time order.
+
+- Each call gets the same inputs as in the one-at-a-time order.
+- The first call runs alone until its response starts streaming. From then on the prompt cache it wrote can be
+  read, so the cache is written once and the bill stays the same.
+- Results are cleaned, fitted, saved and logged on the main thread, in scene order. The plan files, reports and log
+  are those of the one-at-a-time run; only the rows of `reports/llm_usage.jsonl` may land in another order.
+- After an error no new call starts. Calls already running finish and are saved, then the first error is raised.
+- A Ctrl-C in the CLI waits for the calls already running; the service is unaffected.
+- The Claude client retries up to 6 times with back-off (`max_retries=6`): calls side by side meet rate limits more
+  often.
+- Each row of `reports/llm_usage.jsonl` also carries `rl_output_limit` and `rl_output_remaining`: the output-token
+  rate limit and what was left of it, from the response headers.
+
+**The rest stays one at a time.** Scenes, the dialogue critic and casting briefs run one at a time. Each scene is
+written from the previous scene's synopsis, and the critic reviews it before the next scene starts. No casting brief
+is saved until every one is written, so a brief running beside one that fails would be paid for, thrown away and
+paid for again on the retry.
+
+**Ticks.**
+
+- A tick reads the two sheets first. With nothing to do it exits there: no library restore, no library backup.
+- Restore and backup go through the storage client, set by set. Each set runs `NRAIORBIT_SYNC_WORKERS` transfers at
+  once (default 8).
+- A folder moves only the files whose crc32c differs, never judged by size alone.
+- A download goes to a temporary file beside the target and is renamed over it only once complete. A failed
+  download never touches the good local copy.
+- The queue sheets are read through the client too. A sheet the client cannot read is read with gcloud, never
+  taken as empty.
+- Where no client can be made (no credentials on the machine), gcloud does the restore and backup as before.
+- After a failed library restore, the library backup sends up only the files the bucket lacks (gcloud's
+  `--no-clobber`). The disk then holds the image's older copies, which must not replace newer ones.
+- A run that fails after its restore still backs up what it saved, such as a later scene's shot list or a paid clip.
+- The runner's log has a timing line for every project restore and backup:
+  `restore: <n> sets in <s> s (slowest <set> <s> s)`, and the same for `backup:`.
+- Retry in the control room starts a tick, as Approve does.
+
+## 10. Tools per stage (2026-10-20)
+
+Every stage in the control room names the service or model that does its work: "Claude Opus 5.5" with the agent's
+effort, "Veo 3.1 Fast 720p", "ElevenLabs eleven_v4", "Lyria 3 lyria-3-pro-preview", "sync.so sync-3", ffmpeg,
+"YouTube Data API v3 (private)". `src/nraiorbit/tools.py` reads them from the film's resolved config. It follows the
+pipeline's own rules and defaults but never imports the pipeline, since the control room only reads files.
+
+- A film with its own `pipeline.yaml` is that file merged over `config/pipeline.yaml`, exactly what the runner sees.
+- A queued film has no `pipeline.yaml` before its first tick. Its page shows what that tick will make: the project
+  template, then the story's `.overrides.yaml`, then the row's cap, gates and publish. These tools are marked planned.
+- A film made by hand without a `pipeline.yaml` runs on the defaults, and its page shows them as they are.
+- A capability on a mock is named for what it stands in for: "picture: mock (no paid call)", "voices: mock (no paid
+  call)", "music: mock (no paid call)", "lips: none". One sentence on the page says what renders on mocks, for
+  example "Renders on mocks: picture, voices, music · lips: none. No paid render calls; Claude planning is still
+  billed."
+- `tools.is_animatic` is the pipeline's own rule: keyframe, video, tts and music all mock or none.
+- A "Used:" line under a stage lists what was really called. Claude calls come from `reports/llm_usage.jsonl` (the
+  model that served each call). Paid calls come from `reports/cost.jsonl` with their dollars; a refund nets out. A
+  Claude model other than `llm.model` is a fallback the API served instead, shown in the warning colour.
+- While a tick runs, the "Running" line at the top of the film page names the tools of the phase under way. The
+  board shows each film's render tools, with a mock or planned badge.
+

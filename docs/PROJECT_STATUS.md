@@ -18,6 +18,7 @@ _Last updated: 2026-10-15. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
 | INFRA_COST_ROADMAP.md | Infrastructure, GPU and cost estimates, compliance, roadmap |
 | POC_RUNBOOK.md | Step-by-step 5-minute POC and trailer test, with the bill |
 | GOOGLE_CLOUD_SETUP.md | Google Cloud account, paid billing, project, API key, budget alert, GPU quota |
+| INSTAGRAM.md | One film's Instagram campaign before its YouTube release (design, not built yet) |
 
 ### Pipeline code (src/nraiorbit/)
 
@@ -274,6 +275,28 @@ _Last updated: 2026-10-15. Branch: `claude/telugu-ai-movie-generator-yhb6po` (no
   cut at the pacing gate is a mock render made for free). PR #5 fixed it the same day: `cli.project_template()` falls
   back to the template the image ships and `make_project` refuses to make a film without one; the existing project
   keeps its pipeline.yaml until the owner decides.
+- **Faster planning and ticks, the tools on every stage (2026-10-20):** shot lists for different scenes run two at a
+  time (`llm.concurrency`, default 2; `1` restores the one-at-a-time order). Each call gets the same inputs as one at
+  a time, and the first call runs alone until its response streams, so the prompt cache is written once. Scenes, the
+  dialogue critic and casting briefs stay one at a time. Ticks: an idle tick does no library work; restore and backup
+  go through the storage client set by set, moving only files whose crc32c differs; the runner's log has restore and
+  backup timing lines; Retry starts a tick. The control room names the service or model behind every stage from the
+  film's resolved config ("voices: mock (no paid call)" on a mock, "planned" on a queued film's template choices),
+  with a "Used:" line from the reports (docs/FRAMEWORK.md §9-10).
+  - Measured on monkey-saves-man (all-mock render): the scenes took 1282-1407 s as a chain (writer 835.5 s, critic
+    571.3 s); the shot lists 725.4 s (from the runner log's timestamps: the director's rows are missing from its
+    llm_usage.jsonl); the casting briefs 70.6 s. About 140 s of every story tick is fixed overhead, an idle tick did
+    about 13 s of work, and a Retry waited 533 s for the scheduled tick.
+  - Estimate, not yet timed: the shot lists take about 365-405 s at `llm.concurrency` 2. What the storage client saves
+    on restore and backup is read from the new timing lines on the first tick after a deploy.
+  - monkey-saves-man rendered on mocks because its pipeline.yaml names no providers; its page now says so.
+  - Found on monkey-saves-man (all-mock render), not fixed yet: `rebalance_outline` floors every scene at 20 s. Its
+    15 scenes then add up to 300 s against the film's 180 s, one scene's length goes negative, and the beat check
+    sends the outline back for a revision.
+- **Speed-ups turned down (2026-10-20):** the owner turned down every speed-up that trades quality or money: writing
+  scenes in parallel from the outline (the `llm.scene_chain` setting built for it was removed), fast mode, fewer
+  critique rounds, no dialogue critic, lower effort, a cheaper model, and four Claude calls at once. None of them is
+  used; only the changes above, which keep quality and cost as they were, went in.
 
 ### Verified vs. not verified
 

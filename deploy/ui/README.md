@@ -11,10 +11,18 @@ shot lists, the **cost** (the paid stages' estimate, approved before anything is
 the trailer and the **YouTube upload** (watch the film and the trailer, download the delivery, then approve at the
 visibility the row says). Every stop leaves `reviews/<gate>.pending` in the project; the approve button sets the row
 to `approved`, which the next tick turns into `reviews/<gate>.approved`, and starts that tick at once. `gates: auto`
-waves every gate through.
+waves every gate through. **Retry** sets the row to `retry` and starts a tick at once in the same way. It refuses
+while the runner is on the film, unless that run stopped: Cloud Run lists no execution running or pending, and the
+film's progress record does not belong to a run still under way.
 
 It writes only `queue/stories.csv`, `queue/references.csv` and `stories/<slug>.*`; the runner does every paid step
 under the row's cap. There is no database: the page can never disagree with what the runner sees.
+
+**The tools behind every stage.** Each stage names the service or model that does its work (docs/FRAMEWORK.md §10).
+The page reads `<slug>/project/pipeline.yaml` merged over the image's `config/pipeline.yaml`. A queued film with no
+`pipeline.yaml` yet is shown from `projects/_template/pipeline.yaml` (the Dockerfile copies it into the image), the
+story's `.overrides.yaml` in the bucket and the row; those choices are marked planned. A "Used:" line under each
+stage lists what was really called, from `reports/llm_usage.jsonl` and `reports/cost.jsonl`.
 
 **What is running now.** The runner keeps two small records in the bucket while a tick works, and the page pairs
 each with Cloud Run's own list of running executions, so a record left behind by a crash never reads as live:

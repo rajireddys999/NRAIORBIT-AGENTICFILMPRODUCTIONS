@@ -207,19 +207,27 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
 
     # 4. QA: never stops the run; it writes sheets and a verdict for the owner
     step("qa")
-    try:
+    qa_file, checked = pipeline.p.reports / "qa" / "film.json", False   # what `nraiorbit qa film` writes: the control
+    try:                                                                # room's QA card reads it, newest first
         from ..qa import film
         fc = film.check(root, log=log)
         report["steps"]["qa_film"] = "ok" if fc.get("ok") else "look"
-        qa_file = pipeline.p.reports / "qa" / "film.json"        # what `nraiorbit qa film` writes: the control room's
-        qa_file.parent.mkdir(parents=True, exist_ok=True)         # QA card reads it, and the reports set backs it up
+        qa_file.parent.mkdir(parents=True, exist_ok=True)
         qa_file.write_text(json.dumps(fc, indent=1, default=str), encoding="utf-8")
+        checked = True
         if pipeline.cfg.get("providers", {}).get("lipsync", "none") != "none":
             from ..qa import lipsync
             rows = lipsync.review(root, log=log)
             report["steps"]["qa_lipsync"] = f"{sum(1 for r in rows if r.get('flags'))} of {len(rows)} shots flagged"
     except Exception as exc:                              # missing mediapipe, no speaking shots: QA is advisory
         report["steps"]["qa"] = f"skipped: {type(exc).__name__}: {str(exc)[:100]}"
+        if not checked:                                   # a skipped check replaces the last cut's verdict, never shows it
+            try:
+                qa_file.parent.mkdir(parents=True, exist_ok=True)
+                qa_file.write_text(json.dumps({"ok": None, "skipped": report["steps"]["qa"][len("skipped: "):]}),
+                                   encoding="utf-8")
+            except OSError:
+                pass
 
     # 5. deliverables and links
     step("deliver")

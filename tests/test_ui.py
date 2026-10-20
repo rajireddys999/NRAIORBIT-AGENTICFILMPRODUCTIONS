@@ -1013,19 +1013,68 @@ def test_cast_cards_find_the_pictures_of_a_locked_library_character(client, root
     assert html.count("01_front.png") >= 1
 
 
+def finished_film(root):
+    """The fixture film delivered: every shot filmed, the cut and the delivery there, the row done."""
+    proj = root / "demo"
+    (proj / "reviews" / "faces.pending").unlink(missing_ok=True)
+    (proj / "11_master" / "deliver").mkdir(parents=True, exist_ok=True)
+    (proj / "11_master" / "movie.mp4").write_bytes(b"")
+    (proj / "11_master" / "deliver" / "delivery.json").write_text(json.dumps([{"name": "demo_720p.mp4", "mb": 9.0}]))
+    for sh in (proj / "04_shots").glob("*.json"):
+        for s in json.loads(sh.read_text())["shots"]:
+            (proj / "inbox" / "video" / f"{s['shot_id']}.mp4").write_bytes(b"")
+    rs = rows(root)
+    rs[0]["state"] = "done"
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    return proj
+
+
 def test_qa_reads_the_run_report_when_its_files_are_missing(client, root):
     """A runner film checked before the runner kept reports/qa/film.json: the run report still says how QA went, so
     QA never shows "todo" between a finished cut and a delivery."""
-    report_path = root / "demo" / "reports" / "produce.json"
+    proj = finished_film(root)
+    report_path = proj / "reports" / "produce.json"
     report = json.loads(report_path.read_text())
     for steps, status, text in (({"qa_film": "look"}, "partial", "film check needs a look"),
                                 ({"qa_film": "ok", "qa_lipsync": "2 of 9 shots flagged"}, "done",
                                  "film check ok; lip-sync: 2 of 9 shots flagged"),
                                 ({"qa": "skipped: ImportError: no mediapipe"}, "skipped", "skipped: ImportError"),
                                 ({}, "todo", "")):
-        report["steps"] = {"plan": "done", **steps}
+        report.update(state="done", steps={"plan": "done", "cost": "approved", "faces": "approved", "render": "done",
+                                           "publish": {"film": {"id": "v1"}}, **steps})
         report_path.write_text(json.dumps(report))
-        html = client.get("/film/demo").text
-        node = flow_node(html, "qa")
+        node = flow_node(client.get("/film/demo").text, "qa")
         assert f'class="badge {status}">{status}' in node, (steps, node[:400])
         assert text in node
+
+
+def test_the_cast_and_voices_stops_say_what_to_change(client, root):
+    rs = rows(root)
+    for note, said in (("characters ['chintu'] need identity packs (briefs in /work/projects/x/04_identity_briefs)",
+                        "add cast.build_identity: true to its pipeline.yaml"),
+                       ("voices: no ElevenLabs voice for ['chintu']; add voice.cast", "Add voice.cast.&lt;character&gt;")):
+        rs[0].update(state=f"blocked:{note[:60]}", note=note)
+        (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+        assert said in client.get("/film/demo").text
+        rs[0].update(state=f"blocked:{note}", note="")                 # as the runner writes it: the reason in the state
+        (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+        assert said in client.get("/film/demo").text
+
+
+def test_a_previous_cuts_qa_never_sits_between_open_steps_and_the_latest_run_wins(client, root):
+    """A re-run film keeps the last cut's reports/qa/film.json until its own QA runs: while a step before QA is open
+    again, that verdict is stale; and a latest run whose QA was skipped is not shown as the old cut's "ok"."""
+    (root / "demo" / "reports" / "qa").mkdir(parents=True)
+    (root / "demo" / "reports" / "qa" / "film.json").write_text(json.dumps({"ok": True}))
+    html = client.get("/film/demo").text                     # the fixture waits at faces: QA is from a cut before
+    assert 'class="badge stale">stale' in flow_node(html, "qa")
+    report_path = root / "demo" / "reports" / "produce.json"
+    report = json.loads(report_path.read_text())
+    report["steps"]["qa"] = "skipped: ImportError: no mediapipe"
+    report_path.write_text(json.dumps(report))
+    assert films.detail(Store(str(root)), "demo", rows(root)[0])["stages"]["qa"]["status"] == "stale"
+    # the film delivered again and its newest QA skipped: the runner's skipped file replaces the old "ok"
+    finished_film(root)
+    (root / "demo" / "reports" / "qa" / "film.json").write_text(json.dumps({"ok": None, "skipped": "ImportError: x"}))
+    node = flow_node(client.get("/film/demo").text, "qa")
+    assert 'class="badge skipped">skipped' in node and "film check ok" not in node

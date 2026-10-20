@@ -209,6 +209,13 @@ def pending_gates(store: Store, slug: str, produce: dict | None, row: dict | Non
     return gates
 
 
+def needs_a_setting(note: str | None) -> bool:
+    """A stop nothing in the control room can fix: the film's pipeline.yaml needs a setting (characters to build,
+    voices to name), so a re-run before that change stops at the same place."""
+    text = note or ""
+    return "need identity packs" in text or text.startswith(("voices:", "blocked:voices:")) or "no ElevenLabs voice" in text
+
+
 def explain_note(note: str | None) -> str | None:
     """A plain sentence for the runner's blocked notes that have one fix."""
     text = note or ""
@@ -266,7 +273,8 @@ def blocked_issue(state: str, note: str | None, progress: dict | None, stage: di
     reason = state[len("blocked:"):]
     text = (note or reason).strip()
     return {"stage": key, "label": dict(STAGES)[key], "reason": reason, "note": note or "",
-            "text": text if len(text) <= 160 else text[:157] + "…", "hint": explain_note(note)}
+            "text": text if len(text) <= 160 else text[:157] + "…", "hint": explain_note(note or state),
+            "outside": needs_a_setting(note or state)}
 
 
 def cost_lines(estimate: dict | None, cfg: dict, to_film: list, to_frame: list, scenes: list, cues: list) -> list[dict]:
@@ -455,7 +463,7 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         qa_bits.append(f"skipped: {qa_film['skipped']}"[:120])
     elif qa_film is not None:
         qa_bits.append("film check " + ("ok" if qa_film.get("ok") else "needs a look"))
-    if qa_lip:
+    if qa_lip and not (qa_film is not None and qa_film.get("skipped")):     # a skipped QA: no older lip-sync sheet
         rows = qa_lip if isinstance(qa_lip, list) else qa_lip.get("shots") or qa_lip.get("rows") or []
         flagged = sum(1 for r in rows if isinstance(r, dict) and r.get("flags"))
         qa_bits.append(f"lip-sync: {flagged} of {len(rows)} shots flagged")

@@ -1058,7 +1058,12 @@ def test_the_cast_and_voices_stops_say_what_to_change(client, root):
         assert said in client.get("/film/demo").text
         rs[0].update(state=f"blocked:{note}", note="")                 # as the runner writes it: the reason in the state
         (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
-        assert said in client.get("/film/demo").text
+        html = client.get("/film/demo").text
+        assert said in html
+        failed = html[html.index("Failed here:"):]                    # the card that carries the failure says it too
+        failed = failed[:failed.index("</li>")]
+        assert said in failed and "Re-run after the change" in failed and "Fix is in place" not in failed
+        assert "Fix is in place" not in html                         # nor at the top of the page
 
 
 def test_a_previous_cuts_qa_never_sits_between_open_steps_and_the_latest_run_wins(client, root):
@@ -1078,3 +1083,13 @@ def test_a_previous_cuts_qa_never_sits_between_open_steps_and_the_latest_run_win
     (root / "demo" / "reports" / "qa" / "film.json").write_text(json.dumps({"ok": None, "skipped": "ImportError: x"}))
     node = flow_node(client.get("/film/demo").text, "qa")
     assert 'class="badge skipped">skipped' in node and "film check ok" not in node
+
+
+def test_the_qa_card_says_skipped_for_a_skipped_check(client, root):
+    finished_film(root)
+    (root / "demo" / "reports" / "qa" / "lipsync").mkdir(parents=True)
+    (root / "demo" / "reports" / "qa" / "lipsync" / "summary.json").write_text(json.dumps([{"flags": ["lag"]}]))
+    (root / "demo" / "reports" / "qa" / "film.json").write_text(json.dumps({"ok": None, "skipped": "ImportError: x"}))
+    html = client.get("/film/demo").text
+    assert 'Film check: <span class="badge skipped">skipped</span>' in html and "needs a look" not in html
+    assert "lip-sync: 1 of 1" not in flow_node(html, "qa")                  # an older sheet, not this run's

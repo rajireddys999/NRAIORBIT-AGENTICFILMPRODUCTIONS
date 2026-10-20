@@ -381,13 +381,19 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
         write_story(stories_uri, s)
         _doing(tracker, "story", slug=s["slug"])
         mirror_reviews, film = False, None
-        try:
+        if tracker is not None and _takes_progress(produce_fn):
+            film = tracker.film(s["slug"], root)          # from the claim on: a failure before produce (the restore,
+        try:                                              # the template, the cap) overwrites the last run's record
             if bucket and not (root / "pipeline.yaml").exists():
                 from ..ops import backup
+                if film is not None:
+                    film.phase("restore")
                 _, failed = backup.restore_report(root, bucket, log=lambda *_: None)
                 if failed:                                # a half-restored project would pay again or skip a gate
                     raise RestoreFailed(f"the bucket could not be read for {', '.join(sorted(failed))}")
                 mirror_reviews = True                     # this run saw every marker the bucket holds: it may mirror them
+            if film is not None:
+                film.phase("setup")
             if not (root / "pipeline.yaml").exists():
                 story = fetch_story(s["story_uri"]) if s.get("story_uri") else ""
                 if not story.strip():
@@ -401,8 +407,7 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
                 gate = pending_gate(root)
                 if gate:
                     approve_gate(root, gate)
-            if tracker is not None and _takes_progress(produce_fn):
-                film = tracker.film(s["slug"], root)
+            if film is not None:
                 report = produce_fn(root, bucket, progress=film)
             else:
                 report = produce_fn(root, bucket)
@@ -413,6 +418,8 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
                 from ..ops import backup
                 backup.backup(root, bucket, log=lambda *_: None, mirror_reviews=mirror_reviews)
         except RestoreFailed as exc:                      # not the film's fault: the row goes back as it was, with a
+            if film is not None:
+                film.finish("failed")
             strikes = restore_strikes(s.get("note", "")) + 1       # strike; three in a row and the owner is told
             back_to = "retry" if prior == "producing" else prior   # never a fresh claim nobody is working under
             s.update(state="blocked:restore" if strikes >= 3 else back_to,

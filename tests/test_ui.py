@@ -1093,3 +1093,51 @@ def test_the_qa_card_says_skipped_for_a_skipped_check(client, root):
     html = client.get("/film/demo").text
     assert 'Film check: <span class="badge skipped">skipped</span>' in html and "needs a look" not in html
     assert "lip-sync: 1 of 1" not in flow_node(html, "qa")                  # an older sheet, not this run's
+
+
+def test_the_cast_cards_show_each_voice_and_the_owner_can_change_one(client, root):
+    from urllib.parse import unquote
+    proj = root / "demo"
+    cfg = yaml.safe_load((proj / "project" / "pipeline.yaml").read_text())
+    first = next(iter(yaml.safe_load((proj / "project" / "cast.lock.yaml").read_text())["characters"]))
+    cfg["voice"] = {"cast": {first: "pickedVoice01"}}
+    (proj / "project" / "pipeline.yaml").write_text(yaml.safe_dump(cfg))
+    (proj / "reports" / "voices.json").write_text(json.dumps({first: {"voice_id": "pickedVoice01", "name": "George",
+                                                                      "why": "male, middle aged, warm", "shared": False}}))
+    html = card(client.get("/film/demo").text, "cast")
+    assert "ElevenLabs: <b>George</b>" in html and "picked by the runner: male, middle aged, warm" in html
+    assert 'action="/film/demo/voice"' in html and "Change voice" in html and "Set voice" in html
+    r = client.post("/film/demo/voice", data={"character": first, "voice_id": "ownersVoice02"}, follow_redirects=False)
+    assert "the runner uses it from its next run" in unquote(r.headers["location"])
+    assert yaml.safe_load((root / "stories" / "demo.voices.yaml").read_text()) == {first: "ownersVoice02"}
+    html = card(client.get("/film/demo").text, "cast")
+    assert "ownersVoice02" in html and "your choice" in html
+    for data, said in (({"character": first, "voice_id": "bad id!"}, "does not look like an ElevenLabs voice id"),
+                       ({"character": "nobody", "voice_id": "ownersVoice03"}, "No character 'nobody'")):
+        r = client.post("/film/demo/voice", data=data, follow_redirects=False)
+        assert said in unquote(r.headers["location"])
+    assert yaml.safe_load((root / "stories" / "demo.voices.yaml").read_text()) == {first: "ownersVoice02"}
+
+
+def test_an_earlier_runs_block_after_an_open_step_is_stale(client, root):
+    """While a re-run plans the shots again, the last run's "blocked" on a later step (the voices stop) is from that
+    run: it reads stale, never as a live block."""
+    report_path = root / "demo" / "reports" / "produce.json"
+    report = json.loads(report_path.read_text())
+    report["steps"]["render"] = "blocked: voices: no ElevenLabs voice for ['arjun']"
+    report_path.write_text(json.dumps(report))
+    node = flow_node(client.get("/film/demo").text, "render")                # the fixture waits at faces
+    assert 'class="badge stale">stale' in node and 'class="badge blocked">' not in node
+
+
+def test_a_speaker_without_a_voice_says_what_it_needs(client, root):
+    assert "No voice yet" not in card(client.get("/film/demo").text, "cast")        # mock speech: nothing to set
+    cfg_path = root / "demo" / "project" / "pipeline.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text())
+    cfg["providers"]["tts"] = "inbox"
+    cfg["voice"] = {"inbox_fallback": "elevenlabs", "auto_cast": True}
+    cfg_path.write_text(yaml.safe_dump(cfg))
+    assert "No voice yet: the runner picks one at the cast step" in card(client.get("/film/demo").text, "cast")
+    cfg["voice"]["auto_cast"] = False
+    cfg_path.write_text(yaml.safe_dump(cfg))
+    assert "the film stops before its cost gate until every speaker has one" in card(client.get("/film/demo").text, "cast")

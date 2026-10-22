@@ -30,6 +30,7 @@ import datetime
 import inspect
 import io
 import json
+import re
 import os
 import shutil
 import time
@@ -303,6 +304,36 @@ def overrides_uri(story_uri: str) -> str:
     return f"{head}/{stem}.overrides.yaml" if head else f"{stem}.overrides.yaml"
 
 
+def voices_uri(story_uri: str) -> str:
+    """<story>.voices.yaml next to the story (character: ElevenLabs voice id), written by the control room."""
+    return overrides_uri(story_uri).replace(".overrides.yaml", ".voices.yaml")
+
+
+VOICE_ID = re.compile(r"^[A-Za-z0-9]{8,64}$")
+
+
+def apply_voices(root: Path, text: str) -> bool:
+    """The owner's voices into the project's voice.cast: they win over the runner's picks and over what was there.
+    Only character: voice-id pairs that look like ElevenLabs ids are taken; True when something changed."""
+    try:
+        chosen = yaml.safe_load(text) or {}
+    except yaml.YAMLError:
+        return False
+    chosen = {str(c): str(v) for c, v in chosen.items() if VOICE_ID.fullmatch(str(v))} \
+        if isinstance(chosen, dict) else {}
+    if not chosen:
+        return False
+    path = root / "pipeline.yaml"
+    cfg = (yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}) or {}
+    cfg["voice"] = cfg.get("voice") if isinstance(cfg.get("voice"), dict) else {}    # an empty `voice:` too
+    cast = cfg["voice"].get("cast") if isinstance(cfg["voice"].get("cast"), dict) else {}
+    if all(cast.get(c) == v for c, v in chosen.items()):
+        return False
+    cfg["voice"]["cast"] = {**cast, **chosen}
+    path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    return True
+
+
 class RestoreFailed(RuntimeError):
     """The bucket could not be read for the sets a run depends on; nothing runs on a half-restored project."""
 
@@ -445,6 +476,11 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
                              overrides=(yaml.safe_load(extra) or {}) if extra.strip() else None)
             else:
                 apply_row(root, s)                        # the sheet's cap and policy win, every tick
+            chosen = fetch_story(f"gs://{bucket}/stories/{s['slug']}.voices.yaml") if bucket else ""   # where the
+            if not chosen.strip() and s.get("story_uri"):                       # control room saves it, else beside
+                chosen = fetch_story(voices_uri(s["story_uri"]))                # the row's story
+            if chosen.strip():
+                apply_voices(root, chosen)                # the owner's voices win, every tick
             if was_approved:
                 gate = pending_gate(root)
                 if gate:

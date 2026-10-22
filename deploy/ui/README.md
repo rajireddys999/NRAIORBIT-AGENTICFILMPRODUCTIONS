@@ -17,6 +17,9 @@ under every policy. **Retry** sets the row to `retry` and starts a tick at once 
 while the runner is on the film, unless that run stopped: Cloud Run lists no execution running or pending, and the
 film's progress record does not belong to a run still under way.
 
+Each cast card shows the character's ElevenLabs voice, who chose it and why, and takes another voice id: that goes
+to `stories/<slug>.voices.yaml`, which the runner applies at its next run.
+
 It writes only `queue/stories.csv`, `queue/references.csv` and `stories/<slug>.*`; the runner does every paid step
 under the row's cap. There is no database: the page can never disagree with what the runner sees.
 

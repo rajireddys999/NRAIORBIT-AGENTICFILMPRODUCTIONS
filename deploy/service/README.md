@@ -60,7 +60,10 @@ and its logs in Cloud Logging; the per-project report is `reports/produce.json` 
 The cast step of a runner film builds what the library lacks: a new character gets a library entry written from
 the story bible, and every cast character without reference pictures gets them (Gemini, a few cents each, under
 the row's cap; an animal is photographed as one). The cast gate then shows the faces. A picture the image model
-refuses blocks the row with the character's name.
+refuses blocks the row with the character's name. With `voice.auto_cast` (on in the template) the same step gives
+every speaking character without a voice one from the ElevenLabs account (`GET /v1/voices`), matched to the story
+bible's gender, age and timbre, a different voice each, into the film's `voice.cast` and `reports/voices.json`. The
+owner's choices from the control room live in `stories/<slug>.voices.yaml` and win at every tick.
 
 What the owner still decides, by design: every step when `gates` is `ask`; the cost estimate and the YouTube upload
 under either policy (`auto` approves everything else); the cap per film; and flipping a YouTube upload from private

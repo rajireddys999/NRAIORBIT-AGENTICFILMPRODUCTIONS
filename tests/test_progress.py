@@ -360,6 +360,36 @@ def test_a_failure_before_produce_overwrites_the_last_runs_record(tmp_path, fake
     assert rec["phase"] == "setup" and rec["state"] == "failed"
 
 
+def test_the_owners_voices_reach_the_film_before_it_runs(tmp_path, fake_bucket):
+    """The control room saves the owner's voices to stories/<slug>.voices.yaml in the bucket; every tick puts them into
+    the film's voice.cast before produce, so the cast step and the voices check see them."""
+    from pathlib import Path
+    st, rf, template = _queues(tmp_path)
+    seen = {}
+
+    def fetch(uri):
+        if uri == "gs://b/stories/rain.voices.yaml":
+            return "rain_hero: ownersVoice01\n"
+        p = Path(uri)
+        return p.read_text(encoding="utf-8") if p.exists() else ""
+
+    def produce_fn(root, bucket, progress=None):
+        seen.update(yaml.safe_load((root / "pipeline.yaml").read_text()).get("voice") or {})
+        return {"state": "awaiting:story", "steps": {}}
+    queue.tick(st, rf, tmp_path / "projects", bucket="b", produce_fn=produce_fn, learn_fn=None, template=template,
+               fetch_story=fetch, log=lambda *_: None)
+    assert seen.get("cast") == {"rain_hero": "ownersVoice01"}
+    # a control room rooted elsewhere: nothing in the bucket's stories/, the file beside the row's story is read
+    (tmp_path / "rain.voices.yaml").write_text("rain_hero: besideStory01\n")
+    rows = queue.load(st, queue.STORY_COLUMNS)
+    rows[0]["state"] = "retry"
+    queue.save(st, rows, queue.STORY_COLUMNS)
+    seen.clear()
+    queue.tick(st, rf, tmp_path / "projects", bucket="b", produce_fn=produce_fn, learn_fn=None, template=template,
+               fetch_story=lambda uri: "" if uri.startswith("gs://b/stories/") else fetch(uri), log=lambda *_: None)
+    assert seen.get("cast") == {"rain_hero": "besideStory01"}
+
+
 def test_a_tick_that_raises_still_removes_its_running_record(tmp_path, fake_bucket, monkeypatch):
     """A tick that dies on its way (here the references sheet cannot be written) must not leave its record behind:
     the board would show it live until Cloud Run ends it, and "left behind" for hours after."""

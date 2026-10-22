@@ -36,6 +36,64 @@ DEFAULT_SETS = ["inbox", "cache", "keyframes", "music", "reports", "master", "sc
 LIBRARY_SETS = ("characters", "references")     # library/<set> <-> gs://bucket/library/<set>, shared by every film
 
 
+NEVER_REMOVED = ("inbox", "cache", "06_keyframes", "reports", "reviews")   # paid media, history and approvals
+
+
+def remote_keys(project_root: Path, paths) -> list[tuple[str, bool]]:
+    """(bucket key, is a folder) for project paths the backup keeps in the bucket; nothing for the rest (10_edit,
+    07_video and 05_dialogue never go up) and never anything under NEVER_REMOVED."""
+    root = Path(project_root)
+    out = []
+    for p in paths:
+        try:
+            rel = Path(p).relative_to(root).as_posix()
+        except ValueError:
+            continue
+        top = rel.split("/", 1)[0]
+        if top in NEVER_REMOVED:
+            continue
+        if rel in FILES:
+            out.append((f"{root.name}/project/{rel}", False))
+        elif top in FOLDERS.values():
+            out.append((f"{root.name}/{rel}", Path(p).is_dir() or not Path(p).suffix))
+    return out
+
+
+def remove_remote(project_root: Path, bucket: str | None, paths, log=print) -> int:
+    """Delete from the bucket the copies of outputs a step being redone threw away locally (Pipeline.invalidate), so
+    the next fresh container cannot restore an old trailer or cut and skip making the new one. Objects only, never
+    paid media; a failure is logged and the run goes on. Returns the objects removed."""
+    keys = remote_keys(project_root, paths)
+    if not bucket or not keys:
+        return 0
+    client, removed = storage_client(), 0
+    for key, folder in keys:
+        try:
+            if client is not None:
+                b = client.bucket(bucket)
+                blobs = list(b.list_blobs(prefix=key.rstrip("/") + "/")) if folder else [b.blob(key)]
+                for blob in blobs:
+                    try:
+                        blob.delete()
+                        removed += 1
+                    except Exception as e:                   # NotFound: nothing was there
+                        if type(e).__name__ != "NotFound":
+                            raise
+            else:
+                uri = f"gs://{bucket}/{key}" + ("/**" if folder else "")
+                proc = gcs.RUN(["gcloud", "storage", "rm", "--quiet", uri], capture_output=True, text=True)
+                if proc.returncode == 0:
+                    removed += 1
+                elif "matched no objects" not in (proc.stderr or "") and "No URLs matched" not in (proc.stderr or ""):
+                    raise gcs.BucketError(proc.stderr[-300:])
+        except Exception as e:
+            log(f"  could not remove the old {key} from the bucket ({type(e).__name__}: {str(e)[:120]}); "
+                "a later run may restore it")
+    if removed:
+        log(f"  removed {removed} old output(s) from the bucket")
+    return removed
+
+
 def sync_workers() -> int:
     """Transfers at once through the one storage client (NRAIORBIT_SYNC_WORKERS, default 8). Sets move one at a time,
     each with all of them: a big set (the inbox of paid clips) is most of a restore, and it gets every transfer."""

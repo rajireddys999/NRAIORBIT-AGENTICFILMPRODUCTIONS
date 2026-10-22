@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import html as _html
+import json
 import os
 import math
 import re
@@ -731,6 +732,56 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
             row["updated"] = queue.now()
         edit_row(store, slug, change)
         return back(f"/film/{slug}", "saved; the next tick writes it into the project")
+
+    @app.post("/film/{slug}/rework")
+    def rework(slug: str, email: str = Depends(guard), stage: str = Form(""), shots: str = Form(""),
+               notes: str = Form("")):
+        """Send the film back: the owner's notes and the step to redo from (or, at the video step, the shots to plan
+        again and remake). Saved beside the story as stories/<slug>.rework.json; the next tick applies it once, before
+        anything runs, and the gates ask again. Never over a run under way."""
+        if not SLUG_RE.match(slug):
+            raise HTTPException(404)
+        steps = dict(films.REWORK_STEPS)
+        if stage not in steps:
+            return back(f"/film/{slug}", "Pick the step to redo; nothing changed.")
+        notes = notes.strip()[:2000]
+        if not notes:
+            return back(f"/film/{slug}", "Write what needs fixing, so the agents know what to change; nothing changed.")
+        ids = sorted(set(re.findall(r"sc\d{3}_s\d{3}", shots)))
+        if ids and stage != "render":
+            return back(f"/film/{slug}", f"Shot ids go with the '{steps['render']}' step; nothing changed.")
+        if stage == "render" and not ids:     # remaking every clip from the same words would re-buy the film's video
+            return back(f"/film/{slug}", f"Name the shots to redo for '{steps['render']}' (ids like sc002_s001 from "
+                                         "the shot lists); to change the plan, send it back to Shot lists. "
+                                         "Nothing changed.")
+        if ids:
+            known = {s.get("shot_id") for rel in store.list(f"{slug}/04_shots/") if rel.endswith(".json")
+                     for s in (films._json(store, rel) or {}).get("shots") or []}
+            missing = [i for i in ids if i not in known]
+            if missing:
+                return back(f"/film/{slug}", f"No shot {', '.join(missing)} in this film; nothing changed.")
+        ask = f"stories/{slug}.rework.json"
+        before = store.read_text(ask) or ""                    # an earlier Send back the tick has not taken yet
+        store.write_text(ask, json.dumps({"id": f"{queue.now()}-{os.urandom(3).hex()}", "stage": stage, "shots": ids,
+                                          "notes": notes, "by": email, "at": queue.now()}, ensure_ascii=False),
+                         "application/json")                   # first: a tick that claims the row finds it
+        refused: dict = {}
+
+        def change(row: dict):
+            head = row["state"].split(":")[0]
+            if head in films.RUNNING:
+                refused["msg"] = (f"the runner is on it ({row['state']}); send it back when it stops. "
+                                  "Nothing changed")
+                return False
+            row.update(state="retry", note=f"sent back to {steps[stage]} by {email}: {notes}"[:200],
+                       updated=queue.now())
+        edit_row(store, slug, change)
+        if refused:
+            store.write_text(ask, before, "application/json")  # as it was: never applied later by surprise
+            return back(f"/film/{slug}", refused["msg"])
+        what = (f"shots {', '.join(ids)} are planned again from your notes and made anew" if ids else
+                f"every step from {steps[stage]} on is redone, following your notes")
+        return back(f"/film/{slug}", f"Sent back: {what}; the gates ask again. " + tick_now("the rework is under way"))
 
     @app.post("/film/{slug}/cap-and-rerun")
     def cap_and_rerun(slug: str, email: str = Depends(guard), budget: str = Form("")):

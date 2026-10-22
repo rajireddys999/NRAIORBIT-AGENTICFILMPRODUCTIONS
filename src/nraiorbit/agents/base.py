@@ -41,9 +41,14 @@ class Agent:
         self.system = load_prompt(SHARED_PROMPT) + "\n\n" + load_prompt(self.prompt_name or self.name)
         self.references = reference_examples(self.name, cfg)
 
+    notes: str = ""                                    # the owner's notes when the film was sent back for rework
+
     def ask(self, schema: type[T], *, context: str, task: str) -> T:
         if self.references:
             context = (context + "\n\n" if context else "") + self.references
+        if self.notes and self.notes not in task:      # rework_shot carries them already
+            task += ("\n\nThe owner sent this film back for rework with these notes; follow them wherever they "
+                     f"touch this step:\n<owner_notes>\n{self.notes}\n</owner_notes>")
         return self.llm.generate(
             schema=schema, system=self.system, context=context, task=task,
             effort=self.effort, agent=self.name,

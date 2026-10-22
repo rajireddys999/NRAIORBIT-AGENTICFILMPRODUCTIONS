@@ -122,6 +122,21 @@
         {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/retry"><button>Re-run it now</button></form>{% endif %}
       {% elif f.state in ['new','retry','producing'] %}<p><span class="live-dot" style="margin-right:8px"></span>The runner is on it (state <b>{{ f.state }}</b>). This page refreshes by itself.</p>
       {% else %}<p class="muted">Nothing is waiting on you.</p>{% endif %}
+      {% if f.row and not f.live and state0 not in ['new','approved','retry','producing'] %}
+      <details class="rework" style="margin-top:12px">
+        <summary class="small"><b>Send back for rework</b> · not right? Say what to fix and the step to redo</summary>
+        <form method="post" action="/film/{{ f.slug }}/rework" style="display:grid;gap:8px;margin-top:10px">
+          <label class="small">Step to redo
+            <select name="stage">{% for key, label in f.rework_steps %}<option value="{{ key }}"{% if key == f.rework_default %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+          <label class="small">Shots to redo (needed with Picture, voices, music, lips; leave empty for the other steps)
+            <input name="shots" placeholder="sc002_s001, sc010_s002"></label>
+          <label class="small">What needs fixing
+            <textarea name="notes" rows="3" required placeholder="For example: keep Lakshmi out of frame; show Narasimha and Chintu reacting to her voice"></textarea></label>
+          <div><button class="sm">Send back</button></div>
+        </form>
+        <p class="tiny dim" style="margin-top:6px">Shots you name are planned again from your notes and made anew; a step you name is redone with everything after it. Paid clips that are kept are not paid again, and the gates ask again.</p>
+      </details>
+      {% endif %}
       {% if f.render_note %}<p class="small" style="color:var(--warn);margin-top:10px">{{ f.render_note }}{% if f.animatic and not f.tools_planned and not f.cfg.providers %} This film's project names no providers, so it runs on the mock ones. {% if f.row %}Queue it again to start from the project template, or add{% else %}Add{% endif %} the providers to its pipeline.yaml.{% endif %}</p>{% endif %}
       {% if f.tools_planned %}<p class="small muted" style="margin-top:10px"><i>Tools shown are planned: the template's choices until the first tick writes this film's own config.</i></p>{% endif %}
     </div>

@@ -8,7 +8,8 @@ from pydantic import TypeAdapter
 from nraiorbit import schemas as S
 from nraiorbit.llm import FALLBACK_BETA, ClaudeClient, LLMRefusal, LLMTruncated
 
-LLM_FACING = [S.StoryBible, S.Outline, S.SceneScript, S.ShotList, S.Critique, S.CueRevisions, S.IdentityPackBrief]
+LLM_FACING = [S.StoryBible, S.Outline, S.SceneScript, S.ShotList, S.Critique, S.CueRevisions, S.IdentityPackBrief,
+              S.SaferShot, S.ReworkedShot]
 
 
 class FakeStream:

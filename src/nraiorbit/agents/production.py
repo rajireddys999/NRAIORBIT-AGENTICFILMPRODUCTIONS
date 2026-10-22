@@ -5,7 +5,7 @@ from __future__ import annotations
 from ..library.registry import AssetRegistry
 from ..schemas import (
     CastEntry, CastLock, CharacterSpec, CueRevisions, CueSheet, IdentityPackBrief,
-    SaferShot, SceneOutline, SceneScript, Shot, ShotList, StoryBible,
+    ReworkedShot, SaferShot, SceneOutline, SceneScript, Shot, ShotList, StoryBible,
 )
 from .base import Agent, project_context
 
@@ -88,7 +88,7 @@ class Director(Agent):
 
     def shots(self, bible: StoryBible, lock: CastLock, scene: SceneOutline, script: SceneScript,
               action_candidates: list[str], rasa_defaults: dict, clip_lengths: list[int] | None = None,
-              issue: str = "") -> ShotList:
+              issue: str = "", off_screen: dict[str, str] | None = None) -> ShotList:
         task = (
             f"Plan the shots for {scene.scene_id}. Target scene length: {scene.target_seconds} s.\n"
             f"<scene_outline>\n{scene.model_dump_json(indent=1)}\n</scene_outline>\n"
@@ -98,10 +98,25 @@ class Director(Agent):
         )
         if clip_lengths:
             task += "\n" + shot_budget(scene.target_seconds, clip_lengths)
+        if off_screen:
+            task += "\n" + off_screen_rule(off_screen)
         if issue:
             task += f"\nYour previous shot list for this scene could not be used: {issue}"
         context = project_context(("story_bible", bible), ("cast_lock", lock))
         return self.ask(ShotList, context=context, task=task)
+
+    def rework_shot(self, bible: StoryBible, lock: CastLock, shot: Shot, notes: str,
+                    off_screen: dict[str, str] | None = None) -> ReworkedShot:
+        """The owner sent this shot back: the same moment of the scene, planned again as the notes ask."""
+        task = (f"The owner watched the film and sent shot {shot.shot_id} back for rework.\n"
+                f"<shot>\n{shot.model_dump_json(indent=1)}\n</shot>\n"
+                f"<owner_notes>\n{notes}\n</owner_notes>\n"
+                "Plan this shot again as the notes ask: who is in frame (character ids from the cast), their costume "
+                "ids in the same order, the keyframe description and what moves. Keep its place in the scene, its "
+                "length and its camera unless the notes say otherwise.")
+        if off_screen:
+            task += "\n" + off_screen_rule(off_screen)
+        return self.ask(ReworkedShot, context=project_context(("story_bible", bible), ("cast_lock", lock)), task=task)
 
     def safer_shot(self, bible: StoryBible, shot: Shot, refusal: str) -> SaferShot:
         """Google's image or video model refused this shot for safety: the same story moment, worded so it passes."""
@@ -113,11 +128,19 @@ class Director(Agent):
             "at, pointed at or striking a person; no wounds, blood, bruises or injuries; nobody falling, hanging or "
             "dangling over a drop in visible peril; no fire on or touching a person; no screaming in pain; no knife "
             "or blade near anyone; no impact words (hit, smash, strike, slam into); no child in danger or a child's "
-            "point of view; no blood-like stains; no written words, numbers or logos in the frame. Carry the "
+            "point of view; no blood-like stains; no written words, numbers or logos in the frame; when the refusal "
+            "is about a child or person/face generation, take the child out of the frame entirely. Carry the "
             "danger through faces, framing, light and setting instead: the threat can be implied or just off frame. "
             "Keep it a strong, cinematic frame for a family-friendly feature film."
         )
         return self.ask(SaferShot, context=project_context(("story_bible", bible)), task=task)
+
+
+def off_screen_rule(off_screen: dict[str, str]) -> str:
+    """The planning rule for people the project's video model must not show (characters.minors_off_screen)."""
+    return (f"This project's video model must not show anyone under 18: {', '.join(off_screen.values())}. Keep them "
+            "out of every shot: never in characters_in_frame, never described in image_prompt or motion_prompt. "
+            "Their lines are heard off screen, over the other characters' reactions or the place.")
 
 
 class MusicDirector(Agent):

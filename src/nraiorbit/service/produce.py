@@ -27,6 +27,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -44,6 +45,59 @@ def policy_of(cfg: dict, **overrides) -> dict:
     pol.update({k: v for k, v in (cfg.get("policy") or {}).items() if v is not None})
     pol.update({k: v for k, v in overrides.items() if v is not None})
     return pol
+
+
+# the steps the control room's Send back can name, and the pipeline stage each redoes from
+REWORK_STAGES = {"story": "story_bible", "outline": "outline", "scenes": "scenes", "cast": "cast", "shots": "shots",
+                 "render": "render", "assemble": "assemble", "trailer": "trailer"}
+REWORK_FILE = "rework.json"                           # the tick puts the control room's request here, in the project
+SHOT_ID = re.compile(r"^sc\d{3}_s\d{3}$")
+
+
+def apply_rework(pipeline: Pipeline, log=print) -> dict | None:
+    """The owner's Send back, before anything runs, once (its id goes into reports/owner_notes.jsonl): the shots it
+    names are planned again from the notes and remade (the video step), or every step from the one it names is
+    redone; the notes go to the agents of those steps. The gates ask again as each step finishes."""
+    from ..pipeline import OWNER_NOTES
+    path = pipeline.p.root / REWORK_FILE
+    if not path.exists():
+        return None
+    try:
+        req = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        req = None
+    done = pipeline.p.reports / OWNER_NOTES
+    seen = set()
+    for line in done.read_text(encoding="utf-8").splitlines() if done.exists() else []:
+        try:
+            seen.add(json.loads(line).get("id"))
+        except ValueError:
+            continue
+    stage = REWORK_STAGES.get(str((req or {}).get("stage"))) if isinstance(req, dict) else None
+    if stage is None or not req.get("id") or req["id"] in seen:
+        path.unlink()
+        return None
+    notes = str(req.get("notes") or "").strip()[:2000]
+    shots = [s for s in req.get("shots") or [] if isinstance(s, str) and SHOT_ID.fullmatch(s)]
+    if shots and stage == "render":
+        found = pipeline.rework_shots(shots, notes)
+        what = f"shots {', '.join(found)} planned again and made anew" if found else "none of those shots exists"
+    else:
+        from ..pipeline import STAGES
+        if STAGES.index(stage) <= STAGES.index("shots"):     # new plans: no old clip or first frame lands on a shot
+            pipeline.fresh_takes(pipeline.made_shots())     # it was not made for (a music redo keeps every clip)
+        pipeline.invalidate(stage)
+        what = f"every step from {stage} on is redone"
+    record = {"id": req["id"], "stage": stage, "shots": shots, "notes": notes, "by": req.get("by"),
+              "at": req.get("at"), "applied": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
+    pipeline.p.reports.mkdir(parents=True, exist_ok=True)
+    cut = done.exists() and not done.read_text(encoding="utf-8").endswith("\n")
+    with done.open("a", encoding="utf-8") as f:
+        f.write(("\n" if cut else "") + json.dumps(record, ensure_ascii=False) + "\n")
+    pipeline._owner_notes()                            # the agents of the steps redone follow the notes
+    path.unlink()
+    log(f"  sent back by {req.get('by') or 'the owner'}: {what}")
+    return {**record, "what": what}
 
 
 def approve(pipeline: Pipeline, gate: str, text: str = "approved by policy\n") -> None:
@@ -116,6 +170,13 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
     pol = policy_of(pipeline.cfg, gates=gates, publish=publish)
     report = {"slug": root.name, "started": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
               "policy": pol, "steps": {}, "state": "running"}
+
+    if bucket and getattr(pipeline, "remove_remote", None) is None:   # a redone step's throwaways leave the bucket
+        from ..ops import backup as _backup
+        pipeline.remove_remote = lambda paths: _backup.remove_remote(root, bucket, paths, log=log)
+    rework = apply_rework(pipeline, log)                  # the owner's Send back, before anything runs
+    if rework:
+        report["steps"]["rework"] = f"{rework['stage']}: {rework['what']}"
 
     def finish(state: str) -> dict:
         report["state"] = state

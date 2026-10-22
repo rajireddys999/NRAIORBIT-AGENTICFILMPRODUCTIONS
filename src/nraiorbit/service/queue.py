@@ -379,6 +379,11 @@ def overrides_uri(story_uri: str) -> str:
     return f"{head}/{stem}.overrides.yaml" if head else f"{stem}.overrides.yaml"
 
 
+def rework_uri(story_uri: str) -> str:
+    """<story>.rework.json next to the story: the control room's Send back (step, shots, notes), applied once."""
+    return overrides_uri(story_uri).replace(".overrides.yaml", ".rework.json")
+
+
 def voices_uri(story_uri: str) -> str:
     """<story>.voices.yaml next to the story (character: ElevenLabs voice id), written by the control room."""
     return overrides_uri(story_uri).replace(".overrides.yaml", ".voices.yaml")
@@ -560,6 +565,11 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
                 chosen = fetch_story(voices_uri(s["story_uri"]))                # the row's story
             if chosen.strip():
                 apply_voices(root, chosen)                # the owner's voices win, every tick
+            ask = fetch_story(f"gs://{bucket}/stories/{s['slug']}.rework.json") if bucket else ""   # Send back, as
+            if not ask.strip() and s.get("story_uri"):                          # the control room saved it; produce
+                ask = fetch_story(rework_uri(s["story_uri"]))                   # applies it once, by its id
+            if ask.strip():
+                (root / "rework.json").write_text(ask, encoding="utf-8")
             if was_approved:
                 gate = pending_gate(root)
                 if gate:

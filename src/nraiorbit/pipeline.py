@@ -47,8 +47,16 @@ from .shotpack import clips_for, selected
 from .schemas import CastLock, Critique, Cue, CueSheet, Outline, SceneScript, ShotList, StoryBible
 
 STAGES = ["story_bible", "outline", "scenes", "cast", "shots", "music_plan", "render", "assemble", "trailer"]
+OWNER_NOTES = "owner_notes.jsonl"            # reports/: every Send back from the control room, the latest one in force
 STAGE_GATES = {"story_bible": "story", "outline": "outline", "scenes": "scenes", "cast": "cast", "shots": "shots",
                "render": "render", "assemble": "pacing", "trailer": "trailer"}
+
+
+def gates_of(stage: str) -> tuple[str, ...]:
+    """Every review gate a stage can raise: the cut is `pacing` for an animatic and `final_cut` for a film."""
+    if stage == "assemble":
+        return ("pacing", "final_cut")
+    return (STAGE_GATES[stage],) if stage in STAGE_GATES else ()
 # The step gates sit between stages (run() raises them after the stage) and fire only when the project's
 # review_gates lists them: the control room's template does, so a queued film stops at every step; a project that
 # never mentions them (the CLI's defaults, the demo configs) runs through as before.
@@ -152,7 +160,7 @@ class ProjectPaths:
                       + sorted(self.music.glob("cue*.wav")),
             "assemble": [self.master / "movie.mp4", self.edit / "film_dialogue.mp4", self.edit / "scenes",
                          self.master / "stems", self.edit / "movie_nocards.mp4", self.edit / "cards.json",
-                         self.edit / "cards"],
+                         self.edit / "cards", self.master / "deliver"],      # a new cut never ships an old 720p copy
             "trailer": [self.master / "trailer.mp4", self.edit / "trailer_plan.json"],
         }[stage]
 
@@ -170,6 +178,7 @@ class Pipeline:
         self.face_mesh = None                          # lipsync.shots.<id>.mesh; tests inject a fake
         self.takes = load_takes(self.p.root)
         self.look_at_new_frames = False                 # produce sets it when the faces gate is on (ask)
+        self.remove_remote = None                       # produce sets it: invalidated outputs leave the bucket too
         self.log = log
         self.on_stage = None                           # called with each stage's name as it starts (live progress)
         self.story_analyst = StoryAnalyst(llm, self.cfg)
@@ -178,8 +187,105 @@ class Pipeline:
         self.casting = CastingAgent(llm, self.cfg)
         self.director = Director(llm, self.cfg)
         self.music_director = MusicDirector(llm, self.cfg)
+        self._owner_notes()
 
     # ------------------------------------------------------------------ driver
+
+    def _owner_notes(self) -> None:
+        """The latest Send back's notes (reports/owner_notes.jsonl) go to the agents of the step it named and every
+        step after it, so whatever is planned again follows them."""
+        path = self.p.reports / OWNER_NOTES
+        latest = None
+        for line in path.read_text(encoding="utf-8").splitlines() if path.exists() else []:
+            try:
+                latest = json.loads(line)
+            except ValueError:
+                continue
+        if not latest or not latest.get("notes") or latest.get("stage") not in STAGES:
+            return
+        agents = {"story_bible": [self.story_analyst], "outline": [self.screenwriter],
+                  "scenes": [self.screenwriter, self.critic], "cast": [self.casting], "shots": [self.director],
+                  "music_plan": [self.music_director]}
+        for s in STAGES[STAGES.index(latest["stage"]):]:
+            for agent in agents.get(s, []):
+                agent.notes = latest["notes"]
+
+    def fresh_takes(self, shot_ids) -> dict[str, int]:
+        """Each shot moves on to a take it has never had (one past every clip, pending job and first frame it has),
+        written to takes.yaml, which the bucket keeps: the next restore brings the old clips and stills back, and they
+        stay as history, but the video step draws a new first frame and makes a new clip. Its lip-sync settings, tuned
+        to the old clip, are dropped."""
+        import re as _re
+        moved = {}
+        inbox = self.p.root / "inbox" / "video"
+        for sid in shot_ids:
+            clip = _re.compile(rf"{_re.escape(sid)}(?:_(\d+))?\.(?:mp4|json)")
+            used = [int(m.group(1) or 1) for f in [*inbox.glob(f"{sid}*.mp4"), *(inbox / ".pending").glob(f"{sid}*.json")]
+                    if (m := clip.fullmatch(f.name))]
+            used += [int(m.group(1)) for f in (self.p.root / "06_keyframes" / sid).glob("take_*.png")
+                     if (m := _re.fullmatch(r"take_(\d+)\.png", f.name))]
+            if used:                        # nothing made yet: its take is fresh already
+                moved[sid] = max([self.takes.get(sid, 1), *used]) + 1
+        if moved:
+            path = self.p.root / "takes.yaml"
+            takes = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
+            takes.update(moved)
+            path.write_text(yaml.safe_dump(takes, sort_keys=True), encoding="utf-8")
+            self.takes.update(moved)
+        cfg_path = self.p.root / "pipeline.yaml"
+        tuned = ((self.cfg.get("lipsync") or {}).get("shots") or {})
+        if any(s in tuned for s in shot_ids):
+            for s in shot_ids:
+                tuned.pop(s, None)
+            if cfg_path.exists():
+                own = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+                for s in shot_ids:
+                    ((own.get("lipsync") or {}).get("shots") or {}).pop(s, None)
+                cfg_path.write_text(yaml.safe_dump(own, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        return moved
+
+    def made_shots(self) -> list[str]:
+        """Every shot id that has a clip, a pending job or a first frame."""
+        import re as _re
+        inbox = self.p.root / "inbox" / "video"
+        ids = {m.group(1) for p in [*inbox.glob("*.mp4"), *(inbox / ".pending").glob("*.json")]
+               if (m := _re.match(r"(sc\d{3}_s\d{3})", p.name))}
+        frames = self.p.root / "06_keyframes"
+        ids |= {p.name for p in frames.iterdir() if p.is_dir()} if frames.is_dir() else set()
+        return sorted(ids)
+
+    def rework_shots(self, shot_ids: list[str], notes: str) -> list[str]:
+        """Shots the owner sent back: planned again from the notes (when there are notes) and moved to a fresh take
+        (fresh_takes), so the video step makes them anew; every other shot and everything paid is kept. Returns the
+        shots found."""
+        from .characters import minors_off_screen
+        bible = self._load(self.p.bible, StoryBible)
+        lock = self._lock()
+        known = {c.id for c in bible.characters}
+        off_screen = minors_off_screen(bible.characters, self.cfg)
+        found = []
+        for path in sorted(self.p.shots.glob("*.json")):
+            plan = self._load(path, ShotList)
+            changed = False
+            for i, shot in enumerate(plan.shots):
+                if shot.shot_id not in shot_ids:
+                    continue
+                found.append(shot.shot_id)
+                if notes:
+                    new = self.director.rework_shot(bible, lock, shot, notes, off_screen)
+                    cast = [c for c in new.characters_in_frame if c in known]
+                    costumes = (list(new.costume_ids) + [""] * len(cast))[:len(cast)]
+                    plan.shots[i] = shot.model_copy(update={
+                        "characters_in_frame": cast, "costume_ids": costumes,
+                        "image_prompt": new.image_prompt, "motion_prompt": new.motion_prompt})
+                    changed = True
+            if changed:
+                self._save(path, plan)
+        if found:                           # the cut is made again from the new clips; nothing paid is lost
+            self.fresh_takes(found)
+            (self.p.edit / "timeline.json").unlink(missing_ok=True)
+            self.invalidate("assemble")
+        return found
 
     def run(self, until: str | None = None, force: tuple[str, ...] = ()) -> None:
         if force:
@@ -195,16 +301,20 @@ class Pipeline:
                 return
 
     def invalidate(self, stage: str) -> None:
+        gone = []
         for s in STAGES[STAGES.index(stage):]:
             for path in self.p.stage_outputs(s):
+                gone.append(path)
                 if path.is_dir():
                     shutil.rmtree(path)
                 elif path.exists():
                     path.unlink()
-            gate = STAGE_GATES.get(s)
-            if gate:
+            for gate in gates_of(s):
                 for suffix in ("approved", "pending"):
                     (self.p.reviews / f"{gate}.{suffix}").unlink(missing_ok=True)
+        remover = getattr(self, "remove_remote", None)   # the bucket's copies too, or the next fresh container
+        if remover is not None:                           # restores them and the step skips
+            remover(gone)
         # the runner's own gates (service/produce) answer for what follows: a replan or a re-render needs the cost
         # and the first frames approved again; a new cut needs the upload approved again
         for name, upto in (("cost", "render"), ("faces", "render"), ("publish", "trailer")):
@@ -218,8 +328,8 @@ class Pipeline:
         out = {}
         for s in STAGES:
             done = all(p.exists() for p in self.p.stage_outputs(s)[:1])
-            gate = STAGE_GATES.get(s)
-            if gate and (self.p.reviews / f"{gate}.pending").exists():
+            gate = next((g for g in gates_of(s) if (self.p.reviews / f"{g}.pending").exists()), None)
+            if gate:
                 out[s] = f"waiting for review '{gate}'"
             else:
                 out[s] = "done" if done else "todo"
@@ -539,6 +649,11 @@ class Pipeline:
         error = None
         lengths = self._grid_lengths()
         kw = {"clip_lengths": lengths} if lengths else {}
+        from .characters import minors_off_screen
+        off_screen = minors_off_screen(bible.characters, self.cfg)
+        if off_screen:                      # the video model will not show them: planned out of frame from the start
+            kw["off_screen"] = off_screen
+            self.log(f"  kept out of frame (the video model shows no one under 18): {', '.join(off_screen.values())}")
         plans = {}
         for i, out in ordered_map(lambda p: self.director.shots(bible, lock, p.sc, p.script, p.actions, p.camera, **kw),
                                   prepared, workers(self.cfg), warm_first=True):
@@ -563,6 +678,25 @@ class Pipeline:
                     self._report("shot_issues", {"scene_id": prepared[off[j]].sc.scene_id, "billable_grid": (
                         f"asked again for a plan on the clip grid, which failed ({type(out.error).__name__}); "
                         "the first plan is fitted")})
+        if off_screen:                      # a plan that still shows one: asked once more; a second miss is reported
+            seen = {i: sorted({c for s in plan.shots for c in s.characters_in_frame if c in off_screen})
+                    for i, plan in plans.items()}
+            shown = [i for i, who in seen.items() if who]
+
+            def without(i):
+                p = prepared[i]
+                return self.director.shots(bible, lock, p.sc, p.script, p.actions, p.camera, **kw, issue=(
+                    f"it put {', '.join(off_screen[c] for c in seen[i])} in frame, and the video model will not "
+                    "show them."))
+            for j, out in ordered_map(without, shown, workers(self.cfg)):
+                i = shown[j]
+                if out.error is None and not any(c in off_screen for s in out.value.shots
+                                                 for c in s.characters_in_frame):
+                    plans[i] = out.value
+                else:
+                    self._report("shot_issues", {"scene_id": prepared[i].sc.scene_id, "off_screen": (
+                        f"asked again to keep {', '.join(off_screen[c] for c in seen[i])} out of frame; the plan "
+                        "still shows them, and those shots will stop the video step")})
         for i in sorted(plans):
             sc, script, plan = prepared[i].sc, prepared[i].script, plans[i]
             shots = self._clean_shots(plan.model_copy(update={"scene_id": sc.scene_id}), script, lock)
@@ -666,7 +800,7 @@ class Pipeline:
         if hasattr(video, "safer"):                     # a frame or clip Google refuses is worded again once
             video.safer, video.log = safer_shot_fn(self.p.root, lambda: self.director, self.log), self.log
             video.look_first = self.look_at_new_frames   # the runner's faces gate: a new still waits for a look
-        self._to_look = []
+        self._to_look, self._slides = [], []
         tts = get_provider("tts", prov["tts"], **self._provider_kwargs("tts", prov["tts"], lock))
         music = get_provider("music", prov["music"], **self._provider_kwargs("music", prov["music"], lock))
         face_guard = self._face_guard(lock)
@@ -738,6 +872,7 @@ class Pipeline:
                 t += shot.duration_s
 
         self._hold_for_new_frames()
+        self._stop_for_slides()
 
         lipsync = prov.get("lipsync") or "none"
         if lipsync != "none":                          # the speaker's mouth redrawn to the Telugu line, shot by shot
@@ -979,20 +1114,33 @@ class Pipeline:
             "already made is kept.\n", encoding="utf-8")
         raise GatePending("faces", self.p.root)
 
+    def _stop_for_slides(self) -> None:
+        """Shots Google refused twice have no video. A film is never cut with a text slide in their place: the video
+        step stops here, before lip-sync, music and the cut are paid, and names them (the film page's Send back
+        replans them from the owner's notes). Every clip already made is kept."""
+        if not self._slides:
+            return
+        raise PipelineBlocked(
+            f"{len(self._slides)} shot(s) have no video, Google's safety filter refused them: "
+            f"{', '.join(self._slides)}. "
+            "Send them back for rework with a note (who or what should be in frame); every clip made is kept")
+
     def _render_shot(self, video, shot, ctx: RenderContext, face_guard) -> Path:
         # Without a face guard you choose the take (takes.yaml, `nraiorbit retake`); with one, it retakes itself.
-        first = 1 if face_guard else self.takes.get(shot.shot_id, 1)
-        last = self.cfg["retakes"]["max_per_shot"] if face_guard else first
+        first = self.takes.get(shot.shot_id, 1)          # a Send back moves a shot on to a fresh take
+        last = first + self.cfg["retakes"]["max_per_shot"] - 1 if face_guard else first
         clip, last_result = None, None
         for take in range(first, last + 1):
             clip = self.p.video / shot.shot_id / f"take_{take}.mp4"
             if not clip.exists():
                 try:
                     video.render_shot(shot, clip, replace(ctx, seed=take))
-                except ShotFiltered as blocked:
+                except ShotFiltered as blocked:            # no text slide goes into the film: named after the loop
                     self._report("review_queue", {"shot_id": shot.shot_id, "reason": [str(blocked)]})
-                    self.log(f"  {shot.shot_id}: blocked by the safety filter, placeholder used (see review_queue)")
-                    return MockVideo().render_shot(shot, clip, ctx, note="BLOCKED by safety filter: rewrite shot")
+                    self.log(f"  {shot.shot_id}: refused by Google's safety filter (reworded once where it could "
+                             "be); no video for it")
+                    self._slides.append(shot.shot_id)
+                    return clip
                 except (BudgetExceeded, GoogleAPIError) as stop:
                     raise PipelineBlocked(str(stop)) from None
                 except FileNotFoundError as missing:

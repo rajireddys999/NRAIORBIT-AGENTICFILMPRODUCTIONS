@@ -1236,3 +1236,73 @@ def test_a_reference_retry_changes_only_the_blocked_row_clicked(client, root):
     (root / "queue" / "references.csv").write_text(csv_text([{**base, "learn": "score", "state": "blocked:X"}],
                                                             queue.REFERENCE_COLUMNS))
     assert 'name="learn" value="score"' in client.get("/references").text      # the button names its focus
+
+
+def test_send_back_writes_the_request_and_puts_the_film_back_in_the_queue(client, root):
+    """The film waits at a gate: the page offers Send back next to Approve; the owner's notes, the step and the shots
+    go beside the story for the next tick, and the row goes back to retry. A step, notes and real shot ids only."""
+    page = client.get("/film/demo").text
+    assert 'action="/film/demo/rework"' in page and "Send back for rework" in page
+    assert '<option value="render" selected>' in page                         # the faces gate points at the video
+    first = ShotList.model_validate({"scene_id": "sc001", "shots": SHOTS["sc001"]}).shots[0].shot_id
+    for data, says in [({"stage": "nonsense", "notes": "x"}, "Pick the step"),
+                       ({"stage": "render", "notes": "  "}, "Write what needs fixing"),
+                       ({"stage": "shots", "shots": first, "notes": "x"}, "Shot ids go with"),
+                       ({"stage": "render", "shots": "sc999_s001", "notes": "x"}, "No shot sc999_s001")]:
+        r = client.post("/film/demo/rework", data=data, follow_redirects=True)
+        assert says in r.text and rows(root)[0]["state"] == "awaiting:faces"
+        assert not (root / "stories" / "demo.rework.json").exists()
+    r = client.post("/film/demo/rework", data={"stage": "render", "notes": "remake it all"}, follow_redirects=True)
+    assert "Name the shots to redo" in r.text and rows(root)[0]["state"] == "awaiting:faces"
+    r = client.post("/film/demo/rework", data={"stage": "render", "shots": f"{first}, {first}",
+                                               "notes": "keep the child out of frame"}, follow_redirects=True)
+    assert "Sent back" in r.text
+    ask = json.loads((root / "stories" / "demo.rework.json").read_text())
+    assert ask["stage"] == "render" and ask["shots"] == [first] and ask["notes"] == "keep the child out of frame"
+    assert ask["id"] and ask["by"]
+    row = rows(root)[0]
+    assert row["state"] == "retry" and row["note"].startswith("sent back to Picture, voices, music, lips by ")
+
+
+def test_send_back_never_lands_on_a_run_under_way(client, root):
+    rs = rows(root)
+    rs[0].update(state="producing", updated=queue.now())
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    r = client.post("/film/demo/rework", data={"stage": "trailer", "notes": "shorter"}, follow_redirects=True)
+    assert "the runner is on it" in r.text and rows(root)[0]["state"] == "producing"
+    assert (root / "stories" / "demo.rework.json").read_text() == ""           # as it was: none, so empty
+
+
+def test_a_second_send_back_before_the_tick_keeps_the_first(client, root):
+    client.post("/film/demo/rework", data={"stage": "trailer", "notes": "shorter"}, follow_redirects=True)
+    first = (root / "stories" / "demo.rework.json").read_text()
+    r = client.post("/film/demo/rework", data={"stage": "scenes", "notes": "redo it all"}, follow_redirects=True)
+    assert "the runner is on it" in r.text                                       # retry: the tick is about to run
+    assert (root / "stories" / "demo.rework.json").read_text() == first          # the first one still goes
+
+
+
+def test_after_a_send_back_the_page_shows_the_shots_new_still_and_not_its_old_clip_as_filmed(client, root):
+    """A Send back moves a shot on to take 2: the faces card must show take_2.png (the still to approve), and the old
+    take's clip must not make the shot look filmed."""
+    first = ShotList.model_validate({"scene_id": "sc001", "shots": SHOTS["sc001"]}).shots[0].shot_id
+    assert (root / "demo" / "inbox" / "video" / f"{first}.mp4").exists()
+    before = client.get("/film/demo").text
+    assert f"{first}/take_1.png" in before
+    (root / "demo" / "06_keyframes" / first / "take_2.png").write_bytes(png())
+    (root / "demo" / "project" / "takes.yaml").write_text(f"{first}: 2\n")
+    d = films.detail(Store(str(root)), "demo", rows(root)[0])
+    card = next(c for c in d["keyframes"] if c["shot_id"] == first)
+    assert "take_2.png" in card["url"] and card["filmed"] is False
+    (root / "demo" / "inbox" / "video" / f"{first}_2.mp4").write_bytes(b"")
+    d = films.detail(Store(str(root)), "demo", rows(root)[0])
+    assert next(c for c in d["keyframes"] if c["shot_id"] == first)["filmed"] is True
+
+
+def test_the_delivery_card_reads_what_deliver_writes(client, root):
+    """deliver() writes {"date", "files": [...]}; the page used to expect a bare list and showed nothing."""
+    (root / "demo" / "11_master" / "deliver").mkdir(parents=True, exist_ok=True)
+    (root / "demo" / "11_master" / "deliver" / "delivery.json").write_text(json.dumps({"date": "2026-10-22", "files": [
+        {"name": "Rain_720p.mp4", "gs": "gs://b/demo/final/Rain_720p.mp4", "url": "https://x", "mb": 120.5}]}))
+    d = films.detail(Store(str(root)), "demo", rows(root)[0])
+    assert [x["name"] for x in d["delivery"]] == ["Rain_720p.mp4"]                 # the card lists it

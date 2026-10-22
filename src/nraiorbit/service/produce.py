@@ -204,6 +204,10 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
             report["steps"]["render"] = f"awaiting:{g.gate}"
             return finish(f"awaiting:{g.gate}")
         except (PipelineBlocked, BudgetExceeded) as b:
+            from ..providers.google_ai import quota_used_up
+            if not isinstance(b, BudgetExceeded) and quota_used_up(b):   # what was made is kept: the next tick
+                report["steps"]["render"] = f"quota: {str(b)[:160]}"     # goes on from there (the runner counts)
+                return finish("retry:quota")
             report["steps"]["render"] = f"blocked: {b}"
             return finish(f"blocked:{str(b)[:120]}")
     report["steps"]["render"] = "done"

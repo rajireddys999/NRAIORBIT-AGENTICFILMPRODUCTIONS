@@ -230,6 +230,10 @@ def explain_note(note: str | None) -> str | None:
                 "true to its pipeline.yaml, then re-run. The runner then makes their pictures, a few cents each under "
                 "the cap, and stops at the cast gate so you can look at the faces. Re-running before that stops here "
                 "again and pays nothing.")
+    if text.startswith("quota (") or "blocked:quota" in text:
+        return ("Google's quota for this project was used up for a while. Nothing already made is lost or paid "
+                "again: the runner goes on from there at its next tick (every 15 minutes), up to three times; after "
+                "that, check the quotas in the Google Cloud console and press Retry.")
     if "is over the cap" in text or "budget.max_usd is not set" in text:
         return ("The paid stages cost more than this film's cap allows. Raise the cap on the Cost step (one click "
                 "re-runs it): the run then stops at the cost gate with the estimate, and nothing is paid until you "

@@ -1197,3 +1197,11 @@ def test_a_film_the_estimate_stopped_offers_one_click_to_raise_the_cap(client, r
     assert "not stopped by the estimate" in unquote(r.headers["location"])
     assert rows(root)[0]["budget_usd"] == "16" and rows(root)[0]["state"].startswith("blocked:BudgetExceeded")
     assert client.post("/film/demo/cap-and-rerun", data={"budget": "-1"}).status_code == 400
+
+
+def test_a_quota_stop_says_it_will_go_on_by_itself(client, root):
+    rs = rows(root)
+    rs[0].update(state="retry", note="quota (1): Google's quota was used up for now; everything already made is kept")
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    html = client.get("/film/demo").text
+    assert "goes on from there at its next tick (every 15 minutes), up to three times" in html

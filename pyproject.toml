@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "httpx>=0.27"]                   # httpx: FastAPI's TestClient (control room tests)
 publish = ["google-api-python-client>=2.100", "google-auth-oauthlib>=1.2", "google-cloud-secret-manager>=2.20"]
 google = ["google-genai>=2.30",                      # Veo, Gemini image, Gemini TTS and Lyria providers
           "google-cloud-run>=0.10", "google-cloud-storage>=2.16"]   # lip-sync job on Cloud Run (deploy/lipsync)

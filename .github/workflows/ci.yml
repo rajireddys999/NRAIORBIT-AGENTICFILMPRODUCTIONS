@@ -1,24 +1,40 @@
 name: ci
 
+# Pull requests (one run each, the newest wins), pushes to the default branch (the merged result is tested, and its
+# pip cache is the one new PRs can read), by hand, and from other workflows. Other branches no longer run on push,
+# so a branch with a PR no longer runs twice.
 on:
-  push:
   pull_request:
+  push:
+    branches: [claude/telugu-ai-movie-generator-yhb6po]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.workflow }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"        # the images run 3.11 (deploy/ui/Dockerfile, deploy/service/Dockerfile)
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
       - name: Install package
-        run: pip install -e ".[dev,google]" ruff
+        # ui: the control room's tests (tests/test_ui.py) skip without FastAPI, so CI must install it
+        run: pip install -e ".[dev,google,ui]" ruff
       - name: Lint
         run: ruff check src tests
       - name: Validate asset library manifests
         run: nraiorbit library validate
-      - name: Tests (includes the offline end-to-end demo)
+      - name: Tests (the offline end-to-end demo and the control room included)
         run: pytest -q

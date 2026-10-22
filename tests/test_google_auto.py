@@ -283,9 +283,10 @@ def test_trailer_test_run_end_to_end(setup):
     carried = [c for c in plan if c["line_id"]]
     assert carried
     total = sum(c["duration_s"] for c in plan)
+    eps = 1e-4      # far below a frame (1/24 s); Python 3.11's sum() (the images' Python) drifts by ~1e-14 here
     for c in carried:                                                            # every line whole, inside its clip
         assert c["trailer_start_s"] < c["line_at_s"] and c["line_at_s"] + c["line_duration_s"] <= \
-            c["trailer_start_s"] + c["duration_s"] + 1e-6 <= total + 1e-6
+            c["trailer_start_s"] + c["duration_s"] + eps <= total + 2 * eps
     notes = json.loads((setup.root / "08_music" / "trailer_cue.json").read_text())["notes"]
     assert "near-silence drop" in notes and "huge hit on the title card" in notes
 

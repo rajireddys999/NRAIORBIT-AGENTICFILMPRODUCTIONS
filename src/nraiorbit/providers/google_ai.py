@@ -61,15 +61,21 @@ SLEEP = time.sleep              # tests replace it
 NEVER_REFILLS = ("free_tier", "limit: 0", "prepayment credits")   # same 429, but only the owner can change these
 
 
+BUSY = ("high load", "overloaded", "UNAVAILABLE", "try again later")   # Google's own words for a busy service
+
+
 def quota_used_up(error) -> bool:
-    """A 429 RESOURCE_EXHAUSTED: the project's quota is used up for now. A refused call is never billed, and the
-    quota refills (per minute), so waiting it out is the answer, not stopping the film. Not a free tier whose limit
-    is 0 nor used-up prepaid credits: those never refill, and stop at once with their own fix."""
+    """Wait it out, don't stop the film: a 429 RESOURCE_EXHAUSTED (the project's quota is used up for now; it refills
+    per minute) or Google busy for a while ("The service is currently experiencing high load", 503 UNAVAILABLE).
+    A refused call is never billed. Not a free tier whose limit is 0 nor used-up prepaid credits: those never
+    refill, and stop at once with their own fix."""
     import re
     text = str(error)
     if any(s in text for s in NEVER_REFILLS):
         return False
-    return "RESOURCE_EXHAUSTED" in text or re.search(r"(?<!\d)429(?!\d)", text.split("\n", 1)[0]) is not None
+    first = text.split("\n", 1)[0]
+    return ("RESOURCE_EXHAUSTED" in text or re.search(r"(?<!\d)(429|503)(?!\d)", first) is not None
+            or any(w.lower() in first.lower() for w in BUSY))
 
 
 VERTEX_HINT = ("This key type is refused by the Gemini API endpoint. Use the same key through Vertex AI: set "

@@ -700,3 +700,202 @@ def test_a_faces_hold_from_the_video_step_survives_a_retry_and_the_video_step_lo
     produce.approve(pipeline, "faces", "approved in the control room\n")
     report = produce.produce(pipeline, keyframes=lambda args: None, log=lambda *_: None)
     assert report["state"] == "awaiting:render" and pipeline.look_at_new_frames is True
+
+
+def _sheet(tmp_path, state="retry", updated="2026-10-22T05:00:00+00:00"):
+    from nraiorbit.service import queue
+    st = str(tmp_path / "stories.csv")
+    queue.save(st, [{"slug": "rain", "story_uri": str(tmp_path / "rain.md"), "budget_usd": "40", "gates": "ask",
+                     "publish": "none", "state": state, "note": "", "updated": updated},
+                    {"slug": "sun", "story_uri": "x", "budget_usd": "10", "gates": "ask", "publish": "none",
+                     "state": "blocked:owner", "note": "keep me", "updated": ""}], queue.STORY_COLUMNS)
+    return st
+
+
+def test_two_ticks_that_read_the_same_row_claim_the_film_once(tmp_path, monkeypatch):
+    """monkey-saves-man-2: a tick started by hand and the scheduler's started in the same second, both read
+    `retry`, and both claimed the film (each rewrite redid the claim without looking again), so every clip was
+    bought twice. The claim now lands only on the row as it was read."""
+    from nraiorbit.service import queue
+    monkeypatch.delenv("NRAIORBIT_CLAIM_HOURS", raising=False)
+    st = _sheet(tmp_path)
+    a = queue.ready_story(queue.load(st, queue.STORY_COLUMNS))
+    b = queue.ready_story(queue.load(st, queue.STORY_COLUMNS))                 # both ticks read `retry`
+    assert a["slug"] == b["slug"] == "rain"
+    assert queue.claim_story(st, a) and a["state"] == "producing"
+    assert not queue.claim_story(st, b) and b["state"] == "retry"              # the second backs off
+    rows = {r["slug"]: r for r in queue.load(st, queue.STORY_COLUMNS)}
+    assert rows["rain"]["state"] == "producing" and rows["rain"]["updated"] == a["updated"]
+    assert rows["sun"] == {**rows["sun"], "state": "blocked:owner", "note": "keep me"}   # other rows untouched
+
+    st = _sheet(tmp_path, "producing", "2026-01-01T00:00:00+00:00")           # a claim long expired: taken once
+    c = queue.ready_story(queue.load(st, queue.STORY_COLUMNS))
+    d = queue.ready_story(queue.load(st, queue.STORY_COLUMNS))
+    assert queue.claim_story(st, c) and not queue.claim_story(st, d)
+
+    st = _sheet(tmp_path)
+    e = queue.ready_story(queue.load(st, queue.STORY_COLUMNS))
+    rows = queue.load(st, queue.STORY_COLUMNS)
+    rows[0].update(state="blocked:owner", updated=queue.now())                 # the owner stopped it since
+    queue.save(st, rows, queue.STORY_COLUMNS)
+    assert not queue.claim_story(st, e)
+    assert queue.load(st, queue.STORY_COLUMNS)[0]["state"] == "blocked:owner"
+
+
+def test_a_tick_that_read_the_row_before_another_claimed_it_leaves_the_film(tmp_path, monkeypatch):
+    from nraiorbit.service import queue
+    monkeypatch.delenv("NRAIORBIT_CLAIM_HOURS", raising=False)
+    st = _sheet(tmp_path)
+    rf = str(tmp_path / "references.csv")
+    queue.save(rf, [], queue.REFERENCE_COLUMNS)
+    (tmp_path / "rain.md").write_text("A ferryman and a flood.", encoding="utf-8")
+    template = tmp_path / "projects" / "_template"
+    template.mkdir(parents=True)
+    (template / "pipeline.yaml").write_text("providers: {video: mock}\n", encoding="utf-8")
+    stale = queue.load(st, queue.STORY_COLUMNS)                                 # what the second tick read
+    made = []
+
+    def produce_fn(root, bucket):
+        made.append(root.name)
+        return {"state": "awaiting:scenes", "steps": {}}
+    first = queue.tick(st, rf, tmp_path / "projects", bucket=None, produce_fn=produce_fn, learn_fn=None,
+                       template=template, log=lambda *_: None)
+    assert first["story"] == {"slug": "rain", "state": "awaiting:scenes"}
+    real_load, logs = queue.load, []
+    monkeypatch.setattr(queue, "load", lambda uri, cols: [dict(r) for r in stale] if uri == st else real_load(uri, cols))
+    second = queue.tick(st, rf, tmp_path / "projects", bucket=None, produce_fn=produce_fn, learn_fn=None,
+                        template=template, log=logs.append)
+    assert made == ["rain"] and second["story"] is None                       # made once
+    assert any(queue.CHANGED_SINCE_READ in line for line in logs)
+    assert real_load(st, queue.STORY_COLUMNS)[0]["state"] == "awaiting:scenes"  # the first tick's result stands
+
+
+def test_a_claim_redone_after_a_write_conflict_looks_at_the_row_again(tmp_path, monkeypatch):
+    """In the bucket the claim is a guarded write: when another tick wrote first, the sheet is read again and the
+    change redone. The redo must see that tick's claim and back off, not claim the film a second time."""
+    from nraiorbit.service import queue
+    monkeypatch.delenv("NRAIORBIT_CLAIM_HOURS", raising=False)
+    st = _sheet(tmp_path)
+    mine = queue.ready_story(queue.load(st, queue.STORY_COLUMNS))
+    before = (tmp_path / "stories.csv").read_text(encoding="utf-8")
+    theirs = queue.load(st, queue.STORY_COLUMNS)
+    theirs[0].update(state="producing", updated=queue.now())
+    after = queue.csv_of(theirs, queue.STORY_COLUMNS)
+    seen = []
+
+    def update_text(uri, change, *a, **k):                                     # read, conflict, read again
+        seen.append(change(before) is not None)                                # first look: it would claim
+        new = change(after)                                                     # the redo, on the sheet as it is
+        seen.append(new is not None)
+        return after if new is None else new
+    monkeypatch.setattr(queue, "update_text", update_text)
+    assert not queue.claim_story("gs://b/queue/stories.csv", mine) and seen == [True, False]
+    assert mine["state"] == "retry"
+
+
+
+def _refs(tmp_path, state="new", updated="2026-10-22T05:00:00+00:00"):
+    from nraiorbit.service import queue
+    rf = str(tmp_path / "references.csv")
+    queue.save(rf, [{"url": "https://youtu.be/x", "title": "Ref", "learn": "score", "minutes": "", "state": state,
+                     "profile_uri": "", "note": "", "updated": updated},
+                    {"url": "https://youtu.be/x", "title": "Ref", "learn": "camera", "minutes": "", "state": "done",
+                     "profile_uri": "p.json", "note": "", "updated": ""}], queue.REFERENCE_COLUMNS)
+    return rf
+
+
+def test_a_reference_is_learned_once_when_two_ticks_read_it_together(tmp_path, monkeypatch):
+    """A learn is paid (watching the video): the same claim as a film's, so two ticks that start together learn it
+    once, the result lands on the claimed row, and a learn cut short is picked up again when its claim expires."""
+    from nraiorbit.service import queue
+    monkeypatch.delenv("NRAIORBIT_CLAIM_HOURS", raising=False)
+    rf = _refs(tmp_path)
+    a = queue.ready_reference(queue.load(rf, queue.REFERENCE_COLUMNS))
+    b = queue.ready_reference(queue.load(rf, queue.REFERENCE_COLUMNS))
+    assert queue.claim_reference(rf, a) and a["state"] == "learning"
+    assert not queue.claim_reference(rf, b) and b["state"] == "new"
+    rows = queue.load(rf, queue.REFERENCE_COLUMNS)
+    assert [r["state"] for r in rows] == ["learning", "done"]
+    assert queue.ready_reference(rows) is None                                  # a fresh claim: nobody else learns
+    a.update(state="done", profile_uri="score.json", note="", updated=queue.now())
+    queue.write_reference(rf, a)                                                # the result: on the claimed row
+    rows = queue.load(rf, queue.REFERENCE_COLUMNS)
+    assert len(rows) == 2 and rows[0]["state"] == "done" and rows[0]["profile_uri"] == "score.json"
+    rf = _refs(tmp_path, "learning", "2026-01-01T00:00:00+00:00")               # cut short long ago: again, once
+    c = queue.ready_reference(queue.load(rf, queue.REFERENCE_COLUMNS))
+    d = queue.ready_reference(queue.load(rf, queue.REFERENCE_COLUMNS))
+    assert c is not None and queue.claim_reference(rf, c) and not queue.claim_reference(rf, d)
+
+
+def test_a_tick_that_read_a_reference_before_another_claimed_it_does_not_learn_it(tmp_path, monkeypatch):
+    from nraiorbit.service import queue
+    monkeypatch.delenv("NRAIORBIT_CLAIM_HOURS", raising=False)
+    st, rf = _sheet(tmp_path, "blocked:owner"), _refs(tmp_path)
+    stale = queue.load(rf, queue.REFERENCE_COLUMNS)
+    watched, logs = [], []
+
+    def learn_fn(url, title, what, minutes):
+        watched.append(url)
+        return tmp_path / "profile.json"
+    queue.tick(st, rf, tmp_path / "projects", bucket=None, produce_fn=None, learn_fn=learn_fn, log=lambda *_: None)
+    real_load = queue.load
+    monkeypatch.setattr(queue, "load", lambda uri, cols: [dict(r) for r in stale] if uri == rf else real_load(uri, cols))
+    second = queue.tick(st, rf, tmp_path / "projects", bucket=None, produce_fn=None, learn_fn=learn_fn, log=logs.append)
+    assert watched == ["https://youtu.be/x"] and second["reference"] is None
+    assert any(queue.CHANGED_SINCE_READ in line for line in logs)
+
+
+def test_the_cli_never_adds_the_same_story_or_watch_twice(tmp_path, capsys):
+    from types import SimpleNamespace
+
+    from nraiorbit import cli
+    from nraiorbit.service import queue
+    st, rf = _sheet(tmp_path), _refs(tmp_path)
+    story = dict(action="add-story", stories=st, references=rf, story_uri="s.md", budget=None, gates=None,
+                 publish=None)
+    with pytest.raises(SystemExit, match="already in"):
+        cli.cmd_service(SimpleNamespace(**story, slug="rain"))                   # a second rain would never run
+    cli.cmd_service(SimpleNamespace(**story, slug="moon"))
+    assert [r["slug"] for r in queue.load(st, queue.STORY_COLUMNS)] == ["rain", "sun", "moon"]
+    ref = dict(action="add-reference", stories=st, references=rf, title=None, minutes=None)
+    with pytest.raises(SystemExit, match="already queued"):
+        cli.cmd_service(SimpleNamespace(**ref, url="https://youtu.be/x", learn="camera"))
+    cli.cmd_service(SimpleNamespace(**ref, url="https://youtu.be/y", learn=None))
+    assert [(r["url"], r["learn"]) for r in queue.load(rf, queue.REFERENCE_COLUMNS)][-1] == ("https://youtu.be/y", "all")
+
+
+def test_a_reference_result_lands_on_the_claimed_row_even_after_the_owner_renamed_it(tmp_path, monkeypatch):
+    """The owner retitled the reference while it was being learned, and the same link waits in another row for a
+    different focus: the result goes to the claimed (learning) row, never to the waiting one."""
+    from nraiorbit.service import queue
+    monkeypatch.delenv("NRAIORBIT_CLAIM_HOURS", raising=False)
+    rf = str(tmp_path / "references.csv")
+    queue.save(rf, [{"url": "https://youtu.be/x", "title": "Ref", "learn": "score", "minutes": "", "state": "new",
+                     "profile_uri": "", "note": "", "updated": "t0"},
+                    {"url": "https://youtu.be/x", "title": "Ref", "learn": "camera", "minutes": "", "state": "new",
+                     "profile_uri": "", "note": "", "updated": "t0"}], queue.REFERENCE_COLUMNS)
+    a = queue.ready_reference(queue.load(rf, queue.REFERENCE_COLUMNS))
+    assert queue.claim_reference(rf, a)
+    rows = queue.load(rf, queue.REFERENCE_COLUMNS)
+    rows[0]["title"] = "Renamed"                                                # the owner, mid-learn
+    queue.save(rf, rows, queue.REFERENCE_COLUMNS)
+    a.update(state="done", profile_uri="score.json", updated=queue.now())
+    queue.write_reference(rf, a)
+    rows = queue.load(rf, queue.REFERENCE_COLUMNS)
+    assert [(r["learn"], r["state"]) for r in rows] == [("score", "done"), ("camera", "new")]
+
+
+def test_a_reference_result_goes_to_the_row_its_tick_claimed_among_identical_rows(tmp_path, monkeypatch):
+    from nraiorbit.service import queue
+    monkeypatch.delenv("NRAIORBIT_CLAIM_HOURS", raising=False)
+    rf = str(tmp_path / "references.csv")
+    same = {"url": "https://youtu.be/x", "title": "Ref", "learn": "score", "minutes": "", "profile_uri": "",
+            "note": ""}
+    queue.save(rf, [{**same, "state": "new", "updated": "t1"}, {**same, "state": "new", "updated": "t2"}],
+               queue.REFERENCE_COLUMNS)                                         # two identical rows, by hand
+    rows = queue.load(rf, queue.REFERENCE_COLUMNS)
+    second = rows[1]
+    assert queue.claim_reference(rf, second)                                     # a tick took the second one
+    second.update(state="done", profile_uri="score.json", updated=queue.now())
+    queue.write_reference(rf, second)
+    assert [r["state"] for r in queue.load(rf, queue.REFERENCE_COLUMNS)] == ["new", "done"]

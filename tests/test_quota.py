@@ -84,3 +84,16 @@ def test_the_tick_turns_a_quota_error_into_a_retry(tmp_path, monkeypatch):
                    template=template, log=lambda *_: None)
         row = next(csv.DictReader(io.StringIO(stories.read_text())))
         assert row["state"] == expected, row
+
+
+def test_google_busy_is_waited_out_like_a_used_up_quota_never_a_block():
+    """monkey-saves-man-2 stopped at 16:54 UTC on 2026-10-22: Veo answered "high load" and the film was marked
+    blocked, waiting for the owner, for a condition that passes on its own. Busy is now waited out like a quota."""
+    busy = GoogleAPIError("Veo sc010_s001 failed: The service is currently experiencing high load and cannot process "
+                          "your request. Please try again later. Operation ID: 55b80b9e\nRe-run to try this shot again.")
+    assert quota_used_up(busy)
+    assert quota_used_up(GoogleAPIError("Veo sc001_s001: 503 UNAVAILABLE. {'error': {'code': 503}}"))
+    assert quota_used_up(GoogleAPIError("Gemini image (x): the model is overloaded"))
+    assert not quota_used_up(GoogleAPIError("Veo sc003_s001 failed: usage guidelines\nRe-run to try this shot again."))
+    assert not quota_used_up(GoogleAPIError("Veo sc001_s001: 404 NOT_FOUND. model was not found"))
+    assert not quota_used_up(GoogleAPIError("payload of 5030 bytes refused"))             # 503 inside a number

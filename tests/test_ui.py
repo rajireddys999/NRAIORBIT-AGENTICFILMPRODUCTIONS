@@ -1218,3 +1218,21 @@ def test_a_faces_hold_from_the_video_step_names_its_new_stills_on_the_film_page(
     assert d["stages"]["faces"]["status"] == "awaiting" and d["stages"]["faces"]["text"] == named.strip()
     (root / "demo" / "reviews" / "faces.pending").write_text("x", encoding="utf-8")
     assert films.detail(Store(str(root)), "demo", rows(root)[0])["stages"]["faces"]["text"].endswith("a first frame")
+
+
+def test_a_reference_retry_changes_only_the_blocked_row_clicked(client, root):
+    """The same link queued for two focuses: Retry on the blocked one must not flip the other, whether it is done
+    (re-learning is paid again) or being learned right now (a second tick would learn it twice)."""
+    url = "https://www.youtube.com/watch?v=abc123xyz"
+    base = {"url": url, "title": "Ref", "minutes": "", "profile_uri": "", "note": "", "updated": "t0"}
+    for other in ("learning", "done"):
+        (root / "queue" / "references.csv").write_text(csv_text([
+            {**base, "learn": "score", "state": "blocked:LearnCostError"}, {**base, "learn": "trailer", "state": other}],
+            queue.REFERENCE_COLUMNS))
+        client.post("/references/retry", data={"url": url, "learn": "score"})
+        assert [r["state"] for r in rows(root, queue.REFERENCE_COLUMNS, "references.csv")] == ["retry", other]
+        client.post("/references/retry", data={"url": url, "learn": "trailer"})   # a stale page's button
+        assert [r["state"] for r in rows(root, queue.REFERENCE_COLUMNS, "references.csv")] == ["retry", other]
+    (root / "queue" / "references.csv").write_text(csv_text([{**base, "learn": "score", "state": "blocked:X"}],
+                                                            queue.REFERENCE_COLUMNS))
+    assert 'name="learn" value="score"' in client.get("/references").text      # the button names its focus

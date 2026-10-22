@@ -56,7 +56,7 @@
         {% if r.note %}<p class="note">{{ r.note|short(160) }}</p>{% endif %}
         <div class="row between" style="margin-top:4px">
           <span class="mono tiny dim">{% if r.updated %}{{ r.updated|local }}{% endif %}</span>
-          {% if r.state.startswith('blocked') %}<form class="inline" method="post" action="/references/retry"><input type="hidden" name="url" value="{{ r.url }}"><button class="quiet sm">Retry</button></form>{% endif %}
+          {% if r.state.startswith('blocked') %}<form class="inline" method="post" action="/references/retry"><input type="hidden" name="url" value="{{ r.url }}"><input type="hidden" name="learn" value="{{ r.learn }}"><button class="quiet sm">Retry</button></form>{% endif %}
         </div>
       </div>
     </article>

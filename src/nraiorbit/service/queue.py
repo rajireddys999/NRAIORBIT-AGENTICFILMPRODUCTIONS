@@ -185,7 +185,57 @@ def write_story(uri: str, row: dict) -> None:
     _write_row(uri, row, STORY_COLUMNS, "slug", TICK_COLUMNS)
 
 
+def claim_story(uri: str, row: dict) -> bool:
+    """Take this film for this tick: its row goes to `producing` only if it still has the state and time this tick
+    read, checked and written in one guarded write (generation precondition). Two ticks that start in the same
+    second both read `retry`; the first claim lands, the second is re-read, finds `producing`, and backs off, so the
+    film is made (and paid for) once. On success the row in hand is updated; False leaves it, and the sheet, alone."""
+    seen, stamp, took = (row["state"], row.get("updated", "")), now(), [False]
+
+    def change(text: str) -> str | None:
+        rows = rows_of(text, STORY_COLUMNS)
+        mine = next((r for r in rows if r["slug"] == row["slug"]), None)
+        took[0] = mine is not None and (mine["state"], mine["updated"]) == seen
+        if not took[0]:
+            return None
+        mine.update(state="producing", updated=stamp)
+        return csv_of(rows, STORY_COLUMNS)
+    try:
+        update_text(uri, change)
+    except SheetContended:                                # the sheet kept changing: another tick's turn
+        return False
+    if took[0]:
+        row.update(state="producing", updated=stamp)
+    return took[0]
+
+
 REFERENCE_OWNER_COLUMNS = ("url", "title", "learn", "minutes")
+
+
+def claim_reference(uri: str, row: dict) -> bool:
+    """The same claim for a reference, before its paid learn: the row the tick picked (its owner's columns, state
+    and time as read) goes to `learning` in one guarded write, or the tick leaves it to the one that got there first."""
+    seen, stamp, took = (row["state"], row.get("updated", "")), now(), [False]
+
+    def change(text: str) -> str | None:
+        rows = rows_of(text, REFERENCE_COLUMNS)
+        mine = next((r for r in rows if all(r[c] == row.get(c, "") for c in REFERENCE_OWNER_COLUMNS)
+                     and (r["state"], r["updated"]) == seen), None)
+        took[0] = mine is not None
+        if mine is None:
+            return None
+        mine.update(state="learning", updated=stamp)
+        return csv_of(rows, REFERENCE_COLUMNS)
+    try:
+        update_text(uri, change)
+    except SheetContended:
+        return False
+    if took[0]:
+        row.update(state="learning", updated=stamp, claimed_at=stamp)   # claimed_at: where the result goes
+    return took[0]
+
+
+CHANGED_SINCE_READ = "changed since this tick read it (another tick took it, or it was edited); left for the next tick"
 
 
 def write_reference(uri: str, row: dict) -> None:
@@ -201,8 +251,10 @@ def write_reference(uri: str, row: dict) -> None:
             return all(r[c] == row.get(c, "") for c in REFERENCE_OWNER_COLUMNS)
 
         def pending(r: dict) -> bool:
-            return r["state"] in ("new", "retry")
-        target = (next((r for r in rows if same(r) and pending(r)), None)
+            return r["state"] in ("new", "retry", "learning")
+        target = (next((r for r in rows if r["state"] == "learning" and row.get("claimed_at")      # the claimed row
+                        and r["updated"] == row["claimed_at"] and r["url"] == row["url"]), None)
+                  or next((r for r in rows if same(r) and pending(r)), None)
                   or next((r for r in rows if r["url"] == row["url"] and pending(r)), None)
                   or next((r for r in rows if same(r)), None))
         if target is None:
@@ -220,8 +272,8 @@ def quota_strikes(note: str) -> int:
     return int(m.group(1)) if m else 0
 
 
-QUOTA_NOTE = ("Google's quota was used up for now; everything already made is kept, and the runner goes on from there "
-              "at its next tick")
+QUOTA_NOTE = ("Google was busy or its quota was used up for now; everything already made is kept, and the runner goes "
+              "on from there at its next tick")
 
 
 def after_quota(s: dict) -> dict:
@@ -229,8 +281,8 @@ def after_quota(s: dict) -> dict:
     strikes = quota_strikes(s.get("note", "")) + 1
     return {"state": "blocked:quota" if strikes >= 3 else "retry",
             "note": f"quota ({strikes}): {QUOTA_NOTE}" if strikes < 3 else
-            f"quota ({strikes}): Google's quota stayed used up for three runs; check the project's quotas in the "
-            "Google Cloud console (or wait an hour), then Retry. Everything already made is kept."}
+            f"quota ({strikes}): Google stayed busy or out of quota for three runs; check the project's quotas in "
+            "the Google Cloud console (or wait an hour), then Retry. Everything already made is kept."}
 
 
 def restore_strikes(note: str) -> int:
@@ -242,9 +294,10 @@ def restore_strikes(note: str) -> int:
 
 # -------------------------------------------------------------------------------------------------- the work
 
-def claimed(row: dict, hours: float | None = None) -> bool:
-    """A `producing` row whose claim is younger than the longest a run can take: another execution is on it."""
-    if row.get("state") != "producing" or not row.get("updated"):
+def claimed(row: dict, hours: float | None = None, state: str = "producing") -> bool:
+    """A `producing` row (a reference: `learning`) whose claim is younger than the longest a run can take: another
+    execution is on it."""
+    if row.get("state") != state or not row.get("updated"):
         return False
     try:
         since = datetime.datetime.fromisoformat(row["updated"])
@@ -267,7 +320,9 @@ def ready_story(rows: list[dict]) -> dict | None:
 
 
 def ready_reference(rows: list[dict]) -> dict | None:
-    return next((r for r in rows if r["state"] in ("new", "retry")), None)
+    """new, retry, or a learn that was interrupted (learning, once its claim has expired)."""
+    return next((r for r in rows if r["state"] in ("new", "retry")
+                 or (r["state"] == "learning" and not claimed(r, state="learning"))), None)
 
 
 def make_project(projects_dir: Path, template: Path, row: dict, story_text: str,
@@ -451,6 +506,9 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
         except Exception as exc:
             log(f"  library restore skipped: {type(exc).__name__}: {str(exc)[:120]}")
     # references first: cheap and useful to the next film
+    if r and not claim_reference(references_uri, r):    # one tick per paid learn
+        log(f"  reference {r['url']}: {CHANGED_SINCE_READ}")
+        r = None
     if r:
         _doing(tracker, "reference", url=r["url"])
         try:
@@ -464,11 +522,12 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
     # one story step, from the sheet as it is now: a reference profile takes minutes, and the owner may edit meanwhile
     rows = load(stories_uri, STORY_COLUMNS)
     s = ready_story(rows)
+    prior, was_approved = (s["state"], s["state"] == "approved") if s else (None, False)
+    if s and not claim_story(stories_uri, s):            # the claim, before the slow restore: one tick per film
+        log(f"  story {s['slug']}: {CHANGED_SINCE_READ}")
+        s = None
     if s:
         root = projects_dir / s["slug"]
-        prior, was_approved = s["state"], s["state"] == "approved"
-        s.update(state="producing", updated=now())        # the claim, before the slow restore: no second tick joins in
-        write_story(stories_uri, s)
         _doing(tracker, "story", slug=s["slug"])
         mirror_reviews, film, restored = False, None, False
         if tracker is not None and _takes_progress(produce_fn):

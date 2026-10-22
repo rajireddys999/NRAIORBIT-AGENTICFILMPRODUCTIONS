@@ -13,7 +13,9 @@ What a strong Story Bible contains:
   design a consistent face and body (age, height, build, skin tone, face, hair, marks), a
   baseline costume, a personality, an arc, and a voice spec (pitch, timbre, dialect,
   register, code-mix level, speech traits). Keep the cast focused: the leads plus the
-  supporting characters the plot needs.
+  supporting characters the plot needs. Mark an animal that makes sounds and never talks
+  in the story (a monkey, a dog, a bird) with silent_animal: true; leave it false for
+  every person, god, spirit or other being, and for an animal that talks.
 - Acts made of beats. Each beat gets one primary rasa, an intensity from 1 to 10, the
   characters involved, and a set-piece tag where the beat is a hero intro, fight, chase,
   song, interval bang, flashback, pre-climax, climax, emotional peak or comedy track.

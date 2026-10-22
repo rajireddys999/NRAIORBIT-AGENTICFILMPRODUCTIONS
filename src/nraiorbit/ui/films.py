@@ -464,6 +464,10 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         faces_text = f"{framed} first frames; {len(with_leads) - framed} shots were filmed without one"
     if mock:
         faces_text = "no first frames: mock video"
+    if faces_status == "awaiting":                     # held mid-video: name the new stills to look at
+        held = store.read_text(f"{slug}/reviews/faces.pending") or ""
+        if held.startswith("New first frames"):
+            faces_text = held.strip()
     put("faces", faces_status, faces_text)
     cues = [c for c in cue_sheet.get("cues", []) if c.get("instruments")]
     cue_ids = {c.get("cue_id") for c in cues}
@@ -577,7 +581,7 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
             ("picked by the runner" if same else "set in pipeline.yaml")
         return {"voice_id": vid, "name": pick.get("name") if same else None, "why": pick.get("why") if same else None,
                 "source": source, "shared": bool(pick.get("shared")) if same else False}
-    from ..characters import animal_physical
+    from ..characters import animal_physical, marked_animal
     speakers = {b.get("character_id") for sc in scenes for b in sc.get("blocks", []) if b.get("kind") == "dialogue"}
 
     prov_all = resolved.get("providers") or {}                     # the film's config over the defaults
@@ -588,9 +592,9 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
     def voice_note(cid, spec):
         if not to_elevenlabs or cid not in speakers or el_voice(cid):  # speech elsewhere (mock, Gemini): no note
             return None
-        if animal_physical(spec.get("physical") or {}):
-            return ("An animal gets no voice of its own: set one below, put recordings in inbox/dialogue/<line>, "
-                    "or rewrite its lines as sound.")
+        if marked_animal(spec) or animal_physical(spec.get("physical") or {}):
+            return ("An animal with lines to speak gets no voice by itself: set one below if it talks (and list it "
+                    "in voice.animals_speak), or rewrite its lines as sound.")
         return ("No voice yet: the runner picks one at the cast step, or set one below." if vcfg.get("auto_cast")
                 else "No voice yet: set one below; the film stops before its cost gate until every speaker has one.")
     cast_cards = []

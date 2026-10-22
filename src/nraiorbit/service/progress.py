@@ -24,6 +24,7 @@ from pathlib import Path
 
 RUNNING = "queue/running/"
 THROTTLE_S = 15.0            # a line-only update goes up at most this often; a phase change goes up at once
+MIN_GAP_S = 1.1              # Cloud Storage takes one write a second to the same object; a faster one is refused
 STALE_HOURS = 7.0            # longer than the job's time limit: a running record this old was left behind
 TIMEOUT_S = 10               # a slow bucket must not hold the film up for the client's default minute
 
@@ -41,13 +42,16 @@ class Tracker:
     """One execution's running record. `uploader(path, text)`, `remover(path)` and `lister(prefix)` (returning
     {path: text}) default to the storage client on `bucket`; tests pass dict-backed fakes and a `clock`."""
 
-    def __init__(self, bucket, execution=None, uploader=None, remover=None, clock=None, log=print, lister=None):
+    def __init__(self, bucket, execution=None, uploader=None, remover=None, clock=None, log=print, lister=None,
+                 sleep=None):
         self.bucket = bucket
         self.execution = execution or os.environ.get("CLOUD_RUN_EXECUTION") or f"local-{os.getpid()}"
         self.uploader = uploader or self._upload
         self.remover = remover or self._remove
         self.lister = lister or self._list
         self.clock = clock or time.time
+        self.sleep = sleep or time.sleep
+        self._last: dict[str, float] = {}                # path -> when it was last written
         self.log = log
         self.started = stamp(self.clock())
         self.path = f"{RUNNING}{self.execution}.json"
@@ -80,18 +84,32 @@ class Tracker:
             return
         self._closed = True
         if self.record is not None and self.bucket:
+            self._space(self.path)
             try:
                 self.remover(self.path)
             except Exception as exc:
                 self.failed(exc)
+            finally:
+                self._last[self.path] = self.clock()
 
     def send(self, path: str, record: dict) -> None:
         if not self.bucket:
             return
+        self._space(path)
         try:
             self.uploader(path, json.dumps(record, indent=1, ensure_ascii=False))
         except Exception as exc:
             self.failed(exc)
+        finally:
+            self._last[path] = self.clock()              # the gap runs from when this change landed
+
+    def _space(self, path: str) -> None:
+        """Cloud Storage takes one change a second to the same object and refuses a faster one with 429, so a
+        change that comes sooner waits out the rest of that second. Only phase changes come this close together
+        (lines go up every THROTTLE_S), so the wait is rare and never more than MIN_GAP_S; no update is dropped."""
+        wait = MIN_GAP_S - (self.clock() - self._last.get(path, float("-inf")))
+        if wait > 0.05:                                  # MIN_GAP_S keeps a tenth of a second spare; skip a sliver
+            self.sleep(min(wait, MIN_GAP_S))
 
     def failed(self, exc: Exception) -> None:
         if not self._warned:

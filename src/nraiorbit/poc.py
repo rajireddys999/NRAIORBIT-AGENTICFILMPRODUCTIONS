@@ -39,7 +39,7 @@ POC_CONFIG = {
     "providers": {"video": "veo", "tts": "inbox", "music": "inbox"},
     "voice": {"inbox_fallback": "gemini"},
     # Quality first: Veo 3.1 standard at native 1080p (8 s clips), Gemini's pro image model for faces/first frames.
-    "google": {"veo_mode": "keyframe", "veo_model": "veo-3.1-generate-preview", "veo_tier": "standard",
+    "google": {"veo_mode": "keyframe", "veo_model": "veo-3.1-generate-001", "veo_tier": "standard",
                "veo_resolution": "1080p", "image_model": "gemini-3-pro-image"},
     "budget": {"max_usd": 250},
     # Spending is guarded by the preview + confirmation and the budget, so the POC runs straight through.

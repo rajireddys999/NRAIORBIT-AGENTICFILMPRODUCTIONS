@@ -33,8 +33,8 @@ ANIMAL_STUDIO = ("Photorealistic wildlife photograph, soft even light, plain lig
 def is_animal(spec: CharacterSpec) -> bool:
     """A character the story bible describes as an animal (fur, a tail, a macaque...): its pictures are wildlife
     photographs, never a person's portrait, and it is never given a voice automatically."""
-    from .characters import animal_physical
-    return animal_physical(spec.physical)
+    from .characters import animal_physical, marked_animal
+    return marked_animal(spec) or animal_physical(spec.physical)
 
 
 def portrait_prompt(spec: CharacterSpec, era_region: str) -> str:

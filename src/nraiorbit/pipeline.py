@@ -41,7 +41,7 @@ from .post.speech import clarify_dialogue, level_gain_db
 from .post.subtitles import write_srt
 from .post.trailer import PUNCH_DROP_S, TrailerLine, elevation_arc, plan_trailer
 from .providers import RenderContext, get_provider
-from .providers.google_ai import GoogleAPIError, ShotFiltered
+from .providers.google_ai import FirstFrameToLookAt, GoogleAPIError, ShotFiltered
 from .providers.mock import MockTTS, MockVideo
 from .shotpack import clips_for, selected
 from .schemas import CastLock, Critique, Cue, CueSheet, Outline, SceneScript, ShotList, StoryBible
@@ -65,6 +65,61 @@ class GatePending(Exception):
 
 class PipelineBlocked(Exception):
     pass
+
+
+SAFETY_REWRITES = "safety_rewrites.jsonl"
+
+
+def safer_shot_fn(root: Path, director: Callable[[], Director], log=print):
+    """What the video provider calls when Google refuses a shot for safety: the director words the shot again to show
+    the same moment without what the filter blocks; the shot list is saved with it (the frame, the clip and the
+    owner's view all use the new words) and reports/safety_rewrites.jsonl keeps both wordings. None when the shot's
+    words are a rewrite already or the rewrite fails, so the refusal stands and goes to the review queue."""
+    reports = Path(root) / "reports"
+
+    def earlier(done: Path) -> list[dict]:
+        rows = []
+        for line in done.read_text(encoding="utf-8").splitlines() if done.exists() else []:
+            try:
+                rows.append(json.loads(line))
+            except ValueError:                             # a line cut short by a killed run: skip it
+                continue
+        return rows
+
+    def safer(shot, scene_id: str, refusal: str):
+        done = reports / SAFETY_REWRITES
+        if any(r.get("shot_id") == shot.shot_id and (r.get("after") or {}).get("image_prompt") == shot.image_prompt
+               for r in earlier(done)):                     # these words are the rewrite already (a re-plan is not)
+            log(f"  {shot.shot_id}: refused again after it was worded again; it goes to the review queue")
+            return None
+        path = Path(root) / "04_shots" / f"{scene_id}.json"
+        try:
+            bible = StoryBible.model_validate_json((Path(root) / "01_story_bible.json").read_text(encoding="utf-8"))
+            new = director().safer_shot(bible, shot, refusal)
+            shots = ShotList.model_validate_json(path.read_text(encoding="utf-8"))
+        except Exception as e:                              # the refusal stands; the run is not stopped by this
+            log(f"  {shot.shot_id}: refused for safety, and it could not be worded again ({type(e).__name__}: {e})")
+            return None
+        words = {"image_prompt": new.image_prompt, "motion_prompt": new.motion_prompt}
+        if not any(s.shot_id == shot.shot_id for s in shots.shots):
+            log(f"  {shot.shot_id}: refused for safety, and it is not in {path.name} to be worded again")
+            return None
+        # only the words change in the shot list: the shot in hand may be trimmed for the edit (duration_s)
+        path.write_text(shots.model_copy(update={"shots": [s.model_copy(update=words) if s.shot_id == shot.shot_id
+                                                           else s for s in shots.shots]}).model_dump_json(indent=2),
+                        encoding="utf-8")
+        fixed = shot.model_copy(update=words)
+        reports.mkdir(parents=True, exist_ok=True)
+        cut = done.exists() and not done.read_text(encoding="utf-8").endswith("\n")   # a line a killed run left
+        with done.open("a", encoding="utf-8") as f:
+            f.write(("\n" if cut else "") + json.dumps({"shot_id": shot.shot_id, "refusal": refusal[:300],
+                                "before": {"image_prompt": shot.image_prompt, "motion_prompt": shot.motion_prompt},
+                                "after": {"image_prompt": fixed.image_prompt, "motion_prompt": fixed.motion_prompt}},
+                               ensure_ascii=False) + "\n")
+        log(f"  {shot.shot_id}: refused by Google's safety filter; worded again and tried once more")
+        return fixed
+
+    return safer
 
 
 class ProjectPaths:
@@ -114,6 +169,7 @@ class Pipeline:
         self.face_detector = None                      # lip-sync speaker lock; tests inject a fake
         self.face_mesh = None                          # lipsync.shots.<id>.mesh; tests inject a fake
         self.takes = load_takes(self.p.root)
+        self.look_at_new_frames = False                 # produce sets it when the faces gate is on (ask)
         self.log = log
         self.on_stage = None                           # called with each stage's name as it starts (live progress)
         self.story_analyst = StoryAnalyst(llm, self.cfg)
@@ -282,10 +338,32 @@ class Pipeline:
                 problems = self._script_problems(script, known)
                 if problems:
                     raise PipelineBlocked(f"{sc.scene_id}: {problems}")
-            script = script.model_copy(update={"scene_id": sc.scene_id})
+            script = self._animal_lines_as_sound(script.model_copy(update={"scene_id": sc.scene_id}), bible)
             self._save(path, script)
             previous = script.synopsis
             self.log(f"  {sc.scene_id}: {sum(b.kind == 'dialogue' for b in script.blocks)} lines")
+
+    def _animal_lines_as_sound(self, script: SceneScript, bible: StoryBible) -> SceneScript:
+        """An animal's "lines" are its sounds: an action line, never dialogue, so no voice reads a description aloud
+        and no lip-sync is paid on an animal's face. Only characters the story bible marks silent_animal: true;
+        voice.animals_speak (true, or the ids that talk) keeps a talking animal's lines, whose voice is then set on
+        its cast card."""
+        from .characters import silent_animals
+        animals = silent_animals(bible.characters, self.cfg)
+
+        def spoken(b) -> bool:
+            return b.kind == "dialogue" and b.character_id in animals
+
+        def as_sound(b):
+            text = f"{animals[b.character_id]} makes animal sounds and gestures, no words (meaning: {b.text_en})"
+            return b.model_copy(update={"kind": "action", "character_id": None, "delivery": None,
+                                        "text_en": text, "text_te": text})       # nothing left for a voice to read
+        n = sum(map(spoken, script.blocks))
+        if not n:
+            return script
+        blocks = [as_sound(b) if spoken(b) else b for b in script.blocks]
+        self.log(f"  {script.scene_id}: {n} animal line(s) kept as sound, not speech")
+        return script.model_copy(update={"blocks": blocks})
 
     @staticmethod
     def _script_problems(script: SceneScript, known: set[str]) -> list[str]:
@@ -585,6 +663,10 @@ class Pipeline:
         lock = self._lock()
         prov = self.cfg["providers"]
         video = get_provider("video", prov["video"], **self._provider_kwargs("video", prov["video"], lock))
+        if hasattr(video, "safer"):                     # a frame or clip Google refuses is worded again once
+            video.safer, video.log = safer_shot_fn(self.p.root, lambda: self.director, self.log), self.log
+            video.look_first = self.look_at_new_frames   # the runner's faces gate: a new still waits for a look
+        self._to_look = []
         tts = get_provider("tts", prov["tts"], **self._provider_kwargs("tts", prov["tts"], lock))
         music = get_provider("music", prov["music"], **self._provider_kwargs("music", prov["music"], lock))
         face_guard = self._face_guard(lock)
@@ -654,6 +736,8 @@ class Pipeline:
                     placed.add(bid)
                     prev_end = start + dur
                 t += shot.duration_s
+
+        self._hold_for_new_frames()
 
         lipsync = prov.get("lipsync") or "none"
         if lipsync != "none":                          # the speaker's mouth redrawn to the Telugu line, shot by shot
@@ -881,6 +965,20 @@ class Pipeline:
                  + (f", {sum(1 for _, c in crops if id(c) in done)} speaker crops" if crops else ""))
         return out
 
+    def _hold_for_new_frames(self) -> None:
+        """Stills drawn while the video was made (missing at the faces gate, or redrawn after Google refused the
+        shot) are not animated until the owner has looked: the faces approval is taken back and faces held again,
+        naming them. Every clip already made is kept, so the next run pays only for these."""
+        if not self._to_look:
+            return
+        (self.p.reviews / "faces.approved").unlink(missing_ok=True)
+        self.p.reviews.mkdir(parents=True, exist_ok=True)
+        (self.p.reviews / "faces.pending").write_text(
+            f"New first frames were drawn while the video was made: {', '.join(self._to_look)} (missing, or drawn "
+            "again after Google refused the shot). Look at them in the control room, then approve faces; every clip "
+            "already made is kept.\n", encoding="utf-8")
+        raise GatePending("faces", self.p.root)
+
     def _render_shot(self, video, shot, ctx: RenderContext, face_guard) -> Path:
         # Without a face guard you choose the take (takes.yaml, `nraiorbit retake`); with one, it retakes itself.
         first = 1 if face_guard else self.takes.get(shot.shot_id, 1)
@@ -899,6 +997,9 @@ class Pipeline:
                     raise PipelineBlocked(str(stop)) from None
                 except FileNotFoundError as missing:
                     raise PipelineBlocked(str(missing)) from None
+                except FirstFrameToLookAt:                 # drawn, not animated: the faces gate comes after the loop
+                    self._to_look.append(shot.shot_id)
+                    return clip
             if face_guard is None or not shot.characters_in_frame:
                 return clip
             last_result = self._check_identity(face_guard, shot, clip)

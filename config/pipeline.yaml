@@ -61,7 +61,8 @@ google:                            # used by the veo / gemini / lyria providers 
   image_location: null             #   (Veo: us-central1; gemini-3-pro-image: global)
   tts_location: null
   music_location: global           #   (Lyria 3 is served from global only)
-  veo_model: veo-3.1-fast-generate-preview   # `nraiorbit google models` lists what your key can use
+  veo_model: veo-3.1-fast-generate-001   # `nraiorbit google models` lists what your key can use; a retired
+                                         # -preview name is replaced by its released -001 name when Google says so
   veo_tier: fast                   # pricing tier of that model: standard | fast | lite
   veo_resolution: 720p             # generate 720p; the edit upscales to film.resolution
   veo_mode: keyframe               # keyframe (Gemini first frame -> Veo) | reference (Veo asset references, 8 s)
@@ -140,6 +141,9 @@ render:
   only: []                         # generate only these ([] = all): scene ids, shot ids, "trailer"; others reuse paid clips
 
 voice:
+  animals_speak: false             # false: the lines of a character the story bible marks silent_animal are its
+                                   # sounds, written as action (no voice, no lip-sync); true: every animal talks;
+                                   # [ids]: just those animals talk
   auto_cast: false                 # true: each speaking character without a voice gets one from the ElevenLabs
                                    # account at the cast step (the runner's template sets it); the owner can change any
   mode: tts                        # performance_vc | tts | api_tts_vc  (see docs/VOICE_TELUGU.md)

@@ -274,11 +274,19 @@ def cmd_identity(args) -> None:
           "this again to regenerate just those.")
 
 
+def _claude(root: Path, cfg: dict):
+    from .llm import ClaudeClient
+    return ClaudeClient(model=cfg["llm"]["model"], max_tokens=cfg["llm"]["max_tokens"],
+                        usage_log=root / "reports" / "llm_usage.jsonl")
+
+
 def cmd_keyframes(args) -> None:
     """First frames only (keyframe mode): check every face before any video is paid for. Delete a still you reject
     and run this again to make just that one; `run` then animates the stills that are there."""
+    from .agents import Director
     from .config import load_navarasa
     from .costing import SpendLedger, load_pricing, load_takes
+    from .pipeline import safer_shot_fn
     from .providers.google_ai import ShotFiltered, VeoVideo
     from .schemas import CastLock, ShotList
     from .shotpack import clips_for, selected
@@ -313,13 +321,15 @@ def cmd_keyframes(args) -> None:
         return
     ledger = SpendLedger(paths.reports / "cost.jsonl", cfg.get("budget", {}).get("max_usd"))
     video = VeoVideo(root, AssetRegistry.load(REPO_ROOT / "library"), cfg, pricing, ledger, load_navarasa())
+    video.safer = safer_shot_fn(root, lambda: Director(_claude(root, cfg), cfg))
     made = 0
     for scene_id, shot, attempt in todo:
         try:
             video.make_keyframe(shot, scene_id, lock, attempt)
             made += 1
         except ShotFiltered as blocked:
-            print(f"  {shot.shot_id}: blocked ({blocked}); adjust its image_prompt and run again")
+            print(f"  {shot.shot_id}: refused by Google's safety filter, also when worded again ({blocked}); "
+                  f"change its image_prompt in 04_shots/{scene_id}.json and run again")
     print(f"{made} keyframe(s) in {root / '06_keyframes'}. Check them; delete any you reject and run this again.")
 
 

@@ -83,12 +83,15 @@ def clear(pipeline: Pipeline, gate: str, *suffixes: str) -> None:
 
 
 def _faces_needed(pipeline: Pipeline) -> bool:
-    """The faces gate applies when video is paid from first frames and no clips exist yet."""
+    """The faces gate applies when video is paid from first frames and no clips exist yet, or when the video step
+    held it again for stills drawn while it ran (faces.pending); an approval passes it."""
     cfg = pipeline.cfg
     if cfg.get("providers", {}).get("video") != "veo" or cfg.get("google", {}).get("veo_mode", "keyframe") != "keyframe":
         return False
     if (pipeline.p.reviews / "faces.approved").exists():
         return False
+    if (pipeline.p.reviews / "faces.pending").exists():  # held mid-video for new stills: clips exist, it still waits
+        return True
     return not any((pipeline.p.root / "inbox" / "video").glob("*/*.mp4"))
 
 
@@ -186,13 +189,15 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
             except SystemExit as e:                      # the command reports its own reason
                 report["steps"]["faces"] = f"blocked: {e}"
                 return finish(f"blocked:{str(e)[:120]}")
-        hold(pipeline, "faces", "Look at the first frames in the control room, then approve faces.\n")
+        if not (pipeline.p.reviews / "faces.pending").exists():   # a hold naming new stills keeps its words
+            hold(pipeline, "faces", "Look at the first frames in the control room, then approve faces.\n")
         report["steps"]["faces"] = "awaiting:faces"
         return finish("awaiting:faces")
     clear(pipeline, "faces")
     report["steps"]["faces"] = "approved" if approved(pipeline, "faces") else "not needed"
 
     # 4. the paid stages, assembly and trailer under the cap
+    pipeline.look_at_new_frames = pol["gates"] == "ask"   # a still drawn now waits for the faces gate before its clip
     while True:
         try:
             pipeline.run()

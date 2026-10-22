@@ -41,6 +41,11 @@ class ShotFiltered(RuntimeError):
     """The provider's safety filter refused this shot; it goes to the review queue."""
 
 
+class FirstFrameToLookAt(RuntimeError):
+    """A first frame drawn while the video is made (it was missing, or redrawn after a refusal): with the faces gate
+    on (look_first), it is not animated until the owner has looked at it."""
+
+
 class GoogleSetupError(RuntimeError):
     """The Google SDK or credentials are missing."""
 
@@ -98,6 +103,17 @@ def _call(fn, what: str, **kwargs):
                         "the project's pipeline.yaml. Re-run to resume.")
             raise GoogleAPIError(f"{what}: {e}\n{hint}") from None
         raise
+
+
+def other_name(model: str) -> str | None:
+    """The same model under its other name: preview <-> released ("veo-3.1-fast-generate-preview" <->
+    "veo-3.1-fast-generate-001"). Google retires a preview name once the model is released (Vertex AI did for Veo
+    3.1), and one endpoint may serve only one of the two; a call to the missing one fails with 404 NOT_FOUND."""
+    if model.endswith("-preview"):
+        return model[: -len("-preview")] + "-001"
+    if model.endswith("-001"):
+        return model[: -len("-001")] + "-preview"
+    return None
 
 
 def _transient(e: Exception) -> bool:
@@ -264,6 +280,14 @@ class VeoVideo:
         self.bible = StoryBible.model_validate_json((project_root / "01_story_bible.json").read_text(encoding="utf-8"))
         self.outline = Outline.model_validate_json((project_root / "02_outline.json").read_text(encoding="utf-8"))
         self.scripts: dict[str, dict] = {}
+        # safer(shot, scene_id, refusal) -> the shot worded again (and saved), or None: set by whoever runs the
+        # shots, so a frame or clip Google refuses for safety is tried once more instead of left for the owner
+        self.safer = None
+        self._worded: dict[str, dict] = {}                # shot_id -> its new words, once per shot per run
+        self._released: dict[str, str] = {}              # a retired preview model -> its released name, this run
+        self._tried: set[str] = set()                     # shots a rewrite was asked for this run (done or not)
+        self.look_first = False                           # the faces gate is on: a new still waits for a look
+        self.log = print
 
     # -- helpers
 
@@ -311,17 +335,50 @@ class VeoVideo:
                                  refs=[p for _, paths in refs for p in paths], item=f"keyframe {shot.shot_id}")
         return keyframe
 
+    def _first_frame(self, shot: Shot, scene_id: str, cast: CastLock, refs, keyframe: Path) -> Shot:
+        """Make the shot's first frame; when Google refuses it for safety, the shot is worded again once (self.safer
+        saves it to the shot list) and drawn from that. Returns the shot the frame was drawn from, so the clip is
+        asked for in the same words. A second refusal is raised as before (the review queue takes it)."""
+        from ..shotpack import veo_prompt
+
+        scene = next(s for s in self.outline.scenes if s.scene_id == scene_id)
+
+        def draw(s: Shot) -> None:
+            self._keyframe(s, veo_prompt(s, scene, self.bible, cast, self.navarasa, self._speaker(s, scene_id)), refs,
+                           keyframe)
+        try:
+            draw(shot)
+            return shot
+        except ShotFiltered as refused:
+            safer = self._reword(shot, scene_id, str(refused))
+            if safer is None:
+                raise
+        draw(safer)
+        return safer
+
+    def _reword(self, shot: Shot, scene_id: str, refusal: str) -> Shot | None:
+        """The shot worded again after a safety refusal (self.safer saves it), at most once per shot in a run."""
+        if shot.shot_id in self._tried or self.safer is None:
+            return None
+        self._tried.add(shot.shot_id)
+        new = self.safer(shot, scene_id, refusal)
+        if new is not None:
+            self._worded[shot.shot_id] = {"image_prompt": new.image_prompt, "motion_prompt": new.motion_prompt}
+        return new
+
+    def _words(self, shot: Shot) -> Shot:
+        """The shot in the words it got after a refusal earlier in this run, so a later take is asked in them too."""
+        words = self._worded.get(shot.shot_id)
+        return shot.model_copy(update=words) if words else shot
+
     def make_keyframe(self, shot: Shot, scene_id: str, cast: CastLock, attempt: int = 1) -> Path | None:
         """The first frame Veo would animate for this attempt, without the clip (`nraiorbit keyframes`), so it can
         be checked before any video is paid for. None for shots without characters or in reference mode."""
-        from ..shotpack import veo_prompt
-
         if self.g.get("veo_mode", "keyframe") == "reference" or not shot.characters_in_frame:
             return None
-        scene = next(s for s in self.outline.scenes if s.scene_id == scene_id)
-        prompt = veo_prompt(shot, scene, self.bible, cast, self.navarasa, self._speaker(shot, scene_id))
         keyframe = self.root / "06_keyframes" / shot.shot_id / f"take_{attempt}.png"
-        return self._keyframe(shot, prompt, self._refs(shot, cast, 3), keyframe)
+        self._first_frame(shot, scene_id, cast, self._refs(shot, cast, 3), keyframe)
+        return keyframe
 
     def _poll(self, operation):
         types = _types()
@@ -336,6 +393,24 @@ class VeoVideo:
     # -- provider API
 
     def render_shot(self, shot: Shot, out: Path, ctx: RenderContext) -> Path:
+        """The shot's clip. A clip Veo refuses for safety is worded again once and asked for again; in keyframe mode
+        its first frame, drawn from the refused words, is set aside (take_N.refused.png) and drawn from the new words,
+        since the picture itself is often what was refused."""
+        shot = self._words(shot)
+        try:
+            return self._render(shot, out, ctx)
+        except ShotFiltered as refused:
+            worded = self._reword(shot, ctx.scene_id, str(refused))
+            if worded is None:
+                raise
+        keyframe = self.root / "06_keyframes" / shot.shot_id / f"take_{max(1, ctx.seed)}.png"
+        if keyframe.exists():
+            keyframe.replace(keyframe.with_name(f"{keyframe.stem}.refused.png"))
+            self.log(f"  {shot.shot_id}: its first frame is drawn again from the new words (not the one the faces "
+                     "approval saw)")
+        return self._render(worded, out, ctx)
+
+    def _render(self, shot: Shot, out: Path, ctx: RenderContext) -> Path:
         from ..shotpack import NEGATIVE, clips_for, inbox_dir, veo_prompt
 
         attempt = max(1, ctx.seed)
@@ -379,11 +454,31 @@ class VeoVideo:
                                                         reference_type=types.VideoGenerationReferenceType.ASSET)
                     for _, paths in refs for p in paths]
             elif refs:                                   # keyframe mode; shots without leads go text-to-video
-                self._keyframe(shot, prompt, refs, keyframe)
+                fresh = not keyframe.exists()
+                drawn = self._first_frame(shot, ctx.scene_id, ctx.cast, refs, keyframe)
+                if fresh and self.look_first:            # nobody has seen this still: no clip is paid from it yet
+                    raise FirstFrameToLookAt(shot.shot_id)
+                if drawn is not shot:                     # worded again after a refusal: the clip in the same words
+                    kwargs["prompt"] = veo_prompt(drawn, scene, self.bible, ctx.cast, self.navarasa,
+                                                  self._speaker(drawn, ctx.scene_id))
+                if first_frame:                          # a refused frame and its redraw are both on the ledger now
+                    self.ledger.check(cost, f"Veo {shot.shot_id} ({seconds} s)")
                 kwargs["image"] = types.Image.from_file(location=str(keyframe))
 
-            operation = _call(self.client.models.generate_videos, f"Veo {shot.shot_id}", **kwargs,
-                              config=types.GenerateVideosConfig(**config))
+            kwargs["model"] = model = self._released.get(model, model)
+            try:
+                operation = _call(self.client.models.generate_videos, f"Veo {shot.shot_id}", **kwargs,
+                                  config=types.GenerateVideosConfig(**config))
+            except GoogleAPIError as e:                  # no job was made: nothing is paid for the refused name
+                newer = other_name(model) if "NOT_FOUND" in str(e) else None
+                if newer is None:
+                    raise
+                self.log(f"  Google does not offer {model} here; {newer}, the same model under its other name, is "
+                         "used instead (set it under google: in pipeline.yaml to skip this step)")
+                self._released[model] = kwargs["model"] = newer
+                model = newer
+                operation = _call(self.client.models.generate_videos, f"Veo {shot.shot_id}", **kwargs,
+                                  config=types.GenerateVideosConfig(**config))
             # Logged as soon as the job exists, so a crash, timeout or Ctrl-C while it runs still counts toward the
             # budget, and the job's name is kept so the next run collects the clip instead of paying for a new one.
             self.ledger.record("veo", shot.shot_id, cost, seconds=seconds, model=model, mode=mode, attempt=attempt,

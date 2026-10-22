@@ -56,7 +56,7 @@ class Clock:
 
 def _tracker(bucket, clock, log=None):
     return progress.Tracker("b", execution="ex1", uploader=bucket.upload, remover=bucket.remove, lister=bucket.list,
-                            clock=clock, log=log or (lambda *_: None))
+                            clock=clock, log=log or (lambda *_: None), sleep=lambda _s: None)
 
 
 # ------------------------------------------------------------------------------------------------- the records
@@ -135,7 +135,7 @@ def test_the_control_room_reads_the_records_as_the_runner_writes_them(tmp_path):
         (media / path).parent.mkdir(parents=True, exist_ok=True)
         (media / path).write_text(text, encoding="utf-8")
     t = progress.Tracker("b", execution="ex1", uploader=upload, remover=lambda path: (media / path).unlink(),
-                         lister=lambda prefix: {}, log=lambda *_: None)
+                         lister=lambda prefix: {}, log=lambda *_: None, sleep=lambda _s: None)
     t.start("story", slug="rain")
     film = t.film("rain", tmp_path / "projects" / "rain")
     film.line("sc010: 3 lines")
@@ -205,7 +205,7 @@ def test_start_sweeps_running_records_left_behind_over_seven_hours_ago():
     def broken(prefix):
         raise OSError("listing refused")
     t = progress.Tracker("b", execution="ex1", uploader=bucket.upload, remover=bucket.remove, lister=broken,
-                         clock=clock, log=lambda *_: None)
+                         clock=clock, log=lambda *_: None, sleep=lambda _s: None)
     t.start("library-restore")                                              # a failed sweep is ignored
     assert bucket.record(RUN)["doing"] == "library-restore"
 
@@ -251,7 +251,7 @@ def test_the_default_storage_calls_one_client_and_a_missing_record_is_fine(monke
             return FakeBucket()
 
     monkeypatch.setattr(gcs, "STORAGE_FACTORY", Client)
-    t = progress.Tracker("media", execution="ex1", clock=Clock(), log=lambda *_: None)
+    t = progress.Tracker("media", execution="ex1", clock=Clock(), log=lambda *_: None, sleep=lambda _s: None)
     t.start("story", slug="rain")
     t.start("library-backup")
     t.close()
@@ -506,3 +506,62 @@ def test_pipeline_run_calls_on_stage_once_per_stage_in_order(tmp_path):
 
 # ------------------------------------------------------------------------------------------ the template
 
+
+
+
+def test_changes_to_the_same_record_are_a_second_apart_and_none_is_dropped(tmp_path):
+    """Cloud Storage refuses a second change to one object within a second (429). Phases that follow one another at
+    once (a resumed film skips through its finished steps) wait out the rest of that second; a phase that comes later
+    waits for nothing; every change still lands, and the run record's removal is spaced too."""
+    bucket, clock, waits, at = Bucket(), Clock(), [], {}
+
+    def sleep(s):
+        waits.append(s)
+        clock.t += s
+
+    def upload(path, text):
+        at.setdefault(path, []).append(clock.t)
+        bucket.upload(path, text)
+
+    def remove(path):
+        at.setdefault(path, []).append(clock.t)
+        bucket.remove(path)
+    t = progress.Tracker("b", execution="ex1", uploader=upload, remover=remove, lister=bucket.list, clock=clock,
+                         log=lambda *_: None, sleep=sleep)
+    t.start("story", slug="rain")
+    film = t.film("rain", tmp_path / "rain")
+    for phase in ("scenes", "shots", "voices"):
+        film.phase(phase)
+    assert bucket.record(FILM)["phase"] == "voices" and bucket.record(RUN)["phase"] == "voices"
+    so_far = len(waits)
+    clock.t += 5
+    film.phase("render")                                                    # five seconds on: no wait at all
+    assert len(waits) == so_far and bucket.record(FILM)["phase"] == "render"
+    film.finish("awaiting:faces")
+    t.close()
+    assert bucket.puts(FILM) == 5 and bucket.puts(RUN) == 6 and RUN not in bucket.objects
+    assert bucket.record(FILM)["state"] == "awaiting"
+    gaps = [b - a for times in at.values() for a, b in zip(times, times[1:])]
+    assert len(gaps) == 4 + 6 and min(gaps) >= progress.MIN_GAP_S - 0.05   # 4 film gaps, 6 run gaps (incl. removal)
+    assert waits and max(waits) <= progress.MIN_GAP_S
+
+
+def test_the_gap_runs_from_when_a_change_landed_not_when_it_was_sent(tmp_path):
+    """A slow first write (the client and its token are made then) must not eat the gap: an idle tick's record is
+    removed a whole MIN_GAP_S after its upload finished, however long that upload took."""
+    clock, landed, began = Clock(), {}, {}
+
+    def sleep(s):
+        clock.t += s
+
+    def slow(seconds, kind):
+        def call(path, *rest):
+            began.setdefault(path, []).append(clock.t)
+            clock.t += seconds
+            landed.setdefault(path, []).append(clock.t)
+        return call
+    t = progress.Tracker("b", execution="ex1", uploader=slow(1.2, "put"), remover=slow(0.05, "del"),
+                         lister=lambda prefix: {}, clock=clock, log=lambda *_: None, sleep=sleep)
+    t.start("idle")
+    t.close()
+    assert began[RUN][1] - landed[RUN][0] >= progress.MIN_GAP_S - 0.05     # waited from the end of the upload

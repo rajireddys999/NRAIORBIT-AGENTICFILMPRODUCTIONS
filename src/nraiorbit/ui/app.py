@@ -661,6 +661,32 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         except Exception as exc:
             return f"the tick could not be started ({type(exc).__name__}), the scheduled one carries on"
 
+    @app.post("/film/{slug}/voice")
+    def set_voice(slug: str, email: str = Depends(guard), character: str = Form(""), voice_id: str = Form("")):
+        """The owner's ElevenLabs voice for one character, into stories/<slug>.voices.yaml: the runner puts it into
+        the film's voice.cast at its next run, ahead of anything it picked."""
+        if not SLUG_RE.match(slug):
+            raise HTTPException(404)
+        voice_id = voice_id.strip()
+        if not queue.VOICE_ID.fullmatch(voice_id):
+            return back(f"/film/{slug}", "That does not look like an ElevenLabs voice id (letters and digits, "
+                                         "from the voice's page in ElevenLabs); nothing changed.")
+        bible = films._json(store, f"{slug}/project/01_story_bible.json") or {}
+        if character not in {c.get("id") for c in bible.get("characters") or []}:
+            return back(f"/film/{slug}", f"No character {character[:40]!r} in this film; nothing changed.")
+
+        def change(text: str):
+            chosen = (yaml.safe_load(text or "") or {}) if text else {}
+            chosen = chosen if isinstance(chosen, dict) else {}
+            if chosen.get(character) == voice_id:
+                return None
+            chosen[character] = voice_id
+            return yaml.safe_dump(chosen, sort_keys=True)
+        store.update_text(f"stories/{slug}.voices.yaml", change, content_type="text/yaml")
+        return back(f"/film/{slug}", f"{character}'s voice set to {voice_id}; the runner uses it from its next run. "
+                                     "If this character's lines were already voiced, all of them are voiced again and "
+                                     "their lip-sync redone (paid, under the cap)")
+
     @app.post("/film/{slug}/retry")
     def retry(slug: str, email: str = Depends(guard)):
         """Run the film again, from a blocked step or from its end: the runner checks every step, keeps the finished

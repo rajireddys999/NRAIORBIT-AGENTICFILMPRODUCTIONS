@@ -273,6 +273,9 @@
       <b class="te">{{ c.name_te or c.name }}</b><div class="small">{{ c.name }} · <span class="muted">{{ c.role }}</span></div>
       {% if c.physical %}<div class="small muted">{{ c.physical.gender }}, {{ c.physical.age }}, {{ c.physical.build }}; {{ c.physical.face }}</div>{% endif %}
       {% if c.voice %}<div class="mono tiny cyan">voice · {{ c.voice.pitch }}{% if c.voice_asset %} · {{ c.voice_asset }}{% endif %}</div>{% endif %}
+      {% if c.el_voice %}<div class="small">ElevenLabs: <b>{{ c.el_voice.name or c.el_voice.voice_id }}</b> <span class="mono tiny dim">{{ c.el_voice.voice_id }}</span><div class="tiny muted">{{ c.el_voice.source }}{% if c.el_voice.why %}: {{ c.el_voice.why }}{% endif %}{% if c.el_voice.shared %} · shared with another character{% endif %}</div></div>{% endif %}
+      {% if c.voice_note %}<div class="tiny" style="color:var(--warn)">{{ c.voice_note }}</div>{% endif %}
+      {% if f.row %}<form method="post" action="/film/{{ f.slug }}/voice" class="actions" style="margin-top:6px" title="A new voice re-voices this character's lines already made, and redoes their lip-sync (paid, under the cap)"><input type="hidden" name="character" value="{{ c.id }}"><input name="voice_id" placeholder="ElevenLabs voice id" aria-label="ElevenLabs voice id for {{ c.name }}" style="width:170px" pattern="[A-Za-z0-9]{8,64}"><button class="sm quiet">{{ 'Change voice' if c.el_voice else 'Set voice' }}</button></form>{% endif %}
       {% if c.arc %}<details><summary class="small">arc</summary><div class="small">{{ c.personality }} — {{ c.arc }}</div></details>{% endif %}
     </div>
   {% else %}<p class="muted">Not cast yet.</p>{% endfor %}

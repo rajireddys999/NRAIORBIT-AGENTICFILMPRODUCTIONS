@@ -30,15 +30,11 @@ STUDIO = ("Photorealistic studio photograph, soft even light, plain light-grey b
 
 ANIMAL_STUDIO = ("Photorealistic wildlife photograph, soft even light, plain light-grey background, sharp focus, "
                  "natural fur and skin texture, no text.")
-ANIMAL_WORDS = re.compile(r"\b(fur|furry|macaque|monkey|langur|ape|animal|tail|paws?|snout|muzzle|feathers|beak|hooves|"
-                          r"mane|whiskers)\b")
-
-
 def is_animal(spec: CharacterSpec) -> bool:
     """A character the story bible describes as an animal (fur, a tail, a macaque...): its pictures are wildlife
-    photographs, never a person's portrait."""
-    ph = spec.physical
-    return bool(ANIMAL_WORDS.search(" ".join((ph.build, ph.skin_tone, ph.face, ph.hair)).lower()))
+    photographs, never a person's portrait, and it is never given a voice automatically."""
+    from .characters import animal_physical
+    return animal_physical(spec.physical)
 
 
 def portrait_prompt(spec: CharacterSpec, era_region: str) -> str:

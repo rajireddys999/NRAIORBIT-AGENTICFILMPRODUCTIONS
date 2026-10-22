@@ -129,12 +129,19 @@ class ElevenLabsTTS:
 
     # -- provider API
 
+    def cache_key(self, line: ScriptBlock, voice_ref: str | None = None) -> str:
+        """The cache name of this line's take: the model, the voice, the settings and the tagged text. The cost gate
+        asks it too, so a take already made is never priced again."""
+        vid = self.voice_id(line, voice_ref)
+        return hashlib.sha1(json.dumps([self.model, vid, self.settings, tagged_text(line)],
+                                       sort_keys=True).encode()).hexdigest()[:16]
+
     def synthesize(self, line: ScriptBlock, voice_ref: str | None, out: Path) -> float:
         vid = self.voice_id(line, voice_ref)
         text = tagged_text(line)
         body = {"text": text, "model_id": self.model, "voice_settings": self.settings,
                 **({"language_code": self.language} if self.language else {})}
-        key = hashlib.sha1(json.dumps([self.model, vid, self.settings, text], sort_keys=True).encode()).hexdigest()[:16]
+        key = self.cache_key(line, voice_ref)
         cached = self.cache_dir / f"el_{key}.wav"
         out.parent.mkdir(parents=True, exist_ok=True)
         if not cached.exists():
@@ -160,3 +167,95 @@ class ElevenLabsTTS:
         if not self.can_chant(line):
             raise ElevenLabsError("voices: a chant needs voice.crowd_provider (e.g. gemini) next to elevenlabs.")
         return self.crowd.synthesize_crowd(line, voice_ref, out, voices)
+
+
+
+# -- casting voices: the account's voices, and one for each speaking character by gender, age and timbre
+
+AGES = ["child", "young", "middle_aged", "old"]
+PITCH_WORDS = {"high": ("high", "bright", "light", "young", "child"), "mid": (), "low": ("deep", "low", "husky",
+                                                                                         "gravelly", "raspy", "rich")}
+
+
+def account_voices(http=None, api_key_env: str = "ELEVENLABS_API_KEY") -> list[dict]:
+    """The voices this ElevenLabs account can speak with (its own and the ones it added from the voice library), as
+    GET /v1/voices lists them: voice_id, name, labels (gender, age, accent, description), description."""
+    s = http or (HTTP_FACTORY() if HTTP_FACTORY is not None else None)
+    if s is None:
+        import requests
+        key = os.environ.get(api_key_env, "").strip()
+        if not key:
+            raise ElevenLabsError(f"voices: the ElevenLabs API key is missing; set {api_key_env} in the environment.")
+        s = requests.Session()
+        s.headers.update({"xi-api-key": key, "Accept": "application/json"})
+    resp = s.get(f"{API}/voices", timeout=60)
+    if resp.status_code != 200:
+        raise ElevenLabsError(f"voices: listing the account's voices: HTTP {resp.status_code}")
+    return [{"voice_id": v["voice_id"], "name": v.get("name") or v["voice_id"], "labels": v.get("labels") or {},
+             "description": v.get("description") or ""} for v in (resp.json() or {}).get("voices", []) if v.get("voice_id")]
+
+
+def age_band(age: int) -> str:
+    return "child" if age < 13 else "young" if age < 30 else "middle_aged" if age < 55 else "old"
+
+
+def _band(label: str) -> str | None:
+    """An age band from a label or a description, word by word ("golden" is not "old")."""
+    words = set("".join(c if c.isalpha() else " " for c in str(label or "").lower()).split())
+    for band, said in (("child", {"child", "kid", "kids", "children"}), ("young", {"young"}),
+                       ("middle_aged", {"middle"}), ("old", {"old", "elder", "elderly", "senior"})):
+        if words & said:
+            return band
+    return None
+
+
+def want_for(spec, animal: bool = False) -> dict:
+    """What a character's voice should be, from the story bible: gender, an age band (an animal's comes from its
+    pitch: a squeaky one sounds young, a rumbling one old), and the words of its pitch and timbre."""
+    pitch = getattr(spec.voice, "pitch", "mid")
+    age = ("young" if pitch == "high" else "old" if pitch == "low" else "middle_aged") if animal else \
+        age_band(spec.physical.age)
+    words = [w for w in "".join(c if c.isalpha() else " " for c in getattr(spec.voice, "timbre", "").lower()).split()
+             if len(w) >= 4] + list(PITCH_WORDS.get(pitch, ()))
+    return {"gender": spec.physical.gender.lower(), "age": age, "words": list(dict.fromkeys(words))}
+
+
+def voice_score(want: dict, voice: dict) -> tuple[int, list[str]]:
+    labels = {k: str(v).lower() for k, v in (voice.get("labels") or {}).items()}
+    text = " ".join((labels.get("description", ""), labels.get("use_case", ""), str(voice.get("description", "")).lower(),
+                     str(voice.get("name", "")).lower()))
+    score, why = 0, []
+    gender = labels.get("gender", "")
+    if gender and want["gender"] in ("male", "female"):
+        if gender == want["gender"]:
+            score, why = score + 4, why + [gender]
+        else:
+            score -= 6
+    band = _band(labels.get("age", "")) or _band(text)
+    if band:
+        d = abs(AGES.index(band) - AGES.index(want["age"]))
+        score += {0: 3, 1: 1}.get(d, -2)
+        if d == 0:
+            why.append(band.replace("_", " "))
+    for w in want["words"]:
+        if w in text:
+            score, why = score + 1, why + [w]
+    if "indian" in labels.get("accent", ""):
+        score, why = score + 1, why + ["Indian accent"]
+    return score, why
+
+
+def pick_voices(wants: list[tuple[str, dict]], voices: list[dict], taken=()) -> dict[str, dict]:
+    """One voice per character, in the order given (the characters with most lines first): the best-scoring voice no
+    other character has, and a shared one only when the account has fewer voices than speakers."""
+    used, picks = set(taken), {}
+    for cid, want in wants:
+        if not voices:
+            break
+        scored = sorted(((voice_score(want, v), v) for v in voices),
+                        key=lambda sv: (sv[1]["voice_id"] in used, -sv[0][0], sv[1]["name"]))
+        (score, why), best = scored[0]
+        picks[cid] = {"voice_id": best["voice_id"], "name": best["name"], "why": ", ".join(why) or "closest match",
+                      "shared": best["voice_id"] in used}
+        used.add(best["voice_id"])
+    return picks

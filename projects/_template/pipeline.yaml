@@ -13,6 +13,8 @@ providers:
   lipsync: sync_so                 # sync.so sync-3 through the speaker lock (needs SYNC_API_KEY)
 
 voice:
+  auto_cast: true                  # each speaking character without a voice gets one from the ElevenLabs account at
+                                   # the cast step, shown on the cast cards; change any there
   inbox_fallback: elevenlabs       # ElevenLabs Eleven v4 with the cast below (needs ELEVENLABS_API_KEY)
   crowd_provider: gemini           # chanted lines (voice.crowd) are several Gemini voices
   cast: {}                         # character_id: ElevenLabs voice id, e.g. {arjun: f4UZfBDD7d4QR1DcXAMf}

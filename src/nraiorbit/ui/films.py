@@ -54,7 +54,7 @@ def in_order(stage: dict) -> None:
         if first_open is None:
             if st not in SETTLED and key not in ADVISORY:     # an advisory step never holds the rest up
                 first_open = label.lower()
-        elif st == "done" or (key in ADVISORY and st in ("partial", "skipped")):
+        elif st in ("done", "blocked") or (key in ADVISORY and st in ("partial", "skipped")):
             stage[key] = {"status": "stale", "text": f"from an earlier run; redone after {first_open}"}
 NOT_FILMS = {"queue", "library", "lipsync", "stories", "_template", "final"}
 
@@ -530,6 +530,39 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         if sid in keyframes:
             keyframe_cards.append({"shot_id": sid, "url": img(keyframes[sid][0]), "characters": sh.get("characters_in_frame"),
                                    "filmed": sid in clips, "synced": sid in synced, "duration": sh.get("duration_s")})
+    voice_cast = ((cfg.get("voice") or {}).get("cast") or {}) if isinstance(cfg.get("voice"), dict) else {}
+    picked = _json(store, f"{slug}/reports/voices.json") or {}
+    try:
+        yours = yaml.safe_load(store.read_text(f"stories/{slug}.voices.yaml") or "") or {}
+    except yaml.YAMLError:
+        yours = {}
+
+    def el_voice(cid):
+        vid = (yours if isinstance(yours, dict) else {}).get(cid) or voice_cast.get(cid)
+        if not vid:
+            return None
+        pick = picked.get(cid) if isinstance(picked, dict) and isinstance(picked.get(cid), dict) else {}
+        same = pick.get("voice_id") == vid
+        source = "your choice" if isinstance(yours, dict) and yours.get(cid) else \
+            ("picked by the runner" if same else "set in pipeline.yaml")
+        return {"voice_id": vid, "name": pick.get("name") if same else None, "why": pick.get("why") if same else None,
+                "source": source, "shared": bool(pick.get("shared")) if same else False}
+    from ..characters import animal_physical
+    speakers = {b.get("character_id") for sc in scenes for b in sc.get("blocks", []) if b.get("kind") == "dialogue"}
+
+    prov_all = resolved.get("providers") or {}                     # the film's config over the defaults
+    vcfg = resolved.get("voice") if isinstance(resolved.get("voice"), dict) else {}
+    to_elevenlabs = prov_all.get("tts") == "elevenlabs" or (prov_all.get("tts") == "inbox"
+                                                            and vcfg.get("inbox_fallback") == "elevenlabs")
+
+    def voice_note(cid, spec):
+        if not to_elevenlabs or cid not in speakers or el_voice(cid):  # speech elsewhere (mock, Gemini): no note
+            return None
+        if animal_physical(spec.get("physical") or {}):
+            return ("An animal gets no voice of its own: set one below, put recordings in inbox/dialogue/<line>, "
+                    "or rewrite its lines as sound.")
+        return ("No voice yet: the runner picks one at the cast step, or set one below." if vcfg.get("auto_cast")
+                else "No voice yet: set one below; the film stops before its cost gate until every speaker has one.")
     cast_cards = []
     for cid, entry in (cast.get("characters") or {}).items():
         spec = names.get(cid, {})
@@ -542,13 +575,15 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
                            "role": spec.get("role"), "physical": spec.get("physical"),
                            "personality": spec.get("personality"), "arc": spec.get("arc"), "voice": spec.get("voice"),
                            "voice_asset": locked.get("voice_asset"), "costumes": locked.get("costumes"),
-                           "images": [img(r) for r in refs[:4]]})
+                           "images": [img(r) for r in refs[:4]], "el_voice": el_voice(cid),
+                           "voice_note": voice_note(cid, spec)})
     for cid, spec in names.items():                       # characters not locked yet still show from the bible
         if not any(c["id"] == cid for c in cast_cards):
             cast_cards.append({"id": cid, "name": spec.get("name_en", cid), "name_te": spec.get("name_te"),
                                "role": spec.get("role"), "physical": spec.get("physical"),
                                "personality": spec.get("personality"), "arc": spec.get("arc"), "voice": spec.get("voice"),
-                               "voice_asset": None, "costumes": None, "images": []})
+                               "voice_asset": None, "costumes": None, "images": [], "el_voice": el_voice(cid),
+                               "voice_note": voice_note(cid, spec)})
     scene_views = []
     for sc in scenes:
         blocks = []

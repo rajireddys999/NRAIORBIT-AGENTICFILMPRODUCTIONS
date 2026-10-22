@@ -312,6 +312,8 @@ class Pipeline:
         makes_pictures = any(prov.get(k, "mock") not in ("mock", "none") for k in ("keyframe", "video"))
         if makes_pictures and (self.cfg.get("cast") or {}).get("build_identity"):
             self._build_cast()                            # the pictures feed first frames and video, nothing else
+        if (self.cfg.get("voice") or {}).get("auto_cast"):
+            self._cast_voices()                           # before the gate, which shows them
         self.gate("cast")
         pending = [cid for cid, e in self._lock().characters.items() if e.character_asset.endswith("@pending")]
         if pending and not self._animatic():
@@ -339,6 +341,56 @@ class Pipeline:
         if missing:
             raise PipelineBlocked(f"characters {missing} have no portrait: the image model refused or failed. "
                                   "Soften their description in the story bible, then retry.")
+
+    def _cast_voices(self) -> None:
+        """voice.auto_cast: every speaking character ElevenLabs could not voice gets one from the account's voices,
+        matched to the story bible's gender, age and timbre, a different voice each. The picks go into the project's
+        voice.cast and reports/voices.json (what was picked and why), for the cast gate. A voice the owner set is
+        never replaced; when the account cannot be listed, nothing is picked and the voices check stops the film
+        before anything is paid."""
+        from collections import Counter
+
+        from .identity import is_animal
+        from .providers.elevenlabs import account_voices, pick_voices, want_for
+        need = self._voiceless()
+        if not need:
+            return
+        v = self.cfg.setdefault("voice", {})
+        try:
+            voices = account_voices(api_key_env=(v.get("elevenlabs") or {}).get("api_key_env", "ELEVENLABS_API_KEY"))
+        except Exception as exc:
+            self.log(f"  voices: the ElevenLabs account's voices could not be listed ({type(exc).__name__}): {exc}")
+            return
+        bible = self._load(self.p.bible, StoryBible)
+        specs = {c.id: c for c in bible.characters}
+        lines = Counter(b.character_id for path in self.p.scenes.glob("*.json")
+                        for b in SceneScript.model_validate_json(path.read_text(encoding="utf-8")).blocks
+                        if b.kind == "dialogue")
+        animals = sorted(c for c in need if c in specs and is_animal(specs[c]))
+        if animals:                                       # chatter is no line for a voice to read: the owner decides
+            self.log(f"  voices: {animals} are animals and get no voice of their own; set one on the cast card, put "
+                     "recordings in inbox/dialogue, or rewrite their lines as sound")
+        order = sorted((c for c in need if c in specs and c not in animals), key=lambda c: (-lines[c], c))
+        picks = pick_voices([(c, want_for(specs[c], animal=is_animal(specs[c]))) for c in order], voices,
+                            taken=set((v.get("cast") or {}).values()))
+        if not picks:
+            self.log("  voices: the ElevenLabs account has no voices to cast")
+            return
+        path = self.p.root / "pipeline.yaml"
+        disk = (yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}) or {}
+        disk["voice"] = disk.get("voice") if isinstance(disk.get("voice"), dict) else {}   # an empty `voice:` too
+        cast = disk["voice"].get("cast") if isinstance(disk["voice"].get("cast"), dict) else {}
+        disk["voice"]["cast"] = cast
+        for cid, pick in picks.items():
+            cast.setdefault(cid, pick["voice_id"])
+        path.write_text(yaml.safe_dump(disk, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        v["cast"] = {**(v.get("cast") or {}), **{c: cast[c] for c in picks}}
+        self.p.reports.mkdir(parents=True, exist_ok=True)
+        record = self.p.reports / "voices.json"
+        before = json.loads(record.read_text(encoding="utf-8")) if record.exists() else {}
+        record.write_text(json.dumps({**before, **picks}, indent=1, ensure_ascii=False), encoding="utf-8")
+        for cid, pick in picks.items():
+            self.log(f"  {cid}: ElevenLabs voice {pick['name']} ({pick['why']}){' · shared' if pick['shared'] else ''}")
 
     def _voiceless(self) -> list[str]:
         """Speaking characters ElevenLabs could not voice, checked before the cost gate: speech runs after each

@@ -402,6 +402,33 @@ def tts_calls(root: Path, cfg: dict) -> tuple[int, int]:
     return lines, calls
 
 
+def elevenlabs_text(root: Path, cfg: dict) -> tuple[int, int]:
+    """(dialogue lines ElevenLabs would speak, their characters): lines some shot carries (every line before the shot
+    lists exist), without a recording in inbox/dialogue, not chants (voice.crowd_provider sings them), and whose take
+    is not already in cache/tts: a finished film's retry is never priced for takes it has."""
+    from .providers.elevenlabs import ElevenLabsError, ElevenLabsTTS
+    from .providers.inbox import _find_audio
+    from .shotpack import inbox_dir
+
+    folder = inbox_dir(root, "dialogue")
+    carried = {b for path in (root / "04_shots").glob("*.json")
+               for shot in ShotList.model_validate_json(path.read_text(encoding="utf-8")).shots for b in shot.block_ids}
+    tts = ElevenLabsTTS({}, cfg, {}, ledger=None, cache_dir=root / "cache" / "tts")
+    lines = chars = 0
+    for path in sorted((root / "03_scenes").glob("*.json")):
+        for b in SceneScript.model_validate_json(path.read_text(encoding="utf-8")).blocks:
+            if b.kind != "dialogue" or (carried and b.block_id not in carried) or crowd_voices(cfg, b.block_id) > 1 \
+                    or _find_audio(folder, b.block_id) is not None:
+                continue
+            try:
+                if (tts.cache_dir / f"el_{tts.cache_key(b)}.wav").exists():
+                    continue
+            except ElevenLabsError:                       # no voice yet: nothing can be cached for it
+                pass
+            lines, chars = lines + 1, chars + len(b.text_te or "")
+    return lines, chars
+
+
 def preview_run(root: Path, cfg: dict, pricing: dict) -> dict:
     """What the next `run` would spend on paid generators, given what is already generated and cached."""
     from .shotpack import clips_for, selected
@@ -439,6 +466,14 @@ def preview_run(root: Path, cfg: dict, pricing: dict) -> dict:
         out["lines"] = tts_calls(root, cfg)[1]
     out["keyframe_usd"] = out["keyframes"] * image
     out["tts_usd"] = out["lines"] * 5 / 60 * pricing.get("gemini", {}).get("tts_per_minute", 0.02)
+    uses_elevenlabs = prov.get("tts") == "elevenlabs" or (prov.get("tts") == "inbox"
+                                                          and cfg.get("voice", {}).get("inbox_fallback") == "elevenlabs")
+    if uses_elevenlabs:                                   # billed by the character, one take a line (a voice guard
+        lines, chars = elevenlabs_text(root, cfg)          # takes more); a cached take costs nothing, an upper bound
+        takes_each = int((cfg.get("voice") or {}).get("takes_per_line", 1)) \
+            if prov.get("speaker_embedder", "none") not in (None, "none") else 1
+        out["lines"], out["tts_chars"] = lines, chars * takes_each
+        out["tts_usd"] = out["tts_chars"] / 1000 * float((pricing.get("elevenlabs") or {}).get("per_1k_chars", 0.18))
     if prov.get("music") == "lyria":
         from .providers.lyria import music_model
 

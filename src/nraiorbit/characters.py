@@ -42,3 +42,20 @@ def silent_animals(characters, cfg: dict) -> dict[str, str]:
     if talk is True:
         return {}
     return {c.id: c.name_en for c in characters if marked_animal(c) and c.id not in talk}
+
+
+def minors_off_screen(characters, cfg: dict) -> dict[str, str]:
+    """{id: "Name (age)"} of the people under 18 that this project's video model must not show: Veo animates anyone
+    under 18 only when google.person_generation is allow_all, which Google grants to allowlisted projects. Animals
+    are never counted (their ages are animal ages). Empty for other video providers or with allow_all."""
+    if (cfg.get("providers") or {}).get("video") != "veo":
+        return {}
+    if str((cfg.get("google") or {}).get("person_generation") or "allow_adult").lower() == "allow_all":
+        return {}
+    out = {}
+    for c in characters:
+        physical = c.physical
+        age = physical.get("age") if isinstance(physical, dict) else getattr(physical, "age", None)
+        if isinstance(age, (int, float)) and age < 18 and not marked_animal(c) and not animal_physical(physical):
+            out[c.id] = f"{c.name_en} ({int(age)})"
+    return out

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import re
 from collections import Counter, defaultdict
 
 import yaml
@@ -29,6 +30,14 @@ GATES = {"story": "story", "outline": "outline", "scenes": "scenes", "cast": "ca
 PHASES = {"story_bible": "story", "outline": "outline", "scenes": "scenes", "cast": "cast", "shots": "shots",
           "music_plan": "render", "render": "render", "assemble": "assemble", "trailer": "assemble", "cost": "cost",
           "faces": "faces", "qa": "qa", "deliver": "deliver", "publish": "publish", "voices": "render"}
+# the steps Send back can name (service.produce.REWORK_STAGES has the same keys), and the step a waiting gate or a
+# stop points at by default
+REWORK_STEPS = [("story", "Story bible"), ("outline", "Outline"), ("scenes", "Scenes & dialogue"), ("cast", "Cast"),
+                ("shots", "Shot lists"), ("render", "Picture, voices, music, lips"), ("assemble", "Film (the cut)"),
+                ("trailer", "Trailer")]
+REWORK_DEFAULT = {"story": "story", "outline": "outline", "scenes": "scenes", "cast": "cast", "shots": "shots",
+                  "cost": "shots", "faces": "render", "render": "render", "pacing": "assemble",
+                  "final_cut": "assemble", "trailer": "trailer", "publish": "assemble", "assemble": "assemble"}
 RUNNING = {"new", "approved", "retry", "producing"}       # row states in which the runner is, or is about to be, on it
 SETTLED = {"done", "skipped", "held"}                     # statuses that let the next step count
 ADVISORY = {"qa"}                                         # steps that never stop the run: no later step waits on them
@@ -390,8 +399,17 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
     for n in store.list(f"{slug}/06_keyframes/"):
         if n.endswith((".png", ".jpg")):
             keyframes[n.split("/")[2]].append(n)
-    clips = {n.split("/")[-1].split(".")[0].split("_take")[0] for n in store.list(f"{slug}/inbox/video/")
-             if n.endswith(".mp4")}
+    # each shot's current take (project/takes.yaml; a Send back moves a shot on to a fresh one): its still is the one
+    # to look at, and it is filmed only when that take's clip (<id>.mp4, <id>_<take>.mp4) exists
+    takes_raw = _yaml(store, f"{slug}/project/takes.yaml")
+    takes = {str(k): int(v) for k, v in takes_raw.items() if str(v).isdigit()} if isinstance(takes_raw, dict) else {}
+    clip_names = {n.split("/")[-1][:-4] for n in store.list(f"{slug}/inbox/video/") if n.endswith(".mp4")}
+    clips = {base for name in clip_names if (m := re.match(r"sc\d{3}_s\d{3}", name)) and (base := m.group(0))
+             and (base if takes.get(base, 1) == 1 else f"{base}_{takes[base]}") in clip_names}
+
+    def still(sid: str) -> str:
+        current = f"{slug}/06_keyframes/{sid}/take_{takes.get(sid, 1)}.png"
+        return current if current in keyframes[sid] else keyframes[sid][0]
     music_files = [n for n in store.list(f"{slug}/08_music/") if n.endswith(".wav")]
     cue_sheet = _json(store, f"{slug}/08_music/cue_sheet.json") or {}
     master = store.list(f"{slug}/11_master/")
@@ -562,7 +580,7 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
     for sh in shots:
         sid = sh.get("shot_id")
         if sid in keyframes:
-            keyframe_cards.append({"shot_id": sid, "url": img(keyframes[sid][0]), "characters": sh.get("characters_in_frame"),
+            keyframe_cards.append({"shot_id": sid, "url": img(still(sid)), "characters": sh.get("characters_in_frame"),
                                    "filmed": sid in clips, "synced": sid in synced, "duration": sh.get("duration_s")})
     voice_cast = ((cfg.get("voice") or {}).get("cast") or {}) if isinstance(cfg.get("voice"), dict) else {}
     picked = _json(store, f"{slug}/reports/voices.json") or {}
@@ -629,7 +647,7 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
     shot_views = []
     for sl in shot_lists:
         shot_views.append({"scene_id": sl.get("scene_id"), "shots": [
-            {**sh, "keyframe": img(keyframes[sh["shot_id"]][0]) if sh.get("shot_id") in keyframes else None,
+            {**sh, "keyframe": img(still(sh["shot_id"])) if sh.get("shot_id") in keyframes else None,
              "filmed": sh.get("shot_id") in clips, "synced": sh.get("shot_id") in synced} for sh in sl.get("shots", [])]})
     media = {}
     for name in ("movie.mp4", "trailer.mp4"):
@@ -649,6 +667,8 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
     return {
         "slug": slug, "row": row, "cfg": cfg, "bible": bible, "outline": scenes_out, "cast": cast_cards,
         "scenes": scene_views, "shots": shot_views, "keyframes": keyframe_cards, "stages": stage, "gates": gates,
+        "rework_steps": REWORK_STEPS, "rework_default": REWORK_DEFAULT.get(
+            (gates[0] if gates else (issue or {}).get("stage")) or "", "render"),
         "gate_for": gate_for, "next_stage": next_stage, "live": live, "animatic": mock, "issue": issue,
         "cost_lines": cost_lines(cash["estimate"], cfg, [sh for sh in shots if sh.get("shot_id") not in clips],
                                  [sh for sh in with_leads if sh.get("shot_id") not in keyframes], scenes, cues)

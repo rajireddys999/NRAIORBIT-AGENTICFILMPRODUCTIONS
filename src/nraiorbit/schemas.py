@@ -194,6 +194,15 @@ class ShotList(BaseModel):
     shots: list[Shot]
 
 
+class ReworkedShot(BaseModel):
+    """A shot the owner sent back with notes, planned again: who is in frame and the words of the shot."""
+
+    characters_in_frame: list[str]
+    costume_ids: list[str] = Field(description="Costume per character in frame, same order")
+    image_prompt: str = Field(description="Keyframe description in English; no character names, use ids")
+    motion_prompt: str = Field(description="What moves during the shot")
+
+
 class SaferShot(BaseModel):
     """A shot Google refused for safety, worded again to show the same moment without what the filter blocks."""
 

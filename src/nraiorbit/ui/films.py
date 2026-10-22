@@ -28,7 +28,7 @@ GATES = {"story": "story", "outline": "outline", "scenes": "scenes", "cast": "ca
 # and the library phases have no stage and show in the headers only
 PHASES = {"story_bible": "story", "outline": "outline", "scenes": "scenes", "cast": "cast", "shots": "shots",
           "music_plan": "render", "render": "render", "assemble": "assemble", "trailer": "assemble", "cost": "cost",
-          "faces": "faces", "qa": "qa", "deliver": "deliver", "publish": "publish"}
+          "faces": "faces", "qa": "qa", "deliver": "deliver", "publish": "publish", "voices": "render"}
 RUNNING = {"new", "approved", "retry", "producing"}       # row states in which the runner is, or is about to be, on it
 SETTLED = {"done", "skipped", "held"}                     # statuses that let the next step count
 ADVISORY = {"qa"}                                         # steps that never stop the run: no later step waits on them
@@ -313,6 +313,16 @@ def cost_lines(estimate: dict | None, cfg: dict, to_film: list, to_frame: list, 
     out = [{"name": name, "usd": float(estimate.get(k) or 0), "why": why}
            for name, k, why in parts if estimate.get(k) not in (None, 0, 0.0)]
     return out
+
+
+def rehearsal_view(found) -> dict | None:
+    """The runner's last rehearsal (reports/rehearsal.json) as the page shows it: the stops, the waste and the notes,
+    each with its fix; None when there is none or it failed (a failure is not news to the owner)."""
+    if not isinstance(found, dict) or found.get("error"):
+        return None
+    view = {k: [f for f in (found.get(k) or []) if isinstance(f, dict) and f.get("what")] for k in ("stops", "waste", "notes")}
+    view["checked"] = found.get("checked")
+    return view if any(view[k] for k in ("stops", "waste", "notes")) else None
 
 
 def summary(store: Store, slug: str, row: dict | None) -> dict:
@@ -627,6 +637,7 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         "hint": explain_note((row or {}).get("note") or (row or {}).get("state")),
         "policy": cfg.get("policy") or {}, "runtime": (cfg.get("film") or {}).get("runtime_minutes"),
         "story_text": store.read_text(f"{slug}/project/input/story.md") or "",
+        "ahead": rehearsal_view(_json(store, f"{slug}/reports/rehearsal.json")),
         "tools": stage_tools, "tools_line": {k: tools.line(v) for k, v in stage_tools.items()},
         "tools_planned": planned, "render_note": tools.render_note(resolved),
         "used": tools.used(_jsonl(store, f"{slug}/reports/llm_usage.jsonl"), cash["rows"], resolved),

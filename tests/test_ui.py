@@ -1205,3 +1205,16 @@ def test_a_quota_stop_says_it_will_go_on_by_itself(client, root):
     (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
     html = client.get("/film/demo").text
     assert "goes on from there at its next tick (every 15 minutes), up to three times" in html
+
+
+def test_a_faces_hold_from_the_video_step_names_its_new_stills_on_the_film_page(root):
+    """The video step held faces again for stills drawn while it ran: the faces card says which, not just a count,
+    (a Retry keeping that list is tested in test_gates)."""
+    named = ("New first frames were drawn while the video was made: sc008_s002, sc012_s002 (missing, or drawn again "
+             "after Google refused the shot). Look at them in the control room, then approve faces; every clip "
+             "already made is kept.\n")
+    (root / "demo" / "reviews" / "faces.pending").write_text(named, encoding="utf-8")
+    d = films.detail(Store(str(root)), "demo", rows(root)[0])
+    assert d["stages"]["faces"]["status"] == "awaiting" and d["stages"]["faces"]["text"] == named.strip()
+    (root / "demo" / "reviews" / "faces.pending").write_text("x", encoding="utf-8")
+    assert films.detail(Store(str(root)), "demo", rows(root)[0])["stages"]["faces"]["text"].endswith("a first frame")

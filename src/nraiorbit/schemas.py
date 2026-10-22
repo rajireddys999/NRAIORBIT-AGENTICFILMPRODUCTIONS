@@ -52,11 +52,22 @@ class VoiceSpec(BaseModel):
     speech_traits: list[str]
 
 
+def _every_field_asked(schema: dict) -> None:
+    """Strict output: Claude fills every field (silent_animal too, so it decides for each character); a bible stored
+    before the field existed still loads, with every character free to talk."""
+    schema["required"] = list(schema.get("properties", {}))
+
+
 class CharacterSpec(BaseModel):
+    model_config = ConfigDict(json_schema_extra=_every_field_asked)
+
     id: str = Field(description="lowercase slug, stable for the whole film, e.g. 'arjun'")
     name_te: str
     name_en: str
     role: Role
+    silent_animal: bool = Field(default=False, description="True only for an animal that makes sounds and never "
+                                "talks in this story (a monkey, a dog, a bird). False for every person, god, spirit or "
+                                "other being, and for an animal that talks")
     physical: PhysicalSpec
     costume_baseline: str
     personality: str
@@ -181,6 +192,13 @@ class Shot(BaseModel):
 class ShotList(BaseModel):
     scene_id: str
     shots: list[Shot]
+
+
+class SaferShot(BaseModel):
+    """A shot Google refused for safety, worded again to show the same moment without what the filter blocks."""
+
+    image_prompt: str = Field(description="Keyframe description in English; no character names, use ids")
+    motion_prompt: str = Field(description="What moves during the shot")
 
 
 # ---------------------------------------------------------------- Music (S12)

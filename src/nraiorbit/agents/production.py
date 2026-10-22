@@ -5,7 +5,7 @@ from __future__ import annotations
 from ..library.registry import AssetRegistry
 from ..schemas import (
     CastEntry, CastLock, CharacterSpec, CueRevisions, CueSheet, IdentityPackBrief,
-    SceneOutline, SceneScript, ShotList, StoryBible,
+    SaferShot, SceneOutline, SceneScript, Shot, ShotList, StoryBible,
 )
 from .base import Agent, project_context
 
@@ -102,6 +102,22 @@ class Director(Agent):
             task += f"\nYour previous shot list for this scene could not be used: {issue}"
         context = project_context(("story_bible", bible), ("cast_lock", lock))
         return self.ask(ShotList, context=context, task=task)
+
+    def safer_shot(self, bible: StoryBible, shot: Shot, refusal: str) -> SaferShot:
+        """Google's image or video model refused this shot for safety: the same story moment, worded so it passes."""
+        task = (
+            f"Google's image or video model refused shot {shot.shot_id} for safety ({refusal[:300]}).\n"
+            f"<shot>\n{shot.model_dump_json(indent=1)}\n</shot>\n"
+            "Rewrite its image_prompt and motion_prompt so the shot shows the same story moment, the same characters "
+            "(keep their ids), place, light, mood and camera, but without what such filters block: no weapon raised "
+            "at, pointed at or striking a person; no wounds, blood, bruises or injuries; nobody falling, hanging or "
+            "dangling over a drop in visible peril; no fire on or touching a person; no screaming in pain; no knife "
+            "or blade near anyone; no impact words (hit, smash, strike, slam into); no child in danger or a child's "
+            "point of view; no blood-like stains; no written words, numbers or logos in the frame. Carry the "
+            "danger through faces, framing, light and setting instead: the threat can be implied or just off frame. "
+            "Keep it a strong, cinematic frame for a family-friendly feature film."
+        )
+        return self.ask(SaferShot, context=project_context(("story_bible", bible)), task=task)
 
 
 class MusicDirector(Agent):

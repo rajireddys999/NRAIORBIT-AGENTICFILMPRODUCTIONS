@@ -13,6 +13,7 @@ providers:
   lipsync: sync_so                 # sync.so sync-3 through the speaker lock (needs SYNC_API_KEY)
 
 voice:
+  animals_speak: false             # an animal's lines are its sounds, written as action; true (all) or [ids] talk
   auto_cast: true                  # each speaking character without a voice gets one from the ElevenLabs account at
                                    # the cast step, shown on the cast cards; change any there
   inbox_fallback: elevenlabs       # ElevenLabs Eleven v4 with the cast below (needs ELEVENLABS_API_KEY)

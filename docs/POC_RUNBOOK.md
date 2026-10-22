@@ -21,7 +21,7 @@ automatically through your Google key:
 ## The bill (quality-first: Veo 3.1 standard, native 1080p)
 
 **Decision: Option A with no compromise on quality.**
-- Video: Veo 3.1 standard (`veo-3.1-generate-preview`) at native 1080p. 1080p clips are 8 s each.
+- Video: Veo 3.1 standard (`veo-3.1-generate-001`) at native 1080p. 1080p clips are 8 s each.
 - Character photos and first frames: Gemini's pro image model.
 
 These are the numbers `nraiorbit run` prints before it spends anything (one attempt per shot):
@@ -72,7 +72,7 @@ nraiorbit demo godavari          # 30-second sanity check, no keys needed
    export GEMINI_API_KEY=...
    nraiorbit google models          # check which Veo / image / TTS models your key can use
    ```
-3. This project is set for the best quality: `veo-3.1-generate-preview` (Veo 3.1 standard),
+3. This project is set for the best quality: `veo-3.1-generate-001` (Veo 3.1 standard),
    `gemini-3-pro-image` (pro image model) and `gemini-2.5-flash-preview-tts`. If
    `google models` shows a newer or higher-tier name (for example a "-preview" suffix on
    the pro image model, or a "pro" TTS model), put it into

@@ -40,7 +40,7 @@ class Screenwriter(Agent):
             f"Write the full scene script for {scene.scene_id}.\n"
             f"<scene_outline>\n{scene.model_dump_json(indent=1)}\n</scene_outline>\n"
             f"Previous scene ended with: {previous_summary or 'this is the first scene'}"
-        )
+        ) + self._animals_rule(bible)
         return self.ask(SceneScript, context=self._context(bible, outline), task=task)
 
     def revise(self, bible: StoryBible, outline: Outline, script: SceneScript, critique: Critique) -> SceneScript:
@@ -48,8 +48,18 @@ class Screenwriter(Agent):
             f"Revise scene {script.scene_id} using the critique. Keep block ids stable where the "
             f"block survives.\n<scene_script>\n{script.model_dump_json(indent=1)}\n</scene_script>\n"
             f"<critique>\n{critique.model_dump_json(indent=1)}\n</critique>"
-        )
+        ) + self._animals_rule(bible)
         return self.ask(SceneScript, context=self._context(bible, outline), task=task)
+
+    def _animals_rule(self, bible: StoryBible) -> str:
+        """Animals make sounds, not speeches: a line given to one would be read aloud by a voice and lip-synced onto
+        its face. voice.animals_speak (true, or a list of ids) is for a story whose animals talk."""
+        from ..characters import silent_animals
+        animals = list(silent_animals(bible.characters, self.cfg).values())
+        if not animals:
+            return ""
+        return (f"\nThese characters are animals and never speak: {', '.join(animals)}. Write their sounds and "
+                "behaviour as action lines (kind action, no character_id), never as dialogue.")
 
     @staticmethod
     def _context(bible: StoryBible, outline: Outline) -> str:

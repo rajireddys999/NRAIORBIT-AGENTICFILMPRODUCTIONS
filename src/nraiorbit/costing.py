@@ -120,7 +120,7 @@ def veo_settings(g: dict, shot=None) -> tuple[str, str, str]:
                                    f"({', '.join(sorted(tiers)) or 'none defined'}); fix the shot list or pipeline.yaml")
         t = tiers[key]
         return t["model"], t["tier"], t["resolution"]
-    return (g.get("veo_model", "veo-3.1-fast-generate-preview"), g.get("veo_tier", "fast"),
+    return (g.get("veo_model", "veo-3.1-fast-generate-001"), g.get("veo_tier", "fast"),
             g.get("veo_resolution", "720p"))
 
 

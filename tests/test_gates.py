@@ -681,3 +681,22 @@ def test_a_quota_stop_in_the_paid_stages_is_a_retry_not_a_block(tmp_path, monkey
     pipeline.run = run
     report = produce.produce(pipeline, log=lambda *_: None)
     assert report["state"] == "retry:quota" and report["steps"]["render"].startswith("quota:")
+
+
+def test_a_faces_hold_from_the_video_step_survives_a_retry_and_the_video_step_looks_first(tmp_path, monkeypatch):
+    """gates: ask. The video step held faces again, naming new stills: a Retry before approving stops at faces with
+    that list intact; after the approval, the paid stages run with look_at_new_frames on (a still drawn then waits)."""
+    pipeline, paths, uploads, _json = _fake_film(tmp_path, monkeypatch, "ask")
+    for g in ("story", "outline", "scenes", "cast", "shots", "cost"):
+        produce.approve(pipeline, g, "approved in the control room\n")
+    named = "New first frames were drawn while the video was made: sc008_s002.\n"
+    paths.reviews.mkdir(parents=True, exist_ok=True)
+    (paths.reviews / "faces.pending").write_text(named, encoding="utf-8")
+    made = []
+    report = produce.produce(pipeline, keyframes=lambda args: made.append(args.slug), log=lambda *_: None)
+    assert report["state"] == "awaiting:faces" and made                       # missing stills are made first
+    assert (paths.reviews / "faces.pending").read_text(encoding="utf-8") == named
+    assert not getattr(pipeline, "look_at_new_frames", False)                 # nothing paid this run
+    produce.approve(pipeline, "faces", "approved in the control room\n")
+    report = produce.produce(pipeline, keyframes=lambda args: None, log=lambda *_: None)
+    assert report["state"] == "awaiting:render" and pipeline.look_at_new_frames is True

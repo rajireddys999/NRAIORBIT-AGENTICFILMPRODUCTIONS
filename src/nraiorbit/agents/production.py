@@ -59,11 +59,36 @@ class CastingAgent(Agent):
         return self.ask(IdentityPackBrief, context=project_context(("story_bible", bible)), task=task)
 
 
+def most_shots(target_seconds: float, clip_lengths: list[int]) -> int:
+    """How many shots a scene of this length holds when every shot is one clip of at least the shortest length."""
+    return max(1, int(target_seconds) // max(1, min(clip_lengths)))
+
+
+def least_shots(target_seconds: float, clip_lengths: list[int]) -> int:
+    """How many shots a scene of this length needs when every shot is one clip of at most the longest length."""
+    longest = max(1, max(clip_lengths))
+    return min(most_shots(target_seconds, clip_lengths), max(1, -(-int(target_seconds) // longest)))
+
+
+def shots_fit(n: int, target_seconds: float, clip_lengths: list[int]) -> bool:
+    return least_shots(target_seconds, clip_lengths) <= n <= most_shots(target_seconds, clip_lengths)
+
+
+def shot_budget(target_seconds: float, clip_lengths: list[int]) -> str:
+    lengths = ", ".join(str(n) for n in sorted(set(clip_lengths)))
+    return (f"Every shot is generated as ONE video clip of exactly {lengths} seconds, and the whole clip is paid for: "
+            f"a shorter shot pays for seconds that are cut away. So plan between {least_shots(target_seconds, clip_lengths)} "
+            f"and {most_shots(target_seconds, clip_lengths)} shots, each duration_s one of {lengths}, adding up to "
+            f"{int(target_seconds)} s. Let one shot carry several "
+            "dialogue lines (block_ids) and cover reactions within a shot, rather than cutting on every line.")
+
+
 class Director(Agent):
     name = "director"
 
     def shots(self, bible: StoryBible, lock: CastLock, scene: SceneOutline, script: SceneScript,
-              action_candidates: list[str], rasa_defaults: dict) -> ShotList:
+              action_candidates: list[str], rasa_defaults: dict, clip_lengths: list[int] | None = None,
+              issue: str = "") -> ShotList:
         task = (
             f"Plan the shots for {scene.scene_id}. Target scene length: {scene.target_seconds} s.\n"
             f"<scene_outline>\n{scene.model_dump_json(indent=1)}\n</scene_outline>\n"
@@ -71,6 +96,10 @@ class Director(Agent):
             f"<rasa_camera_defaults>\n{rasa_defaults}\n</rasa_camera_defaults>\n"
             f"<action_templates>\n{chr(10).join(action_candidates) or 'none'}\n</action_templates>"
         )
+        if clip_lengths:
+            task += "\n" + shot_budget(scene.target_seconds, clip_lengths)
+        if issue:
+            task += f"\nYour previous shot list for this scene could not be used: {issue}"
         context = project_context(("story_bible", bible), ("cast_lock", lock))
         return self.ask(ShotList, context=context, task=task)
 

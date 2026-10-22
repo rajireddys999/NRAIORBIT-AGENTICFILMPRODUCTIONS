@@ -134,6 +134,16 @@
   </div>
 </section>
 
+{% if f.ahead %}
+<section class="card" id="ahead" aria-label="What stands between this film and YouTube">
+  <div class="section-head"><h2>Ahead of this film</h2><span class="mono tiny dim">every stop at once, checked by the runner{% if f.ahead.checked %} · {{ f.ahead.checked|local }}{% endif %}</span></div>
+  {% for kind, title, color in [('stops', 'Stops: a run waits here until you change something', 'bad'), ('waste', 'Waste: a run goes on, but pays for what it throws away', 'gold'), ('notes', 'Notes', 'dim')] %}{% if f.ahead[kind] %}
+  <p class="small {{ color }}" style="margin:10px 0 4px"><b>{{ title }}</b></p>
+  <ul class="small" style="margin:0">{% for item in f.ahead[kind] %}<li><a class="mono tiny" href="#{{ 'money' if item.step == 'cost' else item.step }}">{{ item.step }}</a> {{ item.what }}{% if item.fix %}<div class="tiny muted">→ {{ item.fix }}</div>{% endif %}</li>{% endfor %}</ul>
+  {% endif %}{% endfor %}
+</section>
+{% endif %}
+
 <section class="card" id="flow" aria-label="Pipeline">
   <div class="section-head">
     <h2>Pipeline</h2>
@@ -180,7 +190,9 @@
       {% elif f.issue and key == f.issue.stage %}
       <div class="node-act">
         <span class="tiny bad">Failed here: {{ f.issue.reason }}.{% if f.issue.hint %} {{ f.issue.hint }}{% endif %}</span>
-        {% if f.row and not executing %}<form method="post" action="/film/{{ f.slug }}/retry"><button class="sm">{{ 'Re-run after the change' if f.issue.outside else 'Fix is in place, re-run from here' }}</button></form>
+        {% if f.row and not executing and f.issue.stage == 'cost' and f.cap_suggest %}<form method="post" action="/film/{{ f.slug }}/cap-and-rerun" class="actions"><input name="budget" type="number" min="1" step="1" value="{{ f.cap_suggest }}" style="width:90px" aria-label="New cap in dollars"><button class="sm">Raise the cap to ${{ f.cap_suggest }} and re-run</button></form>
+        <span class="tiny dim">Estimate {{ f.money.estimate.total_usd|money }} + {{ f.money.spent|money }} spent; cap now {{ f.money.cap|money if f.money.cap else 'none' }}. The run then stops at the cost gate for your approval.</span>
+        {% elif f.row and not executing %}<form method="post" action="/film/{{ f.slug }}/retry"><button class="sm">{{ 'Re-run after the change' if f.issue.outside else 'Fix is in place, re-run from here' }}</button></form>
         <span class="tiny dim">The runner keeps the finished steps, redoes this one and the rest, and asks at the gates again.</span>{% endif %}
       </div>
       {% elif key == 'publish' and rerun_ok %}

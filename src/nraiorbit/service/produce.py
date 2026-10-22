@@ -120,6 +120,8 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
         report["finished"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
         pipeline.p.reports.mkdir(parents=True, exist_ok=True)
         (pipeline.p.reports / "produce.json").write_text(json.dumps(report, indent=1, default=str), encoding="utf-8")
+        from .rehearse import save as rehearse_save           # what stands ahead now, for the control room
+        rehearse_save(pipeline, log=log)
         log(f"  produce: {state}")
         if progress is not None:
             progress.finish(state)
@@ -142,6 +144,7 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
     report["steps"]["plan"] = "done"
 
     # a film that cannot be voiced is never offered a cost to approve: speech runs after each scene's clips
+    step("voices")                                       # its stop belongs on the voices step, not the shot lists
     voiceless = pipeline._voiceless()
     if voiceless:
         why = (f"voices: no ElevenLabs voice for {voiceless}; add voice.cast.<character>: <voice id> to the "
@@ -201,6 +204,10 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
             report["steps"]["render"] = f"awaiting:{g.gate}"
             return finish(f"awaiting:{g.gate}")
         except (PipelineBlocked, BudgetExceeded) as b:
+            from ..providers.google_ai import quota_used_up
+            if not isinstance(b, BudgetExceeded) and quota_used_up(b):   # what was made is kept: the next tick
+                report["steps"]["render"] = f"quota: {str(b)[:160]}"     # goes on from there (the runner counts)
+                return finish("retry:quota")
             report["steps"]["render"] = f"blocked: {b}"
             return finish(f"blocked:{str(b)[:120]}")
     report["steps"]["render"] = "done"

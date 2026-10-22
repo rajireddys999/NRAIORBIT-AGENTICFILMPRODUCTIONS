@@ -49,6 +49,24 @@ class GoogleAPIError(RuntimeError):
     """A Google API call failed (bad model name, quota, invalid argument). The run can be resumed."""
 
 
+QUOTA_WAITS = (60, 120, 240)    # seconds: Google's per-minute quotas refill within a minute or two
+SLEEP = time.sleep              # tests replace it
+
+
+NEVER_REFILLS = ("free_tier", "limit: 0", "prepayment credits")   # same 429, but only the owner can change these
+
+
+def quota_used_up(error) -> bool:
+    """A 429 RESOURCE_EXHAUSTED: the project's quota is used up for now. A refused call is never billed, and the
+    quota refills (per minute), so waiting it out is the answer, not stopping the film. Not a free tier whose limit
+    is 0 nor used-up prepaid credits: those never refill, and stop at once with their own fix."""
+    import re
+    text = str(error)
+    if any(s in text for s in NEVER_REFILLS):
+        return False
+    return "RESOURCE_EXHAUSTED" in text or re.search(r"(?<!\d)429(?!\d)", text.split("\n", 1)[0]) is not None
+
+
 VERTEX_HINT = ("This key type is refused by the Gemini API endpoint. Use the same key through Vertex AI: set "
                "google.vertex: true in the project's pipeline.yaml (check with `nraiorbit google models --vertex`; "
                "needs aiplatform.googleapis.com and the Vertex AI API enabled).")
@@ -177,18 +195,28 @@ class GeminiImages:
         self.model = google_cfg.get("image_model", "gemini-2.5-flash-image")
         self.price = pricing.get("gemini", {}).get("image_per_image", 0.04)
         self.ledger = ledger
+        self.quota_waits = tuple(google_cfg.get("quota_wait_s") or QUOTA_WAITS)
 
     def generate(self, prompt: str, out: Path, *, refs: list[Path] = (), aspect_ratio: str = "16:9",
                  item: str = "image") -> Path:
         types = _types()
-        self.ledger.check(self.price, item)
-        response = _call(
-            self.client.models.generate_content, f"Gemini image ({item})",
-            model=self.model,
-            contents=[*(_image_part(r) for r in refs), prompt],
-            config=types.GenerateContentConfig(
-                response_modalities=["IMAGE"], image_config=types.ImageConfig(aspect_ratio=aspect_ratio)),
-        )
+        waits = list(self.quota_waits)                  # beyond the client's own short retries: a used-up quota is
+        while True:                                     # waited out (a refused call is not billed), then reported
+            self.ledger.check(self.price, item)
+            try:
+                response = _call(
+                    self.client.models.generate_content, f"Gemini image ({item})",
+                    model=self.model,
+                    contents=[*(_image_part(r) for r in refs), prompt],
+                    config=types.GenerateContentConfig(
+                        response_modalities=["IMAGE"], image_config=types.ImageConfig(aspect_ratio=aspect_ratio)),
+                )
+                break
+            except GoogleAPIError as e:
+                if not quota_used_up(e) or not waits:
+                    raise
+                print(f"  {item}: Google's quota is used up for now; waiting {waits[0]} s, then trying again", flush=True)
+                SLEEP(waits.pop(0))
         self.ledger.record("gemini_image", item, self.price, model=self.model)
         data, mime = _first_inline(response)
         out.parent.mkdir(parents=True, exist_ok=True)

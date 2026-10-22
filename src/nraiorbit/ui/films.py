@@ -28,7 +28,7 @@ GATES = {"story": "story", "outline": "outline", "scenes": "scenes", "cast": "ca
 # and the library phases have no stage and show in the headers only
 PHASES = {"story_bible": "story", "outline": "outline", "scenes": "scenes", "cast": "cast", "shots": "shots",
           "music_plan": "render", "render": "render", "assemble": "assemble", "trailer": "assemble", "cost": "cost",
-          "faces": "faces", "qa": "qa", "deliver": "deliver", "publish": "publish"}
+          "faces": "faces", "qa": "qa", "deliver": "deliver", "publish": "publish", "voices": "render"}
 RUNNING = {"new", "approved", "retry", "producing"}       # row states in which the runner is, or is about to be, on it
 SETTLED = {"done", "skipped", "held"}                     # statuses that let the next step count
 ADVISORY = {"qa"}                                         # steps that never stop the run: no later step waits on them
@@ -230,6 +230,14 @@ def explain_note(note: str | None) -> str | None:
                 "true to its pipeline.yaml, then re-run. The runner then makes their pictures, a few cents each under "
                 "the cap, and stops at the cast gate so you can look at the faces. Re-running before that stops here "
                 "again and pays nothing.")
+    if text.startswith("quota (") or "blocked:quota" in text:
+        return ("Google's quota for this project was used up for a while. Nothing already made is lost or paid "
+                "again: the runner goes on from there at its next tick (every 15 minutes), up to three times; after "
+                "that, check the quotas in the Google Cloud console and press Retry.")
+    if "is over the cap" in text or "budget.max_usd is not set" in text:
+        return ("The paid stages cost more than this film's cap allows. Raise the cap on the Cost step (one click "
+                "re-runs it): the run then stops at the cost gate with the estimate, and nothing is paid until you "
+                "approve it there.")
     if text.startswith("voices:") or "no ElevenLabs voice" in text:
         return ("Speaking characters have no ElevenLabs voice. Add voice.cast.<character>: <ElevenLabs voice id> to "
                 "the film's pipeline.yaml, then re-run. Nothing is paid for video before every speaker has a voice.")
@@ -313,6 +321,28 @@ def cost_lines(estimate: dict | None, cfg: dict, to_film: list, to_frame: list, 
     out = [{"name": name, "usd": float(estimate.get(k) or 0), "why": why}
            for name, k, why in parts if estimate.get(k) not in (None, 0, 0.0)]
     return out
+
+
+def cap_suggestion(state: str, cash: dict) -> int | None:
+    """When the estimate stopped the film (over the cap, or no cap at all): a cap that fits it, what is spent plus
+    the estimate with a tenth to spare, in whole dollars. None otherwise."""
+    if not str(state).startswith(("blocked:estimate", "blocked:no cap")):
+        return None
+    total = float(((cash or {}).get("estimate") or {}).get("total_usd") or 0)
+    if total <= 0:
+        return None
+    import math
+    return int(math.ceil((float(cash.get("spent") or 0) + total) * 1.1))
+
+
+def rehearsal_view(found) -> dict | None:
+    """The runner's last rehearsal (reports/rehearsal.json) as the page shows it: the stops, the waste and the notes,
+    each with its fix; None when there is none or it failed (a failure is not news to the owner)."""
+    if not isinstance(found, dict) or found.get("error"):
+        return None
+    view = {k: [f for f in (found.get(k) or []) if isinstance(f, dict) and f.get("what")] for k in ("stops", "waste", "notes")}
+    view["checked"] = found.get("checked")
+    return view if any(view[k] for k in ("stops", "waste", "notes")) else None
 
 
 def summary(store: Store, slug: str, row: dict | None) -> dict:
@@ -627,6 +657,8 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         "hint": explain_note((row or {}).get("note") or (row or {}).get("state")),
         "policy": cfg.get("policy") or {}, "runtime": (cfg.get("film") or {}).get("runtime_minutes"),
         "story_text": store.read_text(f"{slug}/project/input/story.md") or "",
+        "ahead": rehearsal_view(_json(store, f"{slug}/reports/rehearsal.json")),
+        "cap_suggest": cap_suggestion(state, cash),
         "tools": stage_tools, "tools_line": {k: tools.line(v) for k, v in stage_tools.items()},
         "tools_planned": planned, "render_note": tools.render_note(resolved),
         "used": tools.used(_jsonl(store, f"{slug}/reports/llm_usage.jsonl"), cash["rows"], resolved),

@@ -213,6 +213,26 @@ def write_reference(uri: str, row: dict) -> None:
     update_text(uri, change)
 
 
+def quota_strikes(note: str) -> int:
+    """How many ticks in a row Google's quota has stopped this film, as the row's note records it."""
+    import re
+    m = re.match(r"quota \((\d+)\)", note or "")
+    return int(m.group(1)) if m else 0
+
+
+QUOTA_NOTE = ("Google's quota was used up for now; everything already made is kept, and the runner goes on from there "
+              "at its next tick")
+
+
+def after_quota(s: dict) -> dict:
+    """The row after a run Google's quota stopped: retry (the next tick goes on), three times in a row at most."""
+    strikes = quota_strikes(s.get("note", "")) + 1
+    return {"state": "blocked:quota" if strikes >= 3 else "retry",
+            "note": f"quota ({strikes}): {QUOTA_NOTE}" if strikes < 3 else
+            f"quota ({strikes}): Google's quota stayed used up for three runs; check the project's quotas in the "
+            "Google Cloud console (or wait an hour), then Retry. Everything already made is kept."}
+
+
 def restore_strikes(note: str) -> int:
     """How many ticks in a row the restore has failed, as the row's note records it."""
     import re
@@ -489,9 +509,12 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
                 report = produce_fn(root, bucket, progress=film)
             else:
                 report = produce_fn(root, bucket)
-            s.update(state=report["state"], note=(report.get("steps", {}).get("publish") or "")
-                     if isinstance(report.get("steps", {}).get("publish"), str) else
-                     str(report.get("steps", {}).get("publish", "")), updated=now())
+            if report["state"] == "retry:quota":
+                s.update(**after_quota(s), updated=now())
+            else:
+                s.update(state=report["state"], note=(report.get("steps", {}).get("publish") or "")
+                         if isinstance(report.get("steps", {}).get("publish"), str) else
+                         str(report.get("steps", {}).get("publish", "")), updated=now())
             if bucket:
                 _backup_project(root, bucket, mirror_reviews, log)
         except RestoreFailed as exc:                      # not the film's fault: the row goes back as it was, with a
@@ -504,7 +527,11 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
         except Exception as exc:
             if film is not None:
                 film.finish("failed")
-            s.update(state=f"blocked:{type(exc).__name__}", note=str(exc)[:200], updated=now())
+            from ..providers.google_ai import GoogleAPIError, quota_used_up
+            if isinstance(exc, GoogleAPIError) and quota_used_up(exc):   # first frames, pictures: kept, go on
+                s.update(**after_quota(s), updated=now())
+            else:
+                s.update(state=f"blocked:{type(exc).__name__}", note=str(exc)[:200], updated=now())
             if bucket and restored:                       # what the run paid for and saved before it failed (a later
                 try:                                      # scene's shot list, clips) outlives the container
                     _backup_project(root, bucket, mirror_reviews, log)

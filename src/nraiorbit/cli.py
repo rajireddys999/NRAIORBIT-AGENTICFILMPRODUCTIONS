@@ -367,6 +367,43 @@ def cmd_poc(args) -> None:
     print("See docs/POC_RUNBOOK.md.")
 
 
+def cmd_rehearse(args) -> None:
+    """Every stop ahead of a film at once, for free: the runner's own checks against its plan. With --from-bucket the
+    project is copied from the bucket into a temporary folder first (nothing is written back)."""
+    import tempfile
+
+    from .library.registry import AssetRegistry
+    from .service import rehearse
+
+    if args.from_bucket:
+        from .library.registry import KIND_DIRS
+        from .ops import backup
+        from .release import gcs
+        bucket = args.from_bucket if args.from_bucket is not True else gcs.default_bucket()
+        with tempfile.TemporaryDirectory(prefix="rehearse-") as tmp:            # nothing is written back, nothing kept
+            root = Path(tmp) / args.slug
+            _, failed = backup.restore_report(root, bucket, log=lambda *_: None)
+            if failed:
+                sys.exit(f"rehearse: the bucket could not be read for {', '.join(failed)}")
+            library = Path(tmp) / "library"
+            (library / "characters").mkdir(parents=True)
+            try:
+                gcs.rsync(f"gs://{bucket}/library/characters", library / "characters")
+            except gcs.BucketError as exc:                                     # none in the bucket yet is fine; a
+                if not any(s in str(exc).lower() for s in backup.NO_MATCH):    # failure to read them is not
+                    sys.exit(f"rehearse: the library's characters could not be read: {str(exc).splitlines()[-1][:160]}")
+            for kind in set(KIND_DIRS.values()) - {"characters"}:              # what the bucket does not hold
+                if (REPO_ROOT / "library" / kind).exists():
+                    shutil.copytree(REPO_ROOT / "library" / kind, library / kind, dirs_exist_ok=True)
+            pipeline = Pipeline(root, None, cfg=load_pipeline_config(root), library=AssetRegistry.load(library),
+                                log=lambda *_: None)
+            print(rehearse.report_text(rehearse.rehearse(pipeline)))
+        return
+    root = _project(args.slug)
+    pipeline = Pipeline(root, None, cfg=load_pipeline_config(root), log=lambda *_: None)
+    print(rehearse.report_text(rehearse.rehearse(pipeline)))
+
+
 def cmd_estimate(args) -> None:
     from .costing import estimate, load_pricing, render_markdown
 
@@ -653,6 +690,12 @@ def _main(argv: list[str] | None = None) -> None:
     p.add_argument("slug")
     p.add_argument("--manual", action="store_true", help="generate Veo clips by hand (shot pack) instead of the API")
     p.set_defaults(fn=cmd_poc)
+
+    p = sub.add_parser("rehearse", help="every stop ahead of a film, at once and for free")
+    p.add_argument("slug")
+    p.add_argument("--from-bucket", nargs="?", const=True, default=None, metavar="BUCKET",
+                   help="copy the project from the bucket first (default bucket when no name is given)")
+    p.set_defaults(fn=cmd_rehearse)
 
     p = sub.add_parser("estimate", help="bill estimate for a project, or for a runtime")
     p.add_argument("slug", nargs="?")

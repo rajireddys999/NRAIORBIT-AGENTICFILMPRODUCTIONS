@@ -663,3 +663,21 @@ def test_a_skipped_film_check_replaces_the_last_cuts_verdict(tmp_path, monkeypat
     produce.produce(pipeline, log=lambda *_: None)
     kept = _json.loads((paths.reports / "qa" / "film.json").read_text())
     assert kept["ok"] is None and kept["skipped"].startswith("ImportError")
+
+
+
+def test_a_quota_stop_in_the_paid_stages_is_a_retry_not_a_block(tmp_path, monkeypatch):
+    from nraiorbit.pipeline import PipelineBlocked
+    pipeline, paths, uploads, _json = _fake_film(tmp_path, monkeypatch, "auto")
+    produce.approve(pipeline, "cost", "approved\n")
+    plan_run = pipeline.run
+
+    def run(until=None):
+        if until == "shots":
+            return plan_run(until)
+        raise PipelineBlocked("Gemini image (keyframe sc009_s001): 429 RESOURCE_EXHAUSTED")
+    for g in ("story", "outline", "scenes", "cast", "shots"):
+        produce.approve(pipeline, g)
+    pipeline.run = run
+    report = produce.produce(pipeline, log=lambda *_: None)
+    assert report["state"] == "retry:quota" and report["steps"]["render"].startswith("quota:")

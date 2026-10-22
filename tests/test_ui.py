@@ -1141,3 +1141,67 @@ def test_a_speaker_without_a_voice_says_what_it_needs(client, root):
     cfg["voice"]["auto_cast"] = False
     cfg_path.write_text(yaml.safe_dump(cfg))
     assert "the film stops before its cost gate until every speaker has one" in card(client.get("/film/demo").text, "cast")
+
+
+def test_the_film_page_shows_what_stands_ahead(client, root):
+    (root / "demo" / "reports" / "rehearsal.json").write_text(json.dumps({
+        "checked": "2026-10-22T01:00:00+00:00",
+        "stops": [{"step": "render", "what": "chintu is an animal with lines and no voice", "fix": "set a voice"}],
+        "waste": [{"step": "shots", "what": "3 of 9 shots are off the 4/6/8 s clips", "fix": "re-plan the shots"}],
+        "notes": [{"step": "publish", "what": "waits for you at: cost, publish", "fix": ""}]}))
+    html = client.get("/film/demo").text
+    ahead = html[html.index('id="ahead"'):html.index('id="flow"')]
+    assert "Ahead of this film" in ahead and "chintu is an animal with lines and no voice" in ahead
+    assert "→ set a voice" in ahead and "off the 4/6/8 s clips" in ahead and "waits for you at: cost, publish" in ahead
+    assert ahead.index("Stops") < ahead.index("Waste") < ahead.index("Notes")
+    (root / "demo" / "reports" / "rehearsal.json").write_text(json.dumps({"error": "KeyError: x"}))
+    assert 'id="ahead"' not in client.get("/film/demo").text                 # a failed rehearsal is not news
+
+
+def test_the_voices_stop_lands_on_the_voices_step(client, root):
+    """The voices check runs right after the shot lists; its stop is the picture-and-voices step's, not theirs."""
+    rs = rows(root)
+    rs[0].update(state="blocked:voices: no ElevenLabs voice for ['chintu']", note="")
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    (root / "demo" / "reviews" / "faces.pending").unlink()
+    (root / "demo" / "reports" / "progress.json").write_text(json.dumps({**PROGRESS, "state": "blocked", "phase": "voices"}))
+    html = client.get("/film/demo").text
+    assert "Failed here" in flow_node(html, "render") and "Failed here" not in flow_node(html, "shots")
+
+
+def test_a_film_the_estimate_stopped_offers_one_click_to_raise_the_cap(client, root):
+    """Over the cap: the cost step says so in plain words and offers a cap that fits (spent + estimate, a tenth to
+    spare); one click saves it and re-runs, and the run stops at the cost gate for the owner's approval."""
+    from urllib.parse import unquote
+    rs = rows(root)
+    rs[0].update(state="blocked:estimate $12.50 + spent $1.35 is over the cap $10.00; raise the cap or reduce the plan",
+                 budget_usd="10", note="")
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    (root / "demo" / "reviews" / "faces.pending").unlink()
+    (root / "demo" / "reports" / "progress.json").write_text(json.dumps({**PROGRESS, "state": "blocked", "phase": "cost"}))
+    html = client.get("/film/demo").text
+    node = flow_node(html, "cost")
+    assert "Raise the cap to $16 and re-run" in node and 'action="/film/demo/cap-and-rerun"' in node   # ceil(13.85 x 1.1)
+    assert "The paid stages cost more than this film" in html and "nothing is paid until you approve it" in html
+    r = client.post("/film/demo/cap-and-rerun", data={"budget": "16"}, follow_redirects=False)
+    said = unquote(r.headers["location"])
+    assert "cap raised to 16 dollars" in said and "stops at the cost gate" in said
+    row = rows(root)[0]
+    assert row["budget_usd"] == "16" and row["state"] == "retry" and client.started == ["nraiorbit-runner"]
+    r = client.post("/film/demo/cap-and-rerun", data={"budget": "20"}, follow_redirects=False)  # not stopped any more
+    assert "not stopped by the estimate" in unquote(r.headers["location"]) and rows(root)[0]["budget_usd"] == "16"
+    rs = rows(root)
+    rs[0].update(state="blocked:BudgetExceeded: the ledger stopped the render")       # another stop (a stale page)
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    r = client.post("/film/demo/cap-and-rerun", data={"budget": "60"}, follow_redirects=False)
+    assert "not stopped by the estimate" in unquote(r.headers["location"])
+    assert rows(root)[0]["budget_usd"] == "16" and rows(root)[0]["state"].startswith("blocked:BudgetExceeded")
+    assert client.post("/film/demo/cap-and-rerun", data={"budget": "-1"}).status_code == 400
+
+
+def test_a_quota_stop_says_it_will_go_on_by_itself(client, root):
+    rs = rows(root)
+    rs[0].update(state="retry", note="quota (1): Google's quota was used up for now; everything already made is kept")
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    html = client.get("/film/demo").text
+    assert "goes on from there at its next tick (every 15 minutes), up to three times" in html

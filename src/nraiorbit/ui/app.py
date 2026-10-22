@@ -342,9 +342,22 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=303, headers={"Location": "/login"}, detail="sign in first")
         raise HTTPException(status_code=403, detail=denied_page(None, settings.allowed_emails))
 
+    seen_versions: dict = {}
+
+    def versions() -> dict:
+        """What is live, for the footer: this control room's commit and the image the runner's next tick starts
+        with (read from Cloud Run at most once a minute; blank when it cannot be read)."""
+        now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        if not seen_versions or now - seen_versions.get("at", 0) > 60:
+            image = runner_mod.job_image(settings.project, settings.region, settings.job)
+            seen_versions.update(at=now, runner=runner_mod.short_image(image) if image else "")
+        ui = os.environ.get("NRAIORBIT_VERSION") or "dev"
+        return {"ui": ui[:7] if ui not in ("dev", "unknown") else ui, "runner": seen_versions.get("runner", "")}
+
     def page(name: str, request: Request, email: str, **kw):
         ctx = {"request": request, "settings": settings, "email": email, "root": store.root, "is_gs": store.is_gs,
-               "msg": request.query_params.get("msg"), "now": datetime.datetime.now(tz), **kw}
+               "msg": request.query_params.get("msg"), "now": datetime.datetime.now(tz),
+               "versions": versions() if email else {}, **kw}
         return templates.TemplateResponse(request, name, ctx)
 
     def back(url: str, msg: str) -> RedirectResponse:

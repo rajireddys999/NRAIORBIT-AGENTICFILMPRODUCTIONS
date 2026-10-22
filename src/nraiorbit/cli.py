@@ -561,6 +561,8 @@ def cmd_service(args) -> None:
     if args.action == "tick":
         from .llm import ClaudeClient
 
+        print(f"runner version {os.environ.get('NRAIORBIT_VERSION') or 'unknown'}")   # the commit this image was built from
+
         def produce_fn(root: Path, bucket, progress=None):
             cfg = load_pipeline_config(root)
             llm = ClaudeClient(model=cfg["llm"]["model"], max_tokens=cfg["llm"]["max_tokens"],

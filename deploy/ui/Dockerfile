@@ -10,6 +10,8 @@ COPY config ./config
 COPY projects/_template/pipeline.yaml ./projects/_template/pipeline.yaml
 RUN pip install --no-cache-dir -e ".[google,publish,ui]"
 
-ENV PYTHONUNBUFFERED=1 UI_AUTH=on
+# the commit this image was built from (deploy.yml passes it; a hand build without it says "unknown")
+ARG GIT_SHA=unknown
+ENV PYTHONUNBUFFERED=1 UI_AUTH=on NRAIORBIT_VERSION=$GIT_SHA
 EXPOSE 8080
 CMD ["nraiorbit", "ui"]

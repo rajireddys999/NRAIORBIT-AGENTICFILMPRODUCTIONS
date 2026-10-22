@@ -272,8 +272,8 @@ def quota_strikes(note: str) -> int:
     return int(m.group(1)) if m else 0
 
 
-QUOTA_NOTE = ("Google's quota was used up for now; everything already made is kept, and the runner goes on from there "
-              "at its next tick")
+QUOTA_NOTE = ("Google was busy or its quota was used up for now; everything already made is kept, and the runner goes "
+              "on from there at its next tick")
 
 
 def after_quota(s: dict) -> dict:
@@ -281,8 +281,8 @@ def after_quota(s: dict) -> dict:
     strikes = quota_strikes(s.get("note", "")) + 1
     return {"state": "blocked:quota" if strikes >= 3 else "retry",
             "note": f"quota ({strikes}): {QUOTA_NOTE}" if strikes < 3 else
-            f"quota ({strikes}): Google's quota stayed used up for three runs; check the project's quotas in the "
-            "Google Cloud console (or wait an hour), then Retry. Everything already made is kept."}
+            f"quota ({strikes}): Google stayed busy or out of quota for three runs; check the project's quotas in "
+            "the Google Cloud console (or wait an hour), then Retry. Everything already made is kept."}
 
 
 def restore_strikes(note: str) -> int:

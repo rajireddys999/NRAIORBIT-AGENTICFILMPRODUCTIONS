@@ -68,7 +68,7 @@ p { margin:0 0 10px } p:last-child { margin-bottom:0 }
 .badge::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; flex:none }
 .badge.done, .badge.ok { background:rgba(92,211,138,.12); color:var(--ok) }
 .badge.partial, .badge.held, .badge.skipped, .badge.stale { background:var(--gold-soft); color:var(--warn) }
-.badge.awaiting, .badge.producing, .badge.running, .badge.approved, .badge.retry, .badge.new, .badge.pending { background:var(--cyan-soft); color:var(--wait) }
+.badge.awaiting, .badge.producing, .badge.learning, .badge.running, .badge.approved, .badge.retry, .badge.new, .badge.pending { background:var(--cyan-soft); color:var(--wait) }
 .badge.blocked, .badge.failed { background:rgba(255,107,107,.12); color:var(--bad) }
 .badge.todo { color:var(--todo) } .badge.plain::before { display:none }
 .badge.live::before { animation:pulse 2s ease-out infinite }

@@ -577,16 +577,21 @@ def cmd_service(args) -> None:
                          learn_fn=learn_fn, template=project_template())
         print(out)
         return
-    if args.action == "add-story":
+    if args.action == "add-story":                       # load and save (gcloud when the client's login is stale)
         rows = queue.load(args.stories, queue.STORY_COLUMNS)
+        if any(r["slug"] == args.slug for r in rows):     # a second row with this slug would never be claimed
+            sys.exit(f"add-story: {args.slug} is already in {args.stories}; pick another slug or retry that row")
         rows.append({"slug": args.slug, "story_uri": args.story_uri, "budget_usd": args.budget or "",
                      "gates": args.gates or "", "publish": args.publish or "", "state": "new", "note": "",
                      "updated": queue.now()})
         queue.save(args.stories, rows, queue.STORY_COLUMNS)
         print(f"queued story {args.slug} in {args.stories}")
         return
+    focus = args.learn or "all"
     rows = queue.load(args.references, queue.REFERENCE_COLUMNS)
-    rows.append({"url": args.url, "title": args.title or "", "learn": args.learn or "all",
+    if any(r["url"] == args.url and r["learn"] == focus for r in rows):          # the same watch twice is paid twice
+        sys.exit(f"add-reference: {args.url} is already queued to learn {focus}; set it to retry instead")
+    rows.append({"url": args.url, "title": args.title or "", "learn": focus,
                  "minutes": args.minutes or "", "state": "new", "profile_uri": "", "note": "", "updated": queue.now()})
     queue.save(args.references, rows, queue.REFERENCE_COLUMNS)
     print(f"queued reference {args.url} in {args.references}")

@@ -802,15 +802,20 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         return back("/references", "queued; the next tick watches it (the cost guard applies)")
 
     @app.post("/references/retry")
-    def retry_reference(email: str = Depends(guard), url: str = Form(...)):
+    def retry_reference(email: str = Depends(guard), url: str = Form(...), learn: str = Form("")):
         def change(text: str) -> str:
+            # only the clicked row (its link and focus), and only while it is blocked: the same link learned for
+            # another focus may be done (re-learning it is paid again) or being learned right now (learning)
             refs = queue.rows_of(text, queue.REFERENCE_COLUMNS)
+            changed.clear()
             for r in refs:
-                if r["url"] == url:
+                if r["url"] == url and (not learn or r["learn"] == learn) and r["state"].startswith("blocked"):
                     r.update(state="retry", updated=queue.now())
+                    changed.append(r["learn"])
             return queue.csv_of(refs, queue.REFERENCE_COLUMNS)
+        changed: list[str] = []
         store.update_text(REFERENCES, change, "text/csv")
-        return back("/references", "set to retry")
+        return back("/references", "set to retry" if changed else "nothing to retry: that row is no longer blocked")
 
     if not store.is_gs:
         @app.get("/file/{path:path}")

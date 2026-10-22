@@ -95,7 +95,7 @@ def test_a_shot_refused_twice_stops_the_video_step_instead_of_a_text_slide(film)
     ctx = RenderContext(cast=p._lock(), scene_id="sc001", resolution=(640, 360), fps=24)
     clip = p._render_shot(video, shot, ctx, None)
     assert not clip.exists() and p._slides == [shot.shot_id]                   # no slide file made
-    with pytest.raises(PipelineBlocked, match=f"no video, Google refused them twice: {shot.shot_id}"):
+    with pytest.raises(PipelineBlocked, match=f"no video, Google's safety filter refused them: {shot.shot_id}"):
         p._stop_for_slides()
     p._slides = []
     p._stop_for_slides()                                                         # none: the run goes on
@@ -225,3 +225,80 @@ def test_face_guard_retakes_start_at_the_shots_current_take(film):
     ctx = RenderContext(cast=p._lock(), scene_id="sc001", resolution=(640, 360), fps=24)
     p._render_shot(SimpleNamespace(render_shot=render), shot, ctx, face_guard=object())
     assert seeds == [3, 4]                                                       # never back to the old take 1
+
+
+def test_a_new_cut_asks_at_the_film_cut_gate_again(film):
+    """Real films stop at final_cut (animatics at pacing): a re-cut must ask again at whichever the film uses."""
+    p, _ = film
+    (p.p.root / "reviews").mkdir()
+    for g in ("pacing", "final_cut", "trailer"):
+        (p.p.root / "reviews" / f"{g}.approved").write_text("ok")
+    p.invalidate("assemble")
+    assert not any((p.p.root / "reviews" / f"{g}.approved").exists() for g in ("pacing", "final_cut", "trailer"))
+
+
+def test_what_a_redone_step_throws_away_leaves_the_bucket_too(film):
+    """The backup only ever adds, so an invalidated trailer would come back with the next fresh container and the
+    trailer step would skip: invalidate hands its outputs to remove_remote (set by produce in the runner)."""
+    from nraiorbit.ops import backup
+    p, _ = film
+    handed = []
+    p.remove_remote = handed.extend
+    p.invalidate("trailer")
+    assert p.p.master / "trailer.mp4" in handed
+    keys = dict(backup.remote_keys(p.p.root, [
+        p.p.master / "trailer.mp4", p.p.master / "stems", p.p.root / "02_outline.json", p.p.root / "04_shots",
+        p.p.edit / "timeline.json", p.p.root / "inbox" / "video" / "sc001_s001.mp4", p.p.root / "06_keyframes" / "x",
+        p.p.root / "reports" / "cost.jsonl", p.p.root / "reviews" / "trailer.approved", p.p.root / "cache" / "a"]))
+    slug = p.p.root.name
+    assert keys == {f"{slug}/11_master/trailer.mp4": False, f"{slug}/11_master/stems": True,
+                    f"{slug}/project/02_outline.json": False, f"{slug}/04_shots": True}   # never paid media or notes
+
+
+def test_remove_remote_deletes_files_and_folders_and_shrugs_off_missing_ones(tmp_path, monkeypatch):
+    from nraiorbit.ops import backup
+    from nraiorbit.release import gcs
+    root = tmp_path / "rain"
+    objects = {"rain/11_master/trailer.mp4", "rain/11_master/stems/music.wav", "rain/11_master/stems/dialogue.wav",
+               "rain/inbox/video/sc001_s001.mp4", "rain/11_master/movie.mp4"}
+
+    class NotFound(Exception):
+        pass
+
+    class Blob:
+        def __init__(self, name):
+            self.name = name
+
+        def delete(self):
+            if self.name not in objects:
+                raise NotFound(self.name)
+            objects.discard(self.name)
+
+    class Bucket:
+        def blob(self, key):
+            return Blob(key)
+
+        def list_blobs(self, prefix):
+            return [Blob(k) for k in sorted(objects) if k.startswith(prefix)]
+
+    monkeypatch.setattr(gcs, "STORAGE_FACTORY", lambda: SimpleNamespace(bucket=lambda name: Bucket()))
+    logs = []
+    n = backup.remove_remote(root, "b", [root / "11_master" / "trailer.mp4", root / "11_master" / "stems",
+                                         root / "11_master" / "reels_gone.mp4", root / "inbox" / "video"], log=logs.append)
+    assert n == 3 and objects == {"rain/inbox/video/sc001_s001.mp4", "rain/11_master/movie.mp4"}
+    assert "removed 3 old output(s) from the bucket" in logs[-1]
+    assert backup.remove_remote(root, None, [root / "11_master" / "movie.mp4"]) == 0                # no bucket
+
+
+def test_a_music_redo_keeps_every_clip(film):
+    p, _ = film
+    first = ShotList.model_validate({"scene_id": "sc001", "shots": SHOTS["sc001"]}).shots[0].shot_id
+    (p.p.root / "inbox" / "video").mkdir(parents=True)
+    (p.p.root / "inbox" / "video" / f"{first}.mp4").write_bytes(b"clip")
+    (p.p.root / produce.REWORK_FILE).write_text(json.dumps({"id": "m1", "stage": "music_plan", "notes": "softer"}))
+    produce.REWORK_STAGES["music_plan"] = "music_plan"                         # as triage will route it
+    try:
+        produce.apply_rework(p, log=lambda *_: None)
+    finally:
+        produce.REWORK_STAGES.pop("music_plan")
+    assert p.takes == {} and not (p.p.root / "takes.yaml").exists()

@@ -1297,3 +1297,12 @@ def test_after_a_send_back_the_page_shows_the_shots_new_still_and_not_its_old_cl
     (root / "demo" / "inbox" / "video" / f"{first}_2.mp4").write_bytes(b"")
     d = films.detail(Store(str(root)), "demo", rows(root)[0])
     assert next(c for c in d["keyframes"] if c["shot_id"] == first)["filmed"] is True
+
+
+def test_the_delivery_card_reads_what_deliver_writes(client, root):
+    """deliver() writes {"date", "files": [...]}; the page used to expect a bare list and showed nothing."""
+    (root / "demo" / "11_master" / "deliver").mkdir(parents=True, exist_ok=True)
+    (root / "demo" / "11_master" / "deliver" / "delivery.json").write_text(json.dumps({"date": "2026-10-22", "files": [
+        {"name": "Rain_720p.mp4", "gs": "gs://b/demo/final/Rain_720p.mp4", "url": "https://x", "mb": 120.5}]}))
+    d = films.detail(Store(str(root)), "demo", rows(root)[0])
+    assert [x["name"] for x in d["delivery"]] == ["Rain_720p.mp4"]                 # the card lists it

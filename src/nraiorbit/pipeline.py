@@ -50,6 +50,13 @@ STAGES = ["story_bible", "outline", "scenes", "cast", "shots", "music_plan", "re
 OWNER_NOTES = "owner_notes.jsonl"            # reports/: every Send back from the control room, the latest one in force
 STAGE_GATES = {"story_bible": "story", "outline": "outline", "scenes": "scenes", "cast": "cast", "shots": "shots",
                "render": "render", "assemble": "pacing", "trailer": "trailer"}
+
+
+def gates_of(stage: str) -> tuple[str, ...]:
+    """Every review gate a stage can raise: the cut is `pacing` for an animatic and `final_cut` for a film."""
+    if stage == "assemble":
+        return ("pacing", "final_cut")
+    return (STAGE_GATES[stage],) if stage in STAGE_GATES else ()
 # The step gates sit between stages (run() raises them after the stage) and fire only when the project's
 # review_gates lists them: the control room's template does, so a queued film stops at every step; a project that
 # never mentions them (the CLI's defaults, the demo configs) runs through as before.
@@ -153,7 +160,7 @@ class ProjectPaths:
                       + sorted(self.music.glob("cue*.wav")),
             "assemble": [self.master / "movie.mp4", self.edit / "film_dialogue.mp4", self.edit / "scenes",
                          self.master / "stems", self.edit / "movie_nocards.mp4", self.edit / "cards.json",
-                         self.edit / "cards"],
+                         self.edit / "cards", self.master / "deliver"],      # a new cut never ships an old 720p copy
             "trailer": [self.master / "trailer.mp4", self.edit / "trailer_plan.json"],
         }[stage]
 
@@ -171,6 +178,7 @@ class Pipeline:
         self.face_mesh = None                          # lipsync.shots.<id>.mesh; tests inject a fake
         self.takes = load_takes(self.p.root)
         self.look_at_new_frames = False                 # produce sets it when the faces gate is on (ask)
+        self.remove_remote = None                       # produce sets it: invalidated outputs leave the bucket too
         self.log = log
         self.on_stage = None                           # called with each stage's name as it starts (live progress)
         self.story_analyst = StoryAnalyst(llm, self.cfg)
@@ -293,16 +301,20 @@ class Pipeline:
                 return
 
     def invalidate(self, stage: str) -> None:
+        gone = []
         for s in STAGES[STAGES.index(stage):]:
             for path in self.p.stage_outputs(s):
+                gone.append(path)
                 if path.is_dir():
                     shutil.rmtree(path)
                 elif path.exists():
                     path.unlink()
-            gate = STAGE_GATES.get(s)
-            if gate:
+            for gate in gates_of(s):
                 for suffix in ("approved", "pending"):
                     (self.p.reviews / f"{gate}.{suffix}").unlink(missing_ok=True)
+        remover = getattr(self, "remove_remote", None)   # the bucket's copies too, or the next fresh container
+        if remover is not None:                           # restores them and the step skips
+            remover(gone)
         # the runner's own gates (service/produce) answer for what follows: a replan or a re-render needs the cost
         # and the first frames approved again; a new cut needs the upload approved again
         for name, upto in (("cost", "render"), ("faces", "render"), ("publish", "trailer")):
@@ -316,8 +328,8 @@ class Pipeline:
         out = {}
         for s in STAGES:
             done = all(p.exists() for p in self.p.stage_outputs(s)[:1])
-            gate = STAGE_GATES.get(s)
-            if gate and (self.p.reviews / f"{gate}.pending").exists():
+            gate = next((g for g in gates_of(s) if (self.p.reviews / f"{g}.pending").exists()), None)
+            if gate:
                 out[s] = f"waiting for review '{gate}'"
             else:
                 out[s] = "done" if done else "todo"
@@ -1109,7 +1121,8 @@ class Pipeline:
         if not self._slides:
             return
         raise PipelineBlocked(
-            f"{len(self._slides)} shot(s) have no video, Google refused them twice: {', '.join(self._slides)}. "
+            f"{len(self._slides)} shot(s) have no video, Google's safety filter refused them: "
+            f"{', '.join(self._slides)}. "
             "Send them back for rework with a note (who or what should be in frame); every clip made is kept")
 
     def _render_shot(self, video, shot, ctx: RenderContext, face_guard) -> Path:
@@ -1124,7 +1137,8 @@ class Pipeline:
                     video.render_shot(shot, clip, replace(ctx, seed=take))
                 except ShotFiltered as blocked:            # no text slide goes into the film: named after the loop
                     self._report("review_queue", {"shot_id": shot.shot_id, "reason": [str(blocked)]})
-                    self.log(f"  {shot.shot_id}: refused by Google's safety filter twice; no video for it")
+                    self.log(f"  {shot.shot_id}: refused by Google's safety filter (reworded once where it could "
+                             "be); no video for it")
                     self._slides.append(shot.shot_id)
                     return clip
                 except (BudgetExceeded, GoogleAPIError) as stop:

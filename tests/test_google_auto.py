@@ -177,12 +177,15 @@ def test_budget_stops_the_run_and_keeps_paid_work(setup):
     assert len(setup.fake.video_calls) == 54                            # resumed without regenerating
 
 
-def test_safety_filtered_shot_gets_placeholder_and_review(setup):
+def test_a_shot_refused_twice_stops_the_video_step_with_a_review_entry_and_no_slide(setup):
+    """No text slide ever stands in for a refused shot: the video step stops before lip-sync and the cut, names the
+    shot, and writes the review queue entry; no placeholder take is made."""
     pipeline, _ = setup.make(block_if=lambda prompt: "toy boat" in (prompt or ""))
-    pipeline.run(until="render")
+    with pytest.raises(PipelineBlocked, match="safety filter refused them: sc007_s003"):
+        pipeline.run(until="render")
     queue = [json.loads(line) for line in (setup.root / "reports" / "review_queue.jsonl").read_text().splitlines()]
     assert [q["shot_id"] for q in queue] == ["sc007_s003"]
-    assert (setup.root / "07_video" / "sc007_s003" / "take_1.mp4").exists()
+    assert not (setup.root / "07_video" / "sc007_s003" / "take_1.mp4").exists()
 
 
 def _line(pace="very_slow", notes="gently, then firm (looks away)"):
@@ -493,10 +496,12 @@ def test_clip_on_disk_is_reused_by_attempt_number(setup):
 
 
 def test_veo_operation_errors(setup):
-    """A policy refusal becomes a placeholder + review queue entry; other errors stop cleanly. Neither is billed."""
+    """A policy refusal stops the video step with a review queue entry (no text slide); other errors stop cleanly
+    too. Neither is billed."""
     setup.fake.op_error = {"code": 3, "message": "The prompt could not be submitted: it violates usage guidelines."}
     pipeline, _ = setup.make(only=[SHOT])
-    pipeline.run(until="render")
+    with pytest.raises(PipelineBlocked, match=f"safety filter refused them: {SHOT}"):
+        pipeline.run(until="render")
     queue = [json.loads(line) for line in (setup.root / "reports" / "review_queue.jsonl").read_text().splitlines()]
     assert [q["shot_id"] for q in queue] == [SHOT]
     assert sum(r["usd"] for r in _veo_records(setup.root)) == pytest.approx(0.0)

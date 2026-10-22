@@ -421,6 +421,8 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
     qa_md = store.read_text(f"{slug}/reports/qa/lipsync/summary.md")
     strips = [n for n in store.list(f"{slug}/reports/qa/lipsync/") if n.endswith("_strip.jpg")]
     delivery = _json(store, f"{slug}/11_master/deliver/delivery.json")
+    if isinstance(delivery, dict):                    # deliver() writes {"date", "files": [...]}; older ones a list
+        delivery = delivery.get("files") if isinstance(delivery.get("files"), list) else None
     gates = pending_gates(store, slug, produce, row)
     steps = (produce or {}).get("steps") or {}
     cash = money(store, slug, cfg, row, produce)

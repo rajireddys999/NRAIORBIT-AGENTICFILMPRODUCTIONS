@@ -84,8 +84,8 @@ def apply_rework(pipeline: Pipeline, log=print) -> dict | None:
         what = f"shots {', '.join(found)} planned again and made anew" if found else "none of those shots exists"
     else:
         from ..pipeline import STAGES
-        if STAGES.index(stage) < STAGES.index("render"):    # new plans: no old clip or first frame lands on a shot
-            pipeline.fresh_takes(pipeline.made_shots())     # it was not made for
+        if STAGES.index(stage) <= STAGES.index("shots"):     # new plans: no old clip or first frame lands on a shot
+            pipeline.fresh_takes(pipeline.made_shots())     # it was not made for (a music redo keeps every clip)
         pipeline.invalidate(stage)
         what = f"every step from {stage} on is redone"
     record = {"id": req["id"], "stage": stage, "shots": shots, "notes": notes, "by": req.get("by"),
@@ -171,6 +171,9 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
     report = {"slug": root.name, "started": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
               "policy": pol, "steps": {}, "state": "running"}
 
+    if bucket and getattr(pipeline, "remove_remote", None) is None:   # a redone step's throwaways leave the bucket
+        from ..ops import backup as _backup
+        pipeline.remove_remote = lambda paths: _backup.remove_remote(root, bucket, paths, log=log)
     rework = apply_rework(pipeline, log)                  # the owner's Send back, before anything runs
     if rework:
         report["steps"]["rework"] = f"{rework['stage']}: {rework['what']}"

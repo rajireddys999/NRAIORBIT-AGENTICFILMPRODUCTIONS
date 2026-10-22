@@ -190,7 +190,9 @@
       {% elif f.issue and key == f.issue.stage %}
       <div class="node-act">
         <span class="tiny bad">Failed here: {{ f.issue.reason }}.{% if f.issue.hint %} {{ f.issue.hint }}{% endif %}</span>
-        {% if f.row and not executing %}<form method="post" action="/film/{{ f.slug }}/retry"><button class="sm">{{ 'Re-run after the change' if f.issue.outside else 'Fix is in place, re-run from here' }}</button></form>
+        {% if f.row and not executing and f.issue.stage == 'cost' and f.cap_suggest %}<form method="post" action="/film/{{ f.slug }}/cap-and-rerun" class="actions"><input name="budget" type="number" min="1" step="1" value="{{ f.cap_suggest }}" style="width:90px" aria-label="New cap in dollars"><button class="sm">Raise the cap to ${{ f.cap_suggest }} and re-run</button></form>
+        <span class="tiny dim">Estimate {{ f.money.estimate.total_usd|money }} + {{ f.money.spent|money }} spent; cap now {{ f.money.cap|money if f.money.cap else 'none' }}. The run then stops at the cost gate for your approval.</span>
+        {% elif f.row and not executing %}<form method="post" action="/film/{{ f.slug }}/retry"><button class="sm">{{ 'Re-run after the change' if f.issue.outside else 'Fix is in place, re-run from here' }}</button></form>
         <span class="tiny dim">The runner keeps the finished steps, redoes this one and the rest, and asks at the gates again.</span>{% endif %}
       </div>
       {% elif key == 'publish' and rerun_ok %}

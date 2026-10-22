@@ -1167,3 +1167,33 @@ def test_the_voices_stop_lands_on_the_voices_step(client, root):
     (root / "demo" / "reports" / "progress.json").write_text(json.dumps({**PROGRESS, "state": "blocked", "phase": "voices"}))
     html = client.get("/film/demo").text
     assert "Failed here" in flow_node(html, "render") and "Failed here" not in flow_node(html, "shots")
+
+
+def test_a_film_the_estimate_stopped_offers_one_click_to_raise_the_cap(client, root):
+    """Over the cap: the cost step says so in plain words and offers a cap that fits (spent + estimate, a tenth to
+    spare); one click saves it and re-runs, and the run stops at the cost gate for the owner's approval."""
+    from urllib.parse import unquote
+    rs = rows(root)
+    rs[0].update(state="blocked:estimate $12.50 + spent $1.35 is over the cap $10.00; raise the cap or reduce the plan",
+                 budget_usd="10", note="")
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    (root / "demo" / "reviews" / "faces.pending").unlink()
+    (root / "demo" / "reports" / "progress.json").write_text(json.dumps({**PROGRESS, "state": "blocked", "phase": "cost"}))
+    html = client.get("/film/demo").text
+    node = flow_node(html, "cost")
+    assert "Raise the cap to $16 and re-run" in node and 'action="/film/demo/cap-and-rerun"' in node   # ceil(13.85 x 1.1)
+    assert "The paid stages cost more than this film" in html and "nothing is paid until you approve it" in html
+    r = client.post("/film/demo/cap-and-rerun", data={"budget": "16"}, follow_redirects=False)
+    said = unquote(r.headers["location"])
+    assert "cap raised to 16 dollars" in said and "stops at the cost gate" in said
+    row = rows(root)[0]
+    assert row["budget_usd"] == "16" and row["state"] == "retry" and client.started == ["nraiorbit-runner"]
+    r = client.post("/film/demo/cap-and-rerun", data={"budget": "20"}, follow_redirects=False)  # not stopped any more
+    assert "not stopped by the estimate" in unquote(r.headers["location"]) and rows(root)[0]["budget_usd"] == "16"
+    rs = rows(root)
+    rs[0].update(state="blocked:BudgetExceeded: the ledger stopped the render")       # another stop (a stale page)
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    r = client.post("/film/demo/cap-and-rerun", data={"budget": "60"}, follow_redirects=False)
+    assert "not stopped by the estimate" in unquote(r.headers["location"])
+    assert rows(root)[0]["budget_usd"] == "16" and rows(root)[0]["state"].startswith("blocked:BudgetExceeded")
+    assert client.post("/film/demo/cap-and-rerun", data={"budget": "-1"}).status_code == 400

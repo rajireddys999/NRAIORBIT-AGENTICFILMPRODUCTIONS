@@ -732,6 +732,30 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         edit_row(store, slug, change)
         return back(f"/film/{slug}", "saved; the next tick writes it into the project")
 
+    @app.post("/film/{slug}/cap-and-rerun")
+    def cap_and_rerun(slug: str, email: str = Depends(guard), budget: str = Form("")):
+        """One click for a film the estimate stopped: the new cap into the row and, the film being blocked, a
+        re-run, which stops at the cost gate with the estimate for the owner's approval. Nothing is approved here."""
+        try:
+            cap = float(budget)
+            if not math.isfinite(cap) or cap <= 0:
+                raise ValueError
+        except ValueError:
+            raise HTTPException(400, "the budget cap must be a real number above zero") from None
+        refused: dict = {}
+
+        def change(row: dict):
+            if not row["state"].startswith(("blocked:estimate", "blocked:no cap")):   # as cap_suggestion: only the
+                refused["msg"] = (f"the film is {row['state'][:60]}, not stopped by the estimate: raise the cap under "
+                                  "costs and use Retry; nothing changed")          # estimate's stops re-run to the gate
+                return False
+            row.update(budget_usd=money_text(cap), state="retry", updated=queue.now())
+        edit_row(store, slug, change)
+        if refused:
+            return back(f"/film/{slug}", refused["msg"])
+        return back(f"/film/{slug}", f"cap raised to {money_text(cap)} dollars; " + tick_now(
+            "it stops at the cost gate with the estimate for your approval"))
+
     @app.post("/tick")
     def tick(request: Request, email: str = Depends(guard), next: str = Form("/")):
         if not (settings.project and settings.job):

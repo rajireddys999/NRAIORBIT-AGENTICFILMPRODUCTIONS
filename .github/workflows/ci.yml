@@ -27,13 +27,26 @@ jobs:
           python-version: "3.11"        # the images run 3.11 (deploy/ui/Dockerfile, deploy/service/Dockerfile)
           cache: pip
           cache-dependency-path: pyproject.toml
+      - name: Keep ffmpeg's packages between runs
+        # the runners' package mirror stalls now and then (18 minutes once, past 8 another time): downloaded once,
+        # the packages come from GitHub's cache after that (a default-branch run fills it for every PR)
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-archives
+          key: apt-ffmpeg-${{ runner.os }}-${{ runner.arch }}-v1
       - name: Install ffmpeg
-        # the package mirror can be slow (one run spent 18 minutes here): only what the tests use, and a hard limit
-        timeout-minutes: 8
+        timeout-minutes: 12
         run: |
           if ! command -v ffmpeg > /dev/null || [ ! -f /usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf ]; then
+            mkdir -p ~/apt-archives/partial
             sudo apt-get update -o Acquire::Retries=3
-            sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 ffmpeg fonts-dejavu-core
+            for try in 1 2 3; do       # a stalled download is cut off and tried again; what arrived is kept
+              sudo timeout 240 apt-get install -y --no-install-recommends -o Acquire::Retries=5 \
+                -o Acquire::http::Timeout=20 -o Dir::Cache::Archives="$HOME/apt-archives" ffmpeg fonts-dejavu-core && break
+              echo "the package mirror stalled (try $try of 3)"
+              sudo dpkg --configure -a || true
+            done
+            sudo rm -f ~/apt-archives/lock && sudo chown -R "$(id -u):$(id -g)" ~/apt-archives
           fi
           ffmpeg -version | head -1
       - name: Install package

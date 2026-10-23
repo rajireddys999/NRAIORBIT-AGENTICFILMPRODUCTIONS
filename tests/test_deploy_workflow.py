@@ -98,3 +98,22 @@ def test_every_report_says_which_runner_made_it(tmp_path, monkeypatch):
                         log=lambda *_: None, cfg={"policy": {"gates": "ask"}}, _voiceless=lambda: [])
     report = produce.produce(p, log=lambda *_: None)
     assert report["version"] == "b31a6204a0e82c6d"
+
+
+def test_a_merge_its_pull_request_already_tested_is_not_tested_again():
+    """The post-merge run repeats nothing: when the merge's code is exactly its pull request's head (trees equal) and
+    that head passed `test`, the tests are skipped; the caches are still filled and the deploy still follows."""
+    ci, on = _workflow("ci.yml")
+    assert on["push"] == {"branches": [BRANCH]} and "pull_request" in on
+    assert ci["permissions"] == {"contents": "read", "actions": "read"}
+    steps = ci["jobs"]["test"]["steps"]
+    assert steps[0]["with"]["fetch-depth"] == 2
+    check = next(s for s in steps if s.get("id") == "tested")
+    assert check["if"] == "github.event_name == 'push'"
+    assert 'git rev-parse "HEAD^{tree}"' in check["run"] and '"$head^{tree}"' in check["run"]
+    assert "compare/$base...$head" in check["run"] and '"$held" = ahead' in check["run"]     # head held the base
+    assert "workflows/ci.yml/runs?head_sha=$head&event=pull_request&per_page=1" in check["run"]  # its newest ci run
+    assert "|| held=unknown" in check["run"] and "|| last=unknown" in check["run"]   # GitHub silent: test in full
+    gated = {s["name"] for s in steps if s.get("if") == "steps.tested.outputs.skip != 'true'"}
+    assert {"Lint", "Validate asset library manifests"} <= gated and any(n.startswith("Tests") for n in gated)
+    assert not any(s.get("if") for s in steps if s.get("name") in ("Install ffmpeg", "Install package"))

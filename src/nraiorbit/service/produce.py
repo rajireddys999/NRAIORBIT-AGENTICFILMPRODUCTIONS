@@ -115,6 +115,110 @@ def apply_rework(pipeline: Pipeline, log=print) -> dict | None:
     return record
 
 
+CHILD_NOTES = {
+    "shows": ("Google's video model will not show anyone under 18 for this project, so {who} must not be in this shot "
+              "at all: not in characters_in_frame, and never named or described in image_prompt or motion_prompt "
+              "(write \"a voice from inside\", never their id or name). Keep the story moment: show it through the "
+              "other characters' reactions, or the child's voice heard off screen."),
+    "names": ("{who} must not appear in this shot (Google's video model will not show anyone under 18 for this "
+              "project): write image_prompt and motion_prompt without their id or name (\"a voice from inside\", "
+              "\"a sound off screen\"), and do not describe them."),
+    "words": ("Google's video model will not show anyone under 18 for this project: no child, kid or schoolchild in "
+              "this shot. Keep the story moment with the adults, animals or the place."),
+    "animal": ("Google's filter reads a baby held like a human infant as a child and refuses the shot. Draw {who} as "
+               "the young animal they are (fur, tail, an animal's body), never called a baby, infant or newborn, and "
+               "not cradled, rocked, swaddled or fed like a human infant. Keep the story moment and its feeling."),
+    "infant": ("Google's filter reads a baby held like a human infant as a child and refuses the shot: show no baby or "
+               "infant held, cradled, rocked or fed. Keep the story moment and its feeling."),
+}
+CHILD_STOP_KINDS = ("shows", "infant")      # what Google refuses outright: still there after two asks, the run stops
+CHILD_ASK_ONCE = ("words",)                 # a child word may be a goat's kid or a banner: asked about once
+
+
+def _child_note(kind: str, who: str, again: str = "") -> str:
+    """What the director is told about a planned shot that shows a child (Pipeline.shots_showing_children): `who` is
+    the child (name, age and id) or, for a baby held like an infant, the young animal it is."""
+    if kind == "infant" and who:
+        kind = "animal"
+    retry = f"Your last plan for this shot still {again[len('it '):]}. " if again else ""
+    return retry + CHILD_NOTES[kind].format(who=who)
+
+
+def replan_child_shots(pipeline: Pipeline, log=print) -> tuple[list[str], str]:
+    """Shots the video step would still send to Google that show a child (planned before the keep-children-out rule,
+    or a slip of the director) are planned again by the director under that rule before anything is paid or sent:
+    each moves to a fresh take, so the video step draws a new first frame and, under "ask", the faces check asks
+    again. Asked twice, a shot still showing what Google refuses outright (CHILD_STOP_KINDS) stops the run with the
+    reason. One that only names a child or uses a child word goes on as planned after two asks. Either way
+    reports/child_stops.json keeps the plan it was left with, so later runs neither ask about it again nor (for one
+    that goes on) re-plan it, until the plan changes. Returns (the shots planned again, why the run stops or "")."""
+    import hashlib
+    from ..pipeline import CHILD_STOPS
+    from ..schemas import ShotList
+    found = pipeline.shots_showing_children()
+    if not found:
+        return [], ""
+
+    def plans() -> dict:
+        return {s.shot_id: s for f in sorted(pipeline.p.shots.glob("*.json"))
+                for s in ShotList.model_validate_json(f.read_text(encoding="utf-8")).shots}
+
+    def key(shot) -> str:
+        return hashlib.sha256(json.dumps([shot.characters_in_frame, shot.image_prompt, shot.motion_prompt],
+                                         ensure_ascii=False).encode()).hexdigest()[:16]
+    path = pipeline.p.reports / CHILD_STOPS
+    try:
+        stops = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        stops = {}
+    stops = stops if isinstance(stops, dict) else {}
+    current, flagged = plans(), set(found)
+    seen = {sid: stops[sid] for sid in found
+            if isinstance(stops.get(sid), dict) and stops[sid].get("plan") == key(current[sid])}   # asked already
+    stuck = [sid for sid, entry in seen.items() if not entry.get("goes_on")]
+    kept_before = [sid for sid, entry in seen.items() if entry.get("goes_on")]
+    todo, redone, again, once = [sid for sid in found if sid not in seen], [], {}, []
+    for attempt in (1, 2):
+        groups: dict[str, list[str]] = {}
+        for sid in todo:                               # one call per note: the bucket is cleaned once per batch
+            kind, _, who = found[sid]
+            groups.setdefault(_child_note(kind, who, again.get(sid, "")), []).append(sid)
+        for note, sids in groups.items():
+            pipeline.rework_shots(sids, note, reason="Google's video model refuses to show a child in it, and it "
+                                                     "has not been made yet.")
+        redone += [sid for sid in todo if sid not in redone]
+        now = pipeline.shots_showing_children() if todo else {}
+        left = [sid for sid in todo if sid in now]
+        found.update({sid: now[sid] for sid in left})
+        if attempt == 1:                               # asked once more, except a child word (CHILD_ASK_ONCE)
+            todo = [sid for sid in left if now[sid][0] not in CHILD_ASK_ONCE]
+            once = [sid for sid in left if sid not in todo]
+            again = {sid: now[sid][1] for sid in todo}
+        else:
+            todo = left
+    left = todo + once
+    kept = [sid for sid in left if found[sid][0] not in CHILD_STOP_KINDS]   # only named, or a child word: goes on
+    stuck += [sid for sid in left if sid not in kept]
+    current = plans()
+    stops = {sid: entry for sid, entry in stops.items()      # records of shots this run did not look at: kept
+             if sid not in flagged and isinstance(entry, dict) and sid in current
+             and entry.get("plan") == key(current[sid])}
+    stops.update({sid: {"plan": key(current[sid]), "why": found[sid][1], "goes_on": sid in kept or sid in kept_before}
+                  for sid in [*stuck, *kept, *kept_before]})
+    pipeline.p.reports.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(stops, indent=1, ensure_ascii=False), encoding="utf-8")
+    redone = [sid for sid in redone if sid not in stuck]
+    if redone:
+        log(f"  planned again without a child (Google refuses to show one): {', '.join(redone)}")
+    for sid in kept:
+        log(f"  {sid}: planned again and {found[sid][1][len('it '):]}; it goes on as planned")
+    if not stuck:
+        return redone, ""
+    return redone, (f"{len(stuck)} shot(s) still show a child after the director planned them again: "
+                    + "; ".join(f"{sid} ({found[sid][1]})" for sid in stuck)
+                    + ". Send them back with a note on who or what should be in frame instead")
+
+
 def approve(pipeline: Pipeline, gate: str, text: str = "approved by policy\n") -> None:
     pipeline.p.reviews.mkdir(parents=True, exist_ok=True)
     (pipeline.p.reviews / f"{gate}.pending").unlink(missing_ok=True)
@@ -226,6 +330,14 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
             report["steps"]["plan"] = f"blocked: {b}"
             return finish(f"blocked:{str(b)[:120]}")
     report["steps"]["plan"] = "done"
+
+    # a planned shot Google would refuse for showing a child is planned again now, before anything is paid or sent
+    redone, stop = replan_child_shots(pipeline, log)
+    if redone:
+        report["steps"]["children"] = f"planned again without a child: {', '.join(redone)}"
+    if stop:
+        report["steps"]["children"] = f"blocked: {stop}"
+        return finish(f"blocked:{stop[:160]}")
 
     # a film that cannot be voiced is never offered a cost to approve: speech runs after each scene's clips
     step("voices")                                       # its stop belongs on the voices step, not the shot lists

@@ -47,6 +47,18 @@ def inbox_dir(root: Path, kind: str) -> Path:
     return root / "inbox" / kind
 
 
+def clip_for_take(root: Path, shot_id: str, take: int) -> Path | None:
+    """The clip of a shot's take: the take's own file (<shot>.mp4 for take 1, <shot>_<take>.mp4 after), which is
+    where the video step saves it however the take numbers skip, else the take-th attempt; None when there is none."""
+    folder = inbox_dir(root, "video")
+    name = shot_id if take == 1 else f"{shot_id}_{take}"
+    for ext in ("mp4", "mov", "webm"):
+        if (folder / f"{name}.{ext}").exists():
+            return folder / f"{name}.{ext}"
+    paid = clips_for(root, shot_id)
+    return paid[take - 1] if len(paid) >= take else None
+
+
 def clips_for(root: Path, shot_id: str) -> list[Path]:
     """Attempts for a shot, best first: <shot>.mp4, then <shot>_2.mp4, <shot>_3.mp4 ..."""
     folder = inbox_dir(root, "video")

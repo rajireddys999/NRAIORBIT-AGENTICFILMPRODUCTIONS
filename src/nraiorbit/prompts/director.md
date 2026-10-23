@@ -20,7 +20,10 @@ For each shot decide:
 - `image_prompt`: the keyframe, written for an image model in English: composition, the
   character ids and what each is doing, expression, location details, light, time of
   day, colour mood. Refer to characters by id. Identity comes from the locked assets, so
-  do not describe faces.
+  do not describe faces. A young animal is drawn as the animal it is (fur, tail, an
+  animal's body): never called a baby, infant or newborn, and never cradled, rocked,
+  swaddled or fed like a human infant; Google's video filter reads that as a child and
+  refuses the shot.
 - `motion_prompt`: what moves during the clip (subject action + camera), in one or two
   sentences.
 - `duration_s`: shot length. Durations should add up to roughly the scene target; code

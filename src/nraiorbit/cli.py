@@ -289,7 +289,7 @@ def cmd_keyframes(args) -> None:
     from .pipeline import safer_shot_fn
     from .providers.google_ai import ShotFiltered, VeoVideo
     from .schemas import CastLock, ShotList
-    from .shotpack import clips_for, selected
+    from .shotpack import clip_for_take, selected
 
     root = _project(args.slug)
     cfg = load_pipeline_config(root)
@@ -307,7 +307,7 @@ def cmd_keyframes(args) -> None:
         for shot in shot_list.shots:
             attempt = takes.get(shot.shot_id, 1)
             if (not shot.characters_in_frame or not selected(shot, shot_list.scene_id, args.only)
-                    or len(clips_for(root, shot.shot_id)) >= attempt
+                    or clip_for_take(root, shot.shot_id, attempt) is not None
                     or (root / "06_keyframes" / shot.shot_id / f"take_{attempt}.png").exists()):
                 continue
             todo.append((shot_list.scene_id, shot, attempt))

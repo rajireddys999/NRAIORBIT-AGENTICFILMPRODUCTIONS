@@ -151,3 +151,31 @@ def test_library_sync_restores_what_exists_and_skips_what_does_not(monkeypatch, 
     with _pytest.raises(gcs.BucketError):
         backup.sync_library("b", "restore", log=lambda *_: None)
 
+
+
+def test_put_report_sends_one_report_up_now_and_shrugs_off_failures(tmp_path, monkeypatch):
+    from nraiorbit.ops import backup
+    root = tmp_path / "rain"
+    (root / "reports").mkdir(parents=True)
+    (root / "reports" / "owner_notes.jsonl").write_text("{}\n")
+    sent = []
+
+    class Bucket:
+        def __init__(self, name):
+            self.name = name
+
+        def blob(self, key):
+            return type("Blob", (), {"upload_from_filename": lambda _s, local, content_type=None:
+                                     sent.append((self.name, key, local))})()
+    monkeypatch.setattr(backup, "storage_client", lambda: type("C", (), {"bucket": lambda _s, n: Bucket(n)})())
+    assert backup.put_report(root, "media", "owner_notes.jsonl") is True
+    assert sent == [("media", "rain/reports/owner_notes.jsonl", str(root / "reports" / "owner_notes.jsonl"))]
+    assert backup.put_report(root, None, "owner_notes.jsonl") is False
+    assert backup.put_report(root, "media", "missing.json") is False
+    said = []
+
+    class Broken:
+        def bucket(self, name):
+            raise RuntimeError("403")
+    monkeypatch.setattr(backup, "storage_client", lambda: Broken())
+    assert backup.put_report(root, "media", "owner_notes.jsonl", log=said.append) is False and "the backup will" in said[0]

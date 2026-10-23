@@ -34,3 +34,18 @@ def no_google_credentials(monkeypatch):
     def refuse(*args, **kwargs):
         raise DefaultCredentialsError("tests never use Google credentials")
     monkeypatch.setattr(google.auth, "default", refuse)
+
+
+@pytest.fixture(autouse=True)
+def no_gcloud(monkeypatch):
+    """With no storage client the code falls back to the gcloud command, which on a machine logged in to gcloud would
+    reach a real bucket (many tests pass a made-up one such as "b") and costs seconds on CI. Here it fails at once,
+    as gcloud with no account does; the tests that drive gcloud put their own recorder in its place."""
+    import subprocess
+
+    from nraiorbit.release import gcs
+
+    def refuse(cmd, *args, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="ERROR: (gcloud) You do not currently have an "
+                                                                     "active account selected. (tests never run gcloud)")
+    monkeypatch.setattr(gcs, "RUN", refuse)

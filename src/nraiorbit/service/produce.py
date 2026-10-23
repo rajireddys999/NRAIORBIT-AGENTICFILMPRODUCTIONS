@@ -193,6 +193,10 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
     rework = apply_rework(pipeline, log)                  # the owner's Send back, before anything runs
     if rework:
         report["steps"]["rework"] = f"{rework['stage'] or 'nothing'}: {rework['what']}"
+        if bucket:                                        # the page shows the decision now, not after the run
+            from ..ops import backup as _backup
+            from ..pipeline import OWNER_NOTES
+            _backup.put_report(root, bucket, OWNER_NOTES, log=log)
 
     def finish(state: str) -> dict:
         report["state"] = state

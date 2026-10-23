@@ -31,7 +31,7 @@ jobs:
         # the package mirror can be slow (one run spent 18 minutes here): only what the tests use, and a hard limit
         timeout-minutes: 8
         run: |
-          if ! command -v ffmpeg > /dev/null || ! fc-list | grep -qi dejavu; then
+          if ! command -v ffmpeg > /dev/null || [ ! -f /usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf ]; then
             sudo apt-get update -o Acquire::Retries=3
             sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 ffmpeg fonts-dejavu-core
           fi

@@ -145,12 +145,12 @@ def test_only_what_can_be_applied_is_kept():
 
 def test_a_quieter_score_is_mixed_again_for_free(film):
     root, make = film
-    p = make({"TriageDecision": decision(act("mix", music_gain_db=-6, min_voice_over_music_db=9))})
+    p = make({"TriageDecision": decision(act("mix", music_gain_db=-6, min_voice_over_music_db=14))})
     reject(root)
     out = produce.apply_rework(p, log=lambda *_: None)
     assert out["mode"] == "triage" and out["stage"] == "assemble" and "music -6 dB" in out["what"]
     assert json.loads((root / "reports" / OWNER_MIX).read_text())["music_gain_db"] == -6
-    assert p._owner_mix() == (-6.0, 9.0)
+    assert p._owner_mix() == (-6.0, 14.0)
     assert not (root / "11_master" / "movie.mp4").exists() and not (root / "11_master" / "trailer.mp4").exists()
     assert not (root / "reviews" / "final_cut.approved").exists()          # the new mix is reviewed again
     assert (root / "reviews" / "cost.approved").exists() and (root / "reviews" / "faces.approved").exists()
@@ -160,7 +160,7 @@ def test_a_quieter_score_is_mixed_again_for_free(film):
     reject(root, rid="t2")                                                  # a second one adds to the first
     produce.apply_rework(make({"TriageDecision": decision(act("mix", music_gain_db=-6))}), log=lambda *_: None)
     assert json.loads((root / "reports" / OWNER_MIX).read_text()) == {"rework_id": "t2", "music_gain_db": -12,
-                                                                       "min_voice_over_music_db": 9.0}
+                                                                       "min_voice_over_music_db": 14.0}
 
 
 def test_a_trailer_note_becomes_a_direction_and_only_the_trailer_is_cut_again(film):
@@ -410,3 +410,51 @@ def test_the_editor_hears_the_sound_as_it_stands_and_can_only_raise_the_floor(fi
                         lambda master, lines, wav, min_db, true_peak: seen.update(min_db=min_db) or [])
     p._clarify(root / "11_master" / "movie.mp4", [SimpleNamespace(path="x", start_s=0, gain_db=0)], "film")
     assert seen["min_db"] == 12                                               # the project's 12, not the owner's 9
+
+
+def test_a_rejection_a_later_run_finished_without_applying_is_never_applied(film):
+    """An older runner dropped it: a Retry days later must not undo what the owner approved since."""
+    root, make = film
+    (root / "reports" / "produce.json").write_text(json.dumps({"state": "awaiting:trailer",
+                                                               "finished": "2026-10-23T11:00:00+00:00"}))
+    reject(root)                                                               # asked at 10:00
+    out = produce.apply_rework(make({}), log=lambda *_: None)
+    assert out["skipped"] == "a run after it finished without applying it"
+    assert (root / "11_master" / "trailer.mp4").exists()
+
+
+def test_a_rejection_that_began_to_apply_is_carried_on(film):
+    """The run stopped after the mix was changed (the gate's marker is gone): the retry finishes it, once."""
+    root, make = film
+    (root / "reports" / OWNER_MIX).write_text(json.dumps({"rework_id": "t1", "music_gain_db": -6}))
+    reject(root, waiting=False)
+    out = produce.apply_rework(make({"TriageDecision": decision(act("mix", music_gain_db=-6))}), log=lambda *_: None)
+    assert not out.get("skipped") and p_mix(root) == -6
+
+
+def p_mix(root):
+    return json.loads((root / "reports" / OWNER_MIX).read_text())["music_gain_db"]
+
+
+def test_a_trailer_direction_is_saved_only_once_the_shots_are_planned(film):
+    root, make = film
+    p = make({"TriageDecision": decision(act("reshoot_shots", ["sc002_s001"], "x"), act("trailer", notes="dark")),
+              "TrailerDirection": DIRECTION})
+
+    def rework_shot(*a, **k):
+        raise LLMError("overloaded")
+    p.director = SimpleNamespace(rework_shot=rework_shot)
+    reject(root)
+    with pytest.raises(LLMError):
+        produce.apply_rework(p, log=lambda *_: None)
+    assert not (root / "reports" / TRAILER_DIRECTION).exists()
+
+
+def test_a_floor_below_the_one_in_force_changes_nothing(film):
+    root, make = film
+    p = make({"TriageDecision": decision(act("mix", min_voice_over_music_db=9))})
+    p.cfg["audio"]["min_voice_over_music_db"] = 12
+    reject(root)
+    out = produce.apply_rework(p, log=lambda *_: None)
+    assert out["stage"] is None and "changes nothing" in out["question"]
+    assert (root / "11_master" / "movie.mp4").exists()

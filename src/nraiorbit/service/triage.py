@@ -17,6 +17,7 @@ by surprise.
 
 from __future__ import annotations
 
+import datetime
 import json
 
 from ..pipeline import EDL, OWNER_MIX, STAGES, TRAILER_DIRECTION, TRAILER_PLAN
@@ -101,9 +102,25 @@ def _trailer_rows(pipeline, with_times: bool) -> list[str]:
             + (f", line {c['line_id']}" if c.get("line_id") else "") for c in plan if isinstance(c, dict)]
 
 
-def moved_on(pipeline, gate: str) -> str:
-    """Why a rejection made at `gate` no longer applies (the film is not at that review any more, say approved there
-    since), or "" while it does."""
+def _when(stamp) -> datetime.datetime | None:
+    try:
+        return datetime.datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return None
+
+
+def moved_on(pipeline, req: dict) -> str:
+    """Why a rejection no longer applies (the film is not at that review any more, say approved there since; or a
+    run finished after it without applying it: an older runner dropped it), or "" while it does. One this request
+    began to apply (its mix or trailer direction is written) is carried on, whatever the gates say now."""
+    gate = str(req.get("gate") or "")
+    for name in (OWNER_MIX, TRAILER_DIRECTION):
+        if (_read(pipeline.p.reports / name, {}) or {}).get("rework_id") == req.get("id"):
+            return ""
+    produced = _read(pipeline.p.reports / "produce.json", {}) or {}
+    asked, finished = _when(req.get("at")), _when(produced.get("finished"))
+    if asked and finished and asked.tzinfo and finished.tzinfo and finished > asked:
+        return "a run after it finished without applying it"
     if gate == "done":
         state = (_read(pipeline.p.reports / "produce.json", {}) or {}).get("state")
         return "" if state == "done" else f"the film is no longer finished ({state or 'never run'})"
@@ -162,11 +179,13 @@ def trailer_context(pipeline) -> str:
     ])
 
 
-def validate(actions: list[TriageAction], known_shots: set[str], gate: str) -> tuple[list[TriageAction], str]:
+def validate(actions: list[TriageAction], known_shots: set[str], gate: str, floor_now: float = 0.0) -> \
+        tuple[list[TriageAction], str]:
     """The decision as it may be applied: known shot ids only, no trailer at the cut review, mix values clamped,
     the first MAX_ACTIONS that can be applied; a step at or before the shot lists makes reshooting the old shots
     pointless (their notes go along with it) and a trailer direction too (its ids name the old plan's shots).
-    Returns the actions and, when nothing is left to do, why."""
+    A floor for the lines at or below the one in force (floor_now) changes nothing. Returns the actions and, when
+    nothing is left to do, why."""
     kept, why = [], ""
     for a in actions:
         if len(kept) >= MAX_ACTIONS:
@@ -189,6 +208,7 @@ def validate(actions: list[TriageAction], known_shots: set[str], gate: str) -> t
             gain = max(-12.0, min(3.0, a.mix.music_gain_db))
             floor = a.mix.min_voice_over_music_db
             floor = 0.0 if floor <= 0 else max(6.0, min(15.0, floor))
+            floor = floor if floor > floor_now else 0.0
             if not gain and not floor:
                 why = why or "It asked for a change to the sound that changes nothing."
                 continue
@@ -205,14 +225,23 @@ def validate(actions: list[TriageAction], known_shots: set[str], gate: str) -> t
     return kept, ("" if kept else why)
 
 
-def write_direction(pipeline, notes: str, rework_id: str | None):
-    """The editor turns the owner's notes into a trailer direction (reports/trailer_direction.json), which the
-    trailer step follows from then on. Returns the direction."""
-    direction = pipeline.editor.trailer_direction(trailer_context(pipeline), notes)
+def ask_direction(pipeline, notes: str):
+    """The editor turns the owner's notes into a trailer direction."""
+    return pipeline.editor.trailer_direction(trailer_context(pipeline), notes)
+
+
+def save_direction(pipeline, direction, notes: str, rework_id: str | None) -> None:
+    """The direction in reports/trailer_direction.json, which the trailer step follows from then on."""
     pipeline.p.reports.mkdir(parents=True, exist_ok=True)
     (pipeline.p.reports / TRAILER_DIRECTION).write_text(json.dumps(
         {"rework_id": rework_id, "notes": notes, "direction": direction.model_dump(), "unmet": []}, indent=1,
         ensure_ascii=False), encoding="utf-8")
+
+
+def write_direction(pipeline, notes: str, rework_id: str | None):
+    """Ask for a trailer direction and save it (a Send back to the trailer with notes). Returns the direction."""
+    direction = ask_direction(pipeline, notes)
+    save_direction(pipeline, direction, notes, rework_id)
     return direction
 
 
@@ -224,7 +253,7 @@ def apply(pipeline, req: dict, log=print) -> dict:
     from .produce import clear
     gate = str(req.get("gate") or "final_cut")
     notes = str(req.get("notes") or "").strip()[:2000]
-    gone = moved_on(pipeline, gate)
+    gone = moved_on(pipeline, req)
     if gone:
         log(f"  rejected at {gate}, not applied: {gone}")
         return {"mode": "triage", "gate": gate, "owner_notes": notes, "understood": "", "why": "", "question": "",
@@ -232,10 +261,13 @@ def apply(pipeline, req: dict, log=print) -> dict:
                 "what": f"not applied: {gone}"}
     decision = pipeline.editor.triage(context(pipeline, gate), gate, notes)
     shots, _ = film_map(pipeline)
-    actions, why_not = validate(decision.actions, {s["shot_id"] for s in shots}, gate)
+    project_floor = (pipeline.cfg.get("audio") or {}).get("min_voice_over_music_db") or 0
+    actions, why_not = validate(decision.actions, {s["shot_id"] for s in shots}, gate,
+                                floor_now=max(pipeline._owner_mix()[1], project_floor))
     question = "" if actions else (decision.question.strip() or (f"{why_not} " if why_not else "") + NO_ACTION)
     trailer = next((a for a in actions if a.route == "trailer"), None)
-    direction = write_direction(pipeline, trailer.notes_for_agents or notes, req.get("id")) if trailer else None
+    # asked now with every other Claude call, saved only once the shots are planned (a failure leaves none behind)
+    direction = ask_direction(pipeline, trailer.notes_for_agents or notes) if trailer else None
     done = []
     for a in sorted(actions, key=lambda a: a.route != "reshoot_shots"):   # the shots (Claude) before any undoing
         if a.route == "reshoot_shots":
@@ -243,6 +275,7 @@ def apply(pipeline, req: dict, log=print) -> dict:
             clear(pipeline, "cost", "approved")       # an AI-chosen spend always goes back through the cost check
             done.append(f"shots {', '.join(found)} are planned again and made anew (the cost check asks first)")
         elif a.route == "trailer":
+            save_direction(pipeline, direction, trailer.notes_for_agents or notes, req.get("id"))
             pipeline.invalidate("trailer")
             done.append(f"the trailer is cut again: {direction.why}")
         elif a.route == "mix":
@@ -257,8 +290,9 @@ def apply(pipeline, req: dict, log=print) -> dict:
                     {"rework_id": req.get("id"), "music_gain_db": gain, "min_voice_over_music_db": floor},
                     indent=1), encoding="utf-8")
             pipeline.invalidate("assemble")
+            held = max(floor, project_floor)
             done.append(f"the sound is mixed again (music {gain:+.0f} dB from the original"
-                        + (f", every line at least {floor:.0f} dB over the music" if floor else "") + ")")
+                        + (f", every line at least {held:.0f} dB over the music" if held else "") + ")")
         elif a.route == "music":
             pipeline.invalidate("music_plan")
             done.append("the score is planned again (the cost check asks first)")

@@ -28,7 +28,14 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - name: Install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
+        # the package mirror can be slow (one run spent 18 minutes here): only what the tests use, and a hard limit
+        timeout-minutes: 8
+        run: |
+          if ! command -v ffmpeg > /dev/null || ! fc-list | grep -qi dejavu; then
+            sudo apt-get update -o Acquire::Retries=3
+            sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 ffmpeg fonts-dejavu-core
+          fi
+          ffmpeg -version | head -1
       - name: Install package
         # ui: the control room's tests (tests/test_ui.py) skip without FastAPI, so CI must install it
         run: pip install -e ".[dev,google,ui]" ruff
@@ -37,4 +44,5 @@ jobs:
       - name: Validate asset library manifests
         run: nraiorbit library validate
       - name: Tests (the offline end-to-end demo and the control room included)
-        run: pytest -q
+        # every core of the runner; the slowest tests are listed so a new slow one is seen at once
+        run: pytest -q -n auto --durations=15

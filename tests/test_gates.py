@@ -546,7 +546,7 @@ def test_assembly_masters_again_when_the_trailers_source_was_not_restored(tmp_pa
         calls.append(("master", movie.name))
 
     p = SimpleNamespace(p=paths, log=lambda *_: None, _animatic=lambda: True, _master=master,
-                        _place_cards=lambda movie: calls.append(("cards", movie.name)),
+                        _place_cards=lambda movie: calls.append(("cards", movie.name)), _write_edl=lambda: None,
                         gate=lambda name: calls.append(("gate", name)))
     p.p.master.mkdir(parents=True)
     p.p.edit.mkdir(parents=True)

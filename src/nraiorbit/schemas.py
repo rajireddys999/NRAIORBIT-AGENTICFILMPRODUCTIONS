@@ -203,6 +203,50 @@ class ReworkedShot(BaseModel):
     motion_prompt: str = Field(description="What moves during the shot")
 
 
+class MixChange(BaseModel):
+    """A change to the film's sound mix; 0 leaves a value as it is."""
+
+    music_gain_db: float = Field(description="Change to the music level in dB, -12 to +3 (negative is quieter); 0 = "
+                                             "unchanged")
+    min_voice_over_music_db: float = Field(description="Every line at least this many dB above the music, 6 to 15; "
+                                                       "0 = unchanged")
+
+
+class TriageAction(BaseModel):
+    """One thing to redo after the owner rejected the film or the trailer."""
+
+    route: Literal["reshoot_shots", "trailer", "mix", "music", "shots", "scenes", "cast", "outline", "story"]
+    shots: list[str] = Field(description="Shot ids (sc001_s001) for reshoot_shots; empty for every other route")
+    notes_for_agents: str = Field(description="What the agents redoing this step must change, in plain English")
+    mix: MixChange
+
+
+class TriageDecision(BaseModel):
+    """What the editor decided to redo from the owner's rejection, and why."""
+
+    understood: str = Field(description="The owner's complaint restated in one or two plain sentences")
+    actions: list[TriageAction] = Field(description="0 to 3 actions, the narrowest fix first")
+    why: str = Field(description="Why these actions fix it, in plain English for the owner")
+    question: str = Field(description="When nothing can be acted on: the one question to ask the owner; else empty")
+    needs_code_change: bool = Field(description="True only when the problem is in the pipeline itself and would hit "
+                                                "every film, not something this film's steps can redo")
+
+
+class TrailerDirection(BaseModel):
+    """The owner's wishes for the trailer, as choices the trailer planner can honour."""
+
+    must_shots: list[str] = Field(description="Shot ids the trailer should use")
+    avoid_shots: list[str] = Field(description="Shot ids the trailer must not use")
+    must_lines: list[str] = Field(description="Dialogue line ids (block ids) the trailer should carry")
+    avoid_lines: list[str] = Field(description="Dialogue line ids the trailer must not carry")
+    punch_line: str = Field(description="The line id to close the trailer on before the title; empty = the planner "
+                                        "chooses")
+    target_seconds: float = Field(description="Trailer length in seconds; 0 = unchanged")
+    pace: Literal["slower", "same", "faster"]
+    music_notes: str = Field(description="Direction for the trailer score; empty = unchanged")
+    why: str = Field(description="How this direction answers the owner, in plain English")
+
+
 class SaferShot(BaseModel):
     """A shot Google refused for safety, worded again to show the same moment without what the filter blocks."""
 

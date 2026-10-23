@@ -20,7 +20,7 @@ import numpy as np
 import yaml
 from pydantic import BaseModel
 
-from .agents import CastingAgent, DialogueCritic, Director, MusicDirector, Screenwriter, StoryAnalyst
+from .agents import CastingAgent, DialogueCritic, Director, Editor, MusicDirector, Screenwriter, StoryAnalyst
 from .agents.production import least_shots, most_shots, shots_fit
 from .concurrency import ordered_map, workers
 from .config import REPO_ROOT, load_navarasa, load_pipeline_config
@@ -39,15 +39,19 @@ from .post import assemble, facelock, ffmpeg
 from .post.cards import Card, apply_cards
 from .post.speech import clarify_dialogue, level_gain_db
 from .post.subtitles import write_srt
-from .post.trailer import PUNCH_DROP_S, TrailerLine, elevation_arc, plan_trailer
+from .post.trailer import PUNCH_DROP_S, TrailerLine, elevation_arc, plan_trailer, unmet
 from .providers import RenderContext, get_provider
 from .providers.google_ai import FirstFrameToLookAt, GoogleAPIError, ShotFiltered
 from .providers.mock import MockTTS, MockVideo
 from .shotpack import clips_for, selected
-from .schemas import CastLock, Critique, Cue, CueSheet, Outline, SceneScript, ShotList, StoryBible
+from .schemas import CastLock, Critique, Cue, CueSheet, Outline, SceneScript, ShotList, StoryBible, TrailerDirection
 
 STAGES = ["story_bible", "outline", "scenes", "cast", "shots", "music_plan", "render", "assemble", "trailer"]
 OWNER_NOTES = "owner_notes.jsonl"            # reports/: every Send back from the control room, the latest one in force
+EDL = "edl.json"                             # reports/: where every shot and line sits in the cut (10_edit is not kept)
+TRAILER_PLAN = "trailer_plan.json"           # reports/: the trailer as cut, kept for the editor
+TRAILER_DIRECTION = "trailer_direction.json"  # reports/: the owner's wishes for the trailer, from the editor
+OWNER_MIX = "owner_mix.json"                 # reports/: the owner's change to the mix (music level, lines over music)
 STAGE_GATES = {"story_bible": "story", "outline": "outline", "scenes": "scenes", "cast": "cast", "shots": "shots",
                "render": "render", "assemble": "pacing", "trailer": "trailer"}
 
@@ -187,6 +191,7 @@ class Pipeline:
         self.casting = CastingAgent(llm, self.cfg)
         self.director = Director(llm, self.cfg)
         self.music_director = MusicDirector(llm, self.cfg)
+        self.editor = Editor(llm, self.cfg)            # the owner's rejection of the cut or the trailer (service/triage)
         self._owner_notes()
 
     # ------------------------------------------------------------------ driver
@@ -263,7 +268,7 @@ class Pipeline:
         lock = self._lock()
         known = {c.id for c in bible.characters}
         off_screen = minors_off_screen(bible.characters, self.cfg)
-        found = []
+        found, plans = [], []
         for path in sorted(self.p.shots.glob("*.json")):
             plan = self._load(path, ShotList)
             changed = False
@@ -280,7 +285,9 @@ class Pipeline:
                         "image_prompt": new.image_prompt, "motion_prompt": new.motion_prompt})
                     changed = True
             if changed:
-                self._save(path, plan)
+                plans.append((path, plan))
+        for path, plan in plans:            # every shot is planned again before any is written: a failure part-way
+            self._save(path, plan)          # leaves no shot with new words and its old clip
         if found:                           # the cut is made again from the new clips; nothing paid is lost
             self.fresh_takes(found)
             (self.p.edit / "timeline.json").unlink(missing_ok=True)
@@ -323,6 +330,12 @@ class Pipeline:
                     (self.p.reviews / f"{name}.{suffix}").unlink(missing_ok=True)
         if STAGES.index(stage) <= STAGES.index("trailer"):
             (self.p.reports / "youtube.json").unlink(missing_ok=True)      # a new cut is a new upload
+        direction = self.p.reports / TRAILER_DIRECTION
+        if STAGES.index(stage) <= STAGES.index("shots") and direction.exists():
+            # its shot and line ids name the old plan's; the new plan reuses them for other shots. Overwritten, not
+            # deleted: the bucket keeps reports/ and a restore would bring it back
+            direction.write_text(json.dumps({"direction": None, "cleared": f"{stage} was planned again"}),
+                                 encoding="utf-8")
 
     def status(self) -> dict[str, str]:
         out = {}
@@ -1288,7 +1301,41 @@ class Pipeline:
             (self.p.edit / "movie_nocards.mp4").unlink(missing_ok=True)   # never re-card an old clean copy
             self._master(movie)
         self._place_cards(movie)
+        self._write_edl()
         self.gate("pacing" if self._animatic() else "final_cut")
+
+    def _write_edl(self) -> None:
+        """Where every shot and line sits in the cut, in reports/ (backed up; 10_edit is not): what the editor reads
+        when the owner rejects the cut or the trailer, after a fresh container has no timeline yet."""
+        path = self.p.edit / "timeline.json"
+        if not path.exists():
+            return
+        tl = json.loads(path.read_text(encoding="utf-8"))
+        edl = {"film_seconds": tl.get("film_seconds"),
+               "shots": [{"shot_id": s["shot_id"], "scene_id": s.get("scene_id"), "start_s": s["start_s"],
+                          "duration_s": s["duration_s"], "real": s.get("real", True)} for s in tl["shots"]],
+               "dialogue": [{"ref_id": e["ref_id"], "start_s": e["start_s"], "duration_s": e["duration_s"]}
+                            for e in tl["dialogue"]]}
+        self.p.reports.mkdir(parents=True, exist_ok=True)
+        (self.p.reports / EDL).write_text(json.dumps(edl, indent=1), encoding="utf-8")
+
+    def _owner_mix(self) -> tuple[float, float]:
+        """The owner's change to the mix (reports/owner_mix.json, from the editor): dB added to the music, and the
+        least a line must sit above the music (0 = none asked; the project's audio.min_voice_over_music_db holds
+        whenever it is higher)."""
+        try:
+            mix = json.loads((self.p.reports / OWNER_MIX).read_text(encoding="utf-8"))
+            return float(mix.get("music_gain_db") or 0.0), float(mix.get("min_voice_over_music_db") or 0.0)
+        except (OSError, ValueError, TypeError, AttributeError):
+            return 0.0, 0.0
+
+    def _trailer_direction(self) -> TrailerDirection | None:
+        """The owner's wishes for the trailer (reports/trailer_direction.json, from the editor), if any."""
+        try:
+            data = json.loads((self.p.reports / TRAILER_DIRECTION).read_text(encoding="utf-8"))
+            return TrailerDirection.model_validate(data["direction"]) if data.get("direction") else None
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
 
     def _master(self, movie: Path) -> None:
         """Assemble the scenes and master the film into `movie`, without cards."""
@@ -1298,7 +1345,9 @@ class Pipeline:
         starts = scene_start_times(outline)
         shots = [assemble.TimelineShot(**{**s, "clip": Path(s["clip"])}) for s in tl["shots"]]
         dialogue = self._levelled([assemble.AudioEvent(**{**e, "path": Path(e["path"])}) for e in tl["dialogue"]])
-        music = [assemble.AudioEvent(**{**e, "path": Path(e["path"])}) for e in tl["music"]]
+        louder = self._owner_mix()[0]
+        music = [assemble.AudioEvent(**{**e, "path": Path(e["path"]), "gain_db": e.get("gain_db", 0.0) + louder})
+                 for e in tl["music"]]
         scene_files = []
         for sc in outline.scenes:
             scene_shots = [s for s in shots if s.scene_id == sc.scene_id]
@@ -1328,7 +1377,7 @@ class Pipeline:
         """Lift any line that is not audio.min_voice_over_music_db above the music in the finished mix (the music
         under it stays as it is), then put the new sound back under the untouched picture."""
         audio = self.cfg["audio"]
-        min_db = audio.get("min_voice_over_music_db") or 0
+        min_db = max(self._owner_mix()[1], audio.get("min_voice_over_music_db") or 0)   # the owner only raises it
         if not min_db or not lines:
             return
         work = master.parent / f".{master.stem}" / "clarity"
@@ -1424,11 +1473,24 @@ class Pipeline:
                                  b.delivery.rasa if b.delivery else "shanta", b.delivery.intensity if b.delivery else 5)
                      for e in tl["dialogue"] if (b := blocks.get(e["ref_id"]))]
             fps = self._film["fps"]
-            plan = plan_trailer(all_shots, bible, tl["film_seconds"], self._film["trailer_seconds"], lines,
+            direction = self._trailer_direction()
+            target = self._film["trailer_seconds"]
+            if direction is not None and direction.target_seconds > 0:     # the owner's length, within reason
+                target = max(20.0, min(1.5 * target, direction.target_seconds))
+            plan = plan_trailer(all_shots, bible, tl["film_seconds"], target, lines,
                                 max_line_s=self._film.get("trailer_line_max_s", 7.5),
-                                max_lines=self._film.get("trailer_max_lines", 5), fps=fps)
-            (self.p.edit / "trailer_plan.json").write_text(
-                json.dumps([asdict(c) for c in plan], indent=1), encoding="utf-8")
+                                max_lines=self._film.get("trailer_max_lines", 5), fps=fps, direction=direction)
+            planned = json.dumps([asdict(c) for c in plan], indent=1)
+            (self.p.edit / "trailer_plan.json").write_text(planned, encoding="utf-8")
+            self.p.reports.mkdir(parents=True, exist_ok=True)
+            (self.p.reports / TRAILER_PLAN).write_text(planned, encoding="utf-8")
+            if direction is not None:                    # what the cut could not honour, for the owner to see
+                record = json.loads((self.p.reports / TRAILER_DIRECTION).read_text(encoding="utf-8"))
+                record["unmet"] = unmet(plan, all_shots, tl["film_seconds"], direction)
+                (self.p.reports / TRAILER_DIRECTION).write_text(json.dumps(record, indent=1, ensure_ascii=False),
+                                                                encoding="utf-8")
+                for miss in record["unmet"]:
+                    self.log(f"  trailer: the owner's direction not met: {miss}")
             resolution = tuple(self.cfg.get("animatic", {}).get("resolution", [640, 360])) if self._animatic() \
                 else tuple(self._film["resolution"])
             # Picture only: the film's sound would chop lines at every cut. Whole lines are laid over it instead.
@@ -1450,6 +1512,8 @@ class Pipeline:
                                           self.p.edit / ".trailer_dialogue" / "dialogue.wav")
             film = ffmpeg.mux(raw, dialogue, self.p.edit / "trailer_dialogue.mp4")
             notes, drop_at = elevation_arc(plan)
+            if direction is not None and direction.music_notes.strip():
+                notes += f" The owner asks: {direction.music_notes.strip()}"
             cue = Cue(cue_id="trailer", scene_ids=[], start_s=0, duration_s=total, rasa="veera", intensity=9,
                       cue_type="trailer", raga="nattai", tala="adi", bpm=140,
                       instruments=["venu_flute", "veena", "thavil", "dappu", "epic_brass", "choir_sanskrit_chant"],
@@ -1460,8 +1524,9 @@ class Pipeline:
             wav = music.render_cue(cue, self.p.music / "trailer_cue.wav")
             audio = self.cfg["audio"]
             # the score drops to near-silence right before the punch line, then hits on the title card
-            assemble.master(film, [assemble.AudioEvent(wav, 0.0, total, "music", -2.0, "trailer")], out,
-                            audio["master_lufs"], audio["true_peak_db"], music_dips=[(drop_at, PUNCH_DROP_S, -20.0)])
+            score = assemble.AudioEvent(wav, 0.0, total, "music", -2.0 + self._owner_mix()[0], "trailer")
+            assemble.master(film, [score], out, audio["master_lufs"], audio["true_peak_db"],
+                            music_dips=[(drop_at, PUNCH_DROP_S, -20.0)])
             self._clarify(out, said, "trailer")
             self.log(f"  trailer: {out} ({total:.0f} s, {sum(c.shot_id is not None for c in plan)} clips, "
                      f"{sum(bool(c.line_id) for c in plan)} whole lines)")

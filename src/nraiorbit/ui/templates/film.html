@@ -122,6 +122,46 @@
         {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/retry"><button>Re-run it now</button></form>{% endif %}
       {% elif f.state in ['new','retry','producing'] %}<p><span class="live-dot" style="margin-right:8px"></span>The runner is on it (state <b>{{ f.state }}</b>). This page refreshes by itself.</p>
       {% else %}<p class="muted">Nothing is waiting on you.</p>{% endif %}
+      {% set t = f.triage %}
+      {% if t and t.pending %}
+      <div class="decision" style="margin-top:12px">
+        {% if state0 == 'blocked' %}<p>You rejected it at the <b>{{ t.gate|replace('_', ' ') }}</b> review, and the run stopped before the AI editor could decide; nothing was undone. Retry runs your rejection again.</p>
+        {% elif state0 in ['new','approved','retry','producing'] %}<p><span class="live-dot" style="margin-right:8px"></span>You rejected it at the <b>{{ t.gate|replace('_', ' ') }}</b> review; the AI editor is deciding what to redo. This page refreshes by itself.</p>
+        {% else %}<p>Your rejection at the <b>{{ t.gate|replace('_', ' ') }}</b> review was not applied (the runner had not taken it); reject again if it still stands.</p>{% endif %}
+        <p class="small muted">Your note: {{ t.owner_notes }}</p>
+      </div>
+      {% elif t %}
+      <details class="decision" style="margin-top:12px"{% if state0 != 'done' or not t.actions %} open{% endif %}>
+        <summary class="small"><b>The AI editor's decision</b> · rejected at the {{ t.gate|replace('_', ' ') }} review{% if t.applied %} · {{ t.applied|local }}{% endif %}</summary>
+        <div style="display:grid;gap:6px;margin-top:8px">
+          <p class="small muted">You said: {{ t.owner_notes }}</p>
+          {% if t.understood %}<p class="small">Understood: {{ t.understood }}</p>{% endif %}
+          {% if t.skipped %}
+          <p class="small">Not applied: {{ t.skipped }}. Reject again if it still stands.</p>
+          {% elif t.actions %}
+          <ul class="small" style="margin:0 0 0 18px">{% for a in t.actions %}<li><b>{{ a.label }}</b>{% if a.shots %} <span class="mono">{{ a.shots|join(', ') }}</span>{% endif %}{% if a.notes %}: {{ a.notes }}{% endif %}</li>{% endfor %}</ul>
+          {% if t.why %}<p class="small">Why: {{ t.why }}</p>{% endif %}
+          <p class="small">What happens: {{ t.what }}.</p>
+          {% else %}
+          <p class="small" style="color:var(--warn)">Nothing was redone. {{ t.question }}</p>
+          {% endif %}
+          {% if t.unmet %}<p class="small" style="color:var(--warn)">The new trailer could not do all of it: {{ t.unmet|join('; ') }}.</p>{% endif %}
+          {% if t.needs_code_change %}<p class="small" style="color:var(--warn)">The editor thinks part of this is in the pipeline itself and would hit every film; that needs a code change, which is asked for in Claude Code for now.</p>{% endif %}
+        </div>
+      </details>
+      {% endif %}
+      {% if f.reject_gate and f.row and not f.live and state0 not in ['new','approved','retry','producing','blocked'] %}
+      <details class="reject" style="margin-top:12px">
+        <summary class="small"><b>Reject…</b> · not right? Say what is wrong; the AI editor decides what to redo</summary>
+        <form method="post" action="/film/{{ f.slug }}/reject" style="display:grid;gap:8px;margin-top:10px">
+          <input type="hidden" name="gate" value="{{ f.reject_gate }}">
+          <label class="small">What is wrong, and what should change
+            <textarea name="notes" rows="4" required maxlength="2000" placeholder="Say what's wrong; times like 12:40 or shot ids like sc002_s001 help. For example: the music drowns the dialogue around 3:10; open the trailer on the boat chase, not the kitchen"></textarea></label>
+          <div><button class="sm">Reject and redo</button></div>
+        </form>
+        <p class="tiny dim" style="margin-top:6px">The editor picks the narrowest fix: the sound mix (free), the trailer cut (cents), remaking the shots it names (about a dollar each; the cost check and the first frames ask first) or an earlier step. At most {{ f.rejects_per_day }} a day.</p>
+      </details>
+      {% endif %}
       {% if f.row and not f.live and state0 not in ['new','approved','retry','producing'] %}
       <details class="rework" style="margin-top:12px">
         <summary class="small"><b>Send back for rework</b> · not right? Say what to fix and the step to redo</summary>

@@ -11,3 +11,18 @@ def no_running_record_in_a_real_bucket(monkeypatch):
     bucket such as "b": on a machine with Google credentials the default tracker would send real requests to it,
     so by default the tracker has no bucket. The progress tests inject their own."""
     monkeypatch.setattr(queue, "TRACKER_FACTORY", lambda bucket, log=print: progress.Tracker(None, log=log))
+
+
+@pytest.fixture(autouse=True)
+def no_google_credentials(monkeypatch):
+    """No test uses real Google credentials. Without this, every storage client a test makes asks for them, and the
+    library probes the cloud metadata server with retries first: about 4.5 s each time on a laptop, longer on CI."""
+    try:
+        import google.auth
+        from google.auth.exceptions import DefaultCredentialsError
+    except ImportError:
+        return
+
+    def refuse(*args, **kwargs):
+        raise DefaultCredentialsError("tests never use Google credentials")
+    monkeypatch.setattr(google.auth, "default", refuse)

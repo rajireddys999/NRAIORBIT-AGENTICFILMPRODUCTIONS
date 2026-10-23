@@ -9,7 +9,7 @@ decisions. Both run from this repository, deployed as two images.
 ```bash
 pip install -e ".[dev,google,ui]" ruff      # ffmpeg is needed too: the media tests skip without it
 ruff check src tests
-pytest -q
+pytest -q -n auto                            # every core; about half a minute without ffmpeg
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same on every pull request and on the default branch, with ffmpeg. Merge

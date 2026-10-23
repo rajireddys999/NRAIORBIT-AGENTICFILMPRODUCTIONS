@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from ..schemas import Shot, StoryBible
+from ..schemas import Shot, StoryBible, TrailerDirection
 
 SECTIONS: list[tuple[str, float, float]] = [
     # (section, share of trailer, max seconds per clip)
@@ -38,6 +38,8 @@ DIALOGUE_MAX_SHARE = 0.6     # carried lines fill at most this share of the trai
 LINE_DONORS = {"escalation": 0.08, "world": 0.06}    # lend time to lines longer than their section, down to this share
 HEROIC = ("veera", "raudra", "adbhuta")
 PUNCH_DROP_S = 0.7           # near-silence in the score right before the punch line
+PACE = {"slower": 1.3, "same": 1.0, "faster": 0.75}     # the owner's pace scales every section's longest clip
+MUST_BONUS = 1.0             # a shot or line the owner asked for outranks every other (scores run 0 to 1)
 ARC = {                      # score direction per section, for the music generator
     "world": "world: calm, sparse flute and veena over a low drone",
     "hero": "hero entry: thavil and dappu build, rising",
@@ -160,9 +162,12 @@ def _spoken_on_screen(shot: Shot, lines: list[TrailerLine]) -> set[str]:
 
 def _carry_lines(shots: list[tuple[Shot, float]], lines: list[TrailerLine], roles: dict[str, str],
                  film_seconds: float, target_seconds: float, budgets: dict[str, float], max_line_s: float,
-                 max_lines: int, fps: int) -> dict[str, TrailerClip]:
+                 max_lines: int, fps: int, *, must: frozenset[str] = frozenset(), avoid: frozenset[str] = frozenset(),
+                 punch_line: str = "") -> dict[str, TrailerClip]:
     """One whole line per dialogue section, best first. A line longer than its section borrows time from the
-    escalation montage and the world opening (budgets is updated), so the trailer keeps its length."""
+    escalation montage and the world opening (budgets is updated), so the trailer keeps its length. The owner's
+    lines (must) go first into any section but the punch, which only their punch_line may take regardless of fit;
+    avoided lines are never carried (they still keep a talking face out of the trailer)."""
     spans = _generated_spans(shots)
     punch_ids = {b for shot, _ in shots if shot.punch_dialogue for b in shot.block_ids}
     spare = {s: budgets[s] - floor * target_seconds for s, floor in LINE_DONORS.items()}
@@ -172,9 +177,14 @@ def _carry_lines(shots: list[tuple[Shot, float]], lines: list[TrailerLine], role
         if len(carried) >= max_lines:
             break
         taken = {c.line_id for c in carried.values()}
-        ranked = sorted(((score_line(section, ln, roles, punch_ids, film_seconds, max_line_s), ln) for ln in lines
-                         if ln.line_id not in taken and ln.duration_s <= max_line_s
-                         and _line_fits(section, ln, roles, punch_ids)), key=lambda c: (-c[0], c[1].film_start_s))
+        def forced(ln: TrailerLine) -> bool:
+            return ln.line_id == punch_line if section == "punch" else ln.line_id in must
+
+        ranked = sorted(((score_line(section, ln, roles, punch_ids, film_seconds, max_line_s)
+                          + (MUST_BONUS if forced(ln) else 0.0), ln) for ln in lines
+                         if ln.line_id not in taken and ln.line_id not in avoid and ln.duration_s <= max_line_s
+                         and (forced(ln) or _line_fits(section, ln, roles, punch_ids))),
+                        key=lambda c: (-c[0], c[1].film_start_s))
         for score, ln in ranked:
             length = math.ceil((ln.duration_s + 2 * LINE_PAD_S) * fps - 1e-6) / fps
             start = _line_window(ln, length, spans)
@@ -205,13 +215,28 @@ def _carry_lines(shots: list[tuple[Shot, float]], lines: list[TrailerLine], role
 
 def plan_trailer(shots: list[tuple[Shot, float]], bible: StoryBible, film_seconds: float, target_seconds: float,
                  lines: list[TrailerLine] = (), *, max_line_s: float = 7.5, max_lines: int = 5,
-                 fps: int = 24) -> list[TrailerClip]:
+                 fps: int = 24, direction: TrailerDirection | None = None) -> list[TrailerClip]:
     """shots: (shot, film_start_s) for every usable shot of the film, in order. lines: the film's placed dialogue.
-    Clip lengths are whole frames, so trailer times (trailer_start_s, line_at_s) match the cut exactly."""
+    Clip lengths are whole frames, so trailer times (trailer_start_s, line_at_s) match the cut exactly.
+
+    direction: the owner's wishes (from the editor). Avoided shots are left out (a carried line's picture never
+    covers one); the shots and lines asked for outrank the rest and may go where their section would not take them
+    (one no section took joins the escalation montage; a shot asked for whose speaker talks brings its line);
+    the pace scales every clip's longest length. The spoiler cutoff and the talking-face rule still hold: what they
+    keep out is reported by unmet()."""
+    d = direction
+    if d is not None and d.avoid_shots:
+        shots = [s for s in shots if s[0].shot_id not in set(d.avoid_shots)]
+    must_shots = set(d.must_shots) if d else set()
+    must_lines = set(d.must_lines) if d else set()
+    must_lines |= {ln for shot, _ in shots if shot.shot_id in must_shots for ln in _spoken_on_screen(shot, list(lines))}
+    pace = PACE.get(d.pace, 1.0) if d else 1.0
     roles = {c.id: c.role for c in bible.characters}
     shares = {name: (share, max_clip) for name, share, max_clip in SECTIONS}
     budgets = {name: share * target_seconds for name, share, _ in SECTIONS}
-    carried = _carry_lines(shots, list(lines), roles, film_seconds, target_seconds, budgets, max_line_s, max_lines, fps)
+    carried = _carry_lines(shots, list(lines), roles, film_seconds, target_seconds, budgets, max_line_s, max_lines, fps,
+                           must=frozenset(must_lines), avoid=frozenset(d.avoid_lines if d else ()),
+                           punch_line=d.punch_line if d else "")
     used = {shot.shot_id for shot, start in shots       # picture under a carried line is not cut in again
             if any(start < c.film_start_s + c.duration_s and c.film_start_s < start + shot.duration_s
                    for c in carried.values())}
@@ -222,14 +247,17 @@ def plan_trailer(shots: list[tuple[Shot, float]], bible: StoryBible, film_second
         candidates = []
         for shot, start in shots:
             pos = start / film_seconds
-            if shot.shot_id in used or pos > SPOILER_CUTOFF or not _section_fits(section, shot, roles):
+            must = shot.shot_id in must_shots
+            # asked for but not picked by the sections before (the montage picks last): a montage glimpse
+            fits = _section_fits(section, shot, roles) or (must and section == "escalation")
+            if shot.shot_id in used or pos > SPOILER_CUTOFF or not fits:
                 continue
             if _spoken_on_screen(shot, list(lines)):          # a talking face needs its line: only carried clips
                 continue
             if pos > CLIMAX_REGION and section != "escalation":
                 continue
-            clip_max = CLIMAX_GLIMPSE_MAX_S if pos > CLIMAX_REGION else max_clip
-            candidates.append((score_shot(shot, roles), shot, start, clip_max))
+            clip_max = min(CLIMAX_GLIMPSE_MAX_S, max_clip * pace) if pos > CLIMAX_REGION else max_clip * pace
+            candidates.append((score_shot(shot, roles) + (MUST_BONUS if must else 0.0), shot, start, clip_max))
         candidates.sort(key=lambda c: (-c[0], c[2]))
         filled, clips = 0.0, []
         for score, shot, start, clip_max in candidates:
@@ -258,6 +286,35 @@ def plan_trailer(shots: list[tuple[Shot, float]], bible: StoryBible, film_second
             clip.line_at_s = round(t + LINE_PAD_S, 4)
         t += clip.duration_s
     return plan
+
+
+def unmet(plan: list[TrailerClip], shots: list[tuple[Shot, float]], film_seconds: float,
+          direction: TrailerDirection | None) -> list[str]:
+    """What of the owner's direction the cut could not honour, in plain words. shots: every shot of the film that
+    has video, with its film start."""
+    if direction is None:
+        return []
+    at = {shot.shot_id: (shot, start) for shot, start in shots}
+
+    def shown(sid: str, at_least: float) -> bool:            # seconds of its picture on screen
+        shot, start = at[sid]
+        return any(c.shot_id is not None and min(start + shot.duration_s, c.film_start_s + c.duration_s)
+                   - max(start, c.film_start_s) >= at_least for c in plan)
+
+    out = []
+    for sid in direction.must_shots:
+        if sid not in at:
+            out.append(f"shot {sid} is not in the trailer: it has no finished video")
+        elif not shown(sid, 0.4):                           # a line's 0.2 s lead-in is not the shot
+            late = at[sid][1] / film_seconds > SPOILER_CUTOFF
+            out.append(f"shot {sid} is not in the trailer" + (": it is from the film's last minutes, which the "
+                                                               "trailer never shows" if late else ""))
+    said = {c.line_id for c in plan if c.line_id}
+    out += [f"line {ln} is not in the trailer" for ln in direction.must_lines if ln not in said]
+    if direction.punch_line and not any(c.section == "punch" and c.line_id == direction.punch_line for c in plan):
+        out.append(f"line {direction.punch_line} could not close the trailer")
+    out += [f"shot {sid} is still in the trailer" for sid in direction.avoid_shots if sid in at and shown(sid, 0.05)]
+    return out
 
 
 def elevation_arc(plan: list[TrailerClip]) -> tuple[str, float]:

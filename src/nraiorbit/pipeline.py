@@ -43,7 +43,7 @@ from .post.trailer import PUNCH_DROP_S, TrailerLine, elevation_arc, plan_trailer
 from .providers import RenderContext, get_provider
 from .providers.google_ai import FirstFrameToLookAt, GoogleAPIError, ShotFiltered
 from .providers.mock import MockTTS, MockVideo
-from .shotpack import clips_for, selected
+from .shotpack import clip_for_take, clips_for, selected
 from .schemas import CastLock, Critique, Cue, CueSheet, Outline, SceneScript, ShotList, StoryBible, TrailerDirection
 
 STAGES = ["story_bible", "outline", "scenes", "cast", "shots", "music_plan", "render", "assemble", "trailer"]
@@ -52,6 +52,7 @@ EDL = "edl.json"                             # reports/: where every shot and li
 TRAILER_PLAN = "trailer_plan.json"           # reports/: the trailer as cut, kept for the editor
 TRAILER_DIRECTION = "trailer_direction.json"  # reports/: the owner's wishes for the trailer, from the editor
 OWNER_MIX = "owner_mix.json"                 # reports/: the owner's change to the mix (music level, lines over music)
+CHILD_STOPS = "child_stops.json"             # reports/: shots planned again for showing a child that still show one
 STAGE_GATES = {"story_bible": "story", "outline": "outline", "scenes": "scenes", "cast": "cast", "shots": "shots",
                "render": "render", "assemble": "pacing", "trailer": "trailer"}
 
@@ -229,7 +230,7 @@ class Pipeline:
                     if (m := clip.fullmatch(f.name))]
             used += [int(m.group(1)) for f in (self.p.root / "06_keyframes" / sid).glob("take_*.png")
                      if (m := _re.fullmatch(r"take_(\d+)\.png", f.name))]
-            if used:                        # nothing made yet: its take is fresh already
+            if used and max(used) >= self.takes.get(sid, 1):   # nothing made at its take yet: fresh already
                 moved[sid] = max([self.takes.get(sid, 1), *used]) + 1
         if moved:
             path = self.p.root / "takes.yaml"
@@ -259,7 +260,7 @@ class Pipeline:
         ids |= {p.name for p in frames.iterdir() if p.is_dir()} if frames.is_dir() else set()
         return sorted(ids)
 
-    def rework_shots(self, shot_ids: list[str], notes: str) -> list[str]:
+    def rework_shots(self, shot_ids: list[str], notes: str, reason: str = "") -> list[str]:
         """Shots the owner sent back: planned again from the notes (when there are notes) and moved to a fresh take
         (fresh_takes), so the video step makes them anew; every other shot and everything paid is kept. Returns the
         shots found."""
@@ -277,7 +278,8 @@ class Pipeline:
                     continue
                 found.append(shot.shot_id)
                 if notes:
-                    new = self.director.rework_shot(bible, lock, shot, notes, off_screen)
+                    new = self.director.rework_shot(bible, lock, shot, notes, off_screen,
+                                                    **({"reason": reason} if reason else {}))
                     cast = [c for c in new.characters_in_frame if c in known]
                     costumes = (list(new.costume_ids) + [""] * len(cast))[:len(cast)]
                     plan.shots[i] = shot.model_copy(update={
@@ -293,6 +295,64 @@ class Pipeline:
             (self.p.edit / "timeline.json").unlink(missing_ok=True)
             self.invalidate("assemble")
         return found
+
+    def _sent_to_video(self, shot_id: str) -> bool:
+        """Whether the video step would send this shot's current take to Google: its clip is not there (by position,
+        or by the take's own name when take numbers have gaps) and no paid job for it is waiting."""
+        take = self.takes.get(shot_id, 1)
+        name = shot_id if take == 1 else f"{shot_id}_{take}"
+        return not (clip_for_take(self.p.root, shot_id, take) is not None
+                    or (self.p.root / "inbox" / "video" / ".pending" / f"{name}.json").exists())
+
+    def shots_showing_children(self) -> dict[str, tuple[str, str, str]]:
+        """{shot_id: (kind, why, who)} for the shots the video step will still send to Google (render.only respected)
+        that this project's video model refuses or may refuse for showing a child; `who` names the child (with its
+        id) or the young animal for the director's note. Kinds:
+            shows   someone under 18 in characters_in_frame (characters.minors_off_screen): refused
+            infant  a baby held like a human infant, a young animal called one included: refused
+            names   someone under 18 named in the prompts though not in frame: the picture may show them
+            words   a child who is not in the cast (village kids, a schoolgirl): the picture shows one
+        Shots whose clip is made or whose paid job is waiting are never sent again, so they are left alone."""
+        import re as _re
+        from .characters import (animal_physical, child_words, children_refused, cradled_infant, marked_animal,
+                                 minors_off_screen, near_infant)
+        if not children_refused(self.cfg):
+            return {}
+        bible = self._load(self.p.bible, StoryBible)
+        labels = minors_off_screen(bible.characters, self.cfg)          # {id: "Name (age)"}
+        # a name is searched for only when no one else answers to it (a hero and his younger self share one)
+        taken = [w.lower() for c in bible.characters for w in (c.id, c.name_en)]
+        minors = {c.id: ([c.id] + ([c.name_en] if taken.count(c.name_en.lower()) == 1 + (c.name_en.lower() ==
+                                                                                       c.id.lower()) else []),
+                         labels[c.id]) for c in bible.characters if c.id in labels}
+        animals = {c.id: c.name_en for c in bible.characters if marked_animal(c) or animal_physical(c.physical)}
+        only = list((self.cfg.get("render") or {}).get("only") or [])
+        out = {}
+        for path in sorted(self.p.shots.glob("*.json")):
+            plan = self._load(path, ShotList)
+            for shot in plan.shots:
+                if not selected(shot, plan.scene_id, only) or not self._sent_to_video(shot.shot_id):
+                    continue
+                words = f"{shot.image_prompt} {shot.motion_prompt}"
+                shown = [cid for cid in minors if cid in shot.characters_in_frame]
+                named = [cid for cid, (search, _) in minors.items() if cid not in shot.characters_in_frame
+                         and any(_re.search(rf"\b{_re.escape(w.lower())}\b", words.lower()) for w in search)]
+
+                def who(ids):
+                    return ", ".join(f"{minors[c][1]}, id {c}" for c in ids)
+                if shown:
+                    out[shot.shot_id] = ("shows", f"it shows {', '.join(minors[c][1] for c in shown)}", who(shown))
+                elif cradled_infant(words):
+                    young = [animals[c] for c in shot.characters_in_frame if c in animals
+                             and (near_infant(words, c) or near_infant(words, animals[c]))]
+                    out[shot.shot_id] = (("infant", f"it calls {', '.join(young)} a baby held like an infant",
+                                          ", ".join(young)) if young else
+                                         ("infant", "it has a baby held like an infant", ""))
+                elif named:
+                    out[shot.shot_id] = ("names", f"it names {', '.join(minors[c][1] for c in named)}", who(named))
+                elif child_words(words):
+                    out[shot.shot_id] = ("words", f"it describes a child ({', '.join(child_words(words))})", "")
+        return out
 
     def run(self, until: str | None = None, force: tuple[str, ...] = ()) -> None:
         if force:
@@ -855,9 +915,9 @@ class Pipeline:
                 made = shot if length == shot.duration_s else shot.model_copy(update={"duration_s": length})
                 if selected(shot, sc.scene_id, only):
                     clip = self._render_shot(video, made, ctx, face_guard)
-                elif len(paid) >= take:                    # outside --only but already generated: use it, free
-                    clip = ffmpeg.conform_clip(paid[take - 1], self.p.video / shot.shot_id / f"take_{take}.mp4",
-                                               made.duration_s, ctx.resolution, ctx.fps)
+                elif paid and (have := clip_for_take(self.p.root, shot.shot_id, take)) is not None:
+                    clip = ffmpeg.conform_clip(have, self.p.video / shot.shot_id / f"take_{take}.mp4",
+                                               made.duration_s, ctx.resolution, ctx.fps)   # outside --only: free
                 else:
                     clip = MockVideo().render_shot(shot, self.p.video / shot.shot_id / "placeholder.mp4", ctx,
                                                    note="not generated yet")

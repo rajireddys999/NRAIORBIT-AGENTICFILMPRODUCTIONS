@@ -585,6 +585,7 @@ def _fake_film(tmp_path, monkeypatch, gates):
             if not (paths.reviews / f"{g}.approved").exists():
                 raise GatePending(g, tmp_path)
     pipeline = SimpleNamespace(p=paths, run=run, log=lambda *_: None, _voiceless=lambda: [],
+                               shots_showing_children=lambda: {},
                                cfg={"policy": {"gates": gates, "publish": "private"}, "providers": {}})
     estimate = {"total_usd": 12.5, "video_usd": 10.0, "tts_usd": 2.5}
     monkeypatch.setattr(produce, "cost_gate", lambda p: (None, dict(estimate)))

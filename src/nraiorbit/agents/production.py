@@ -106,11 +106,14 @@ class Director(Agent):
         return self.ask(ShotList, context=context, task=task)
 
     def rework_shot(self, bible: StoryBible, lock: CastLock, shot: Shot, notes: str,
-                    off_screen: dict[str, str] | None = None) -> ReworkedShot:
-        """The owner sent this shot back: the same moment of the scene, planned again as the notes ask."""
-        task = (f"The owner watched the film and sent shot {shot.shot_id} back for rework.\n"
-                f"<shot>\n{shot.model_dump_json(indent=1)}\n</shot>\n"
-                f"<owner_notes>\n{notes}\n</owner_notes>\n"
+                    off_screen: dict[str, str] | None = None, reason: str = "") -> ReworkedShot:
+        """The owner sent this shot back (or, with a reason, the runner did): the same moment of the scene, planned
+        again as the notes ask."""
+        tag = "notes" if reason else "owner_notes"
+        task = ((f"Shot {shot.shot_id} has to be planned again: {reason}\n" if reason else
+                 f"The owner watched the film and sent shot {shot.shot_id} back for rework.\n")
+                + f"<shot>\n{shot.model_dump_json(indent=1)}\n</shot>\n"
+                f"<{tag}>\n{notes}\n</{tag}>\n"
                 "Plan this shot again as the notes ask: who is in frame (character ids from the cast), their costume "
                 "ids in the same order, the keyframe description and what moves. Keep its place in the scene, its "
                 "length and its camera unless the notes say otherwise.")
@@ -139,8 +142,9 @@ class Director(Agent):
 def off_screen_rule(off_screen: dict[str, str]) -> str:
     """The planning rule for people the project's video model must not show (characters.minors_off_screen)."""
     return (f"This project's video model must not show anyone under 18: {', '.join(off_screen.values())}. Keep them "
-            "out of every shot: never in characters_in_frame, never described in image_prompt or motion_prompt. "
-            "Their lines are heard off screen, over the other characters' reactions or the place.")
+            "out of every shot: never in characters_in_frame, never named or described in image_prompt or "
+            "motion_prompt (write \"a voice from inside\", not their id or name). Their lines are heard off screen, "
+            "over the other characters' reactions or the place.")
 
 
 class MusicDirector(Agent):

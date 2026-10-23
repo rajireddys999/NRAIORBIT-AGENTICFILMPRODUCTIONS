@@ -456,6 +456,9 @@ class FakePipeline:
     def _voiceless(self):                                # mock speech: every speaker has a voice
         return []
 
+    def shots_showing_children(self):                    # mock video shows anyone
+        return {}
+
     def run(self, until=None, force=()):
         for stage in STAGES:
             self.log(f"[{stage}]")

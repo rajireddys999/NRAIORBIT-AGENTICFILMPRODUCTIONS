@@ -431,7 +431,7 @@ def elevenlabs_text(root: Path, cfg: dict) -> tuple[int, int]:
 
 def preview_run(root: Path, cfg: dict, pricing: dict) -> dict:
     """What the next `run` would spend on paid generators, given what is already generated and cached."""
-    from .shotpack import clips_for, selected
+    from .shotpack import clip_for_take, selected
 
     g = cfg.get("google", {})
     prov = cfg.get("providers", {})
@@ -449,7 +449,7 @@ def preview_run(root: Path, cfg: dict, pricing: dict) -> dict:
             if prov.get("video") != "veo":
                 continue
             attempt = takes.get(shot.shot_id, 1)
-            if len(clips_for(root, shot.shot_id)) >= attempt:
+            if clip_for_take(root, shot.shot_id, attempt) is not None:
                 out["cached_shots"] += 1
                 continue
             _, tier, res = veo_settings(g, shot)

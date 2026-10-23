@@ -49,3 +49,13 @@ def no_gcloud(monkeypatch):
         return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="ERROR: (gcloud) You do not currently have an "
                                                                      "active account selected. (tests never run gcloud)")
     monkeypatch.setattr(gcs, "RUN", refuse)
+
+
+@pytest.fixture(autouse=True)
+def fastest_encoder(monkeypatch):
+    """The end-to-end tests cut whole films at 1080p; x264's fastest preset makes the same frames at the same quality
+    (crf) in a fraction of the time, larger files aside. Real films keep ffmpeg.VIDEO_ENCODE as it is."""
+    from nraiorbit.post import ffmpeg
+    fast = list(ffmpeg.VIDEO_ENCODE)
+    fast[fast.index("-preset") + 1] = "ultrafast"
+    monkeypatch.setattr(ffmpeg, "VIDEO_ENCODE", fast)

@@ -20,6 +20,8 @@ RUN mkdir -p /usr/local/share/fonts/noto-telugu && cd /usr/local/share/fonts/not
     && curl -fsSL "https://fonts.googleapis.com/css2?family=Noto+Serif+Telugu:wght@700" -A "Mozilla/5.0" \
        | grep -o "https://[^)]*\.ttf" | head -1 | xargs -r curl -fsSL -o NotoSerifTelugu-Bold.ttf || true
 
-ENV PYTHONUNBUFFERED=1 NRAIORBIT_PROJECTS=/work/projects
+# the commit this image was built from (deploy.yml passes it; a hand build without it says "unknown")
+ARG GIT_SHA=unknown
+ENV PYTHONUNBUFFERED=1 NRAIORBIT_PROJECTS=/work/projects NRAIORBIT_VERSION=$GIT_SHA
 VOLUME ["/work"]
 ENTRYPOINT ["nraiorbit", "service", "tick"]

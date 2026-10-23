@@ -1,0 +1,173 @@
+name: deploy
+
+# Every merge to the default branch goes live by itself: when CI passes on that branch, both images are built from
+# that very commit, tagged with it, and the runner job and the control room are pointed at them (image only: their
+# settings and secrets stay as they are). Run it by hand to deploy the tip again, or a given commit (a rollback).
+# Nothing deploys until the one-time setup in deploy/github/README.md is done.
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [claude/telugu-ai-movie-generator-yhb6po]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "A merged commit whose CI passed (full or short hash); empty = the branch's newest commit"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  REGION: us-central1
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    # a CI run on the default branch that passed after a push (a merge); never a PR's run, never a failed one
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      sha: ${{ steps.pick.outputs.sha }}
+      ready: ${{ steps.pick.outputs.ready }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          ASKED: ${{ inputs.sha }}
+          CI_SHA: ${{ github.event.workflow_run.head_sha }}
+          TIP: ${{ github.sha }}
+          BRANCH: claude/telugu-ai-movie-generator-yhb6po
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+          DEPLOYER: ${{ vars.GCP_DEPLOYER_SA }}
+          PROJECT: ${{ vars.GCP_PROJECT }}
+        run: |
+          sha="${ASKED:-${CI_SHA:-$TIP}}"
+          case "$sha" in *[!0-9a-f]*|"") echo "::error::not a commit: '$sha'"; exit 1;; esac
+          sha="$(git rev-parse --verify --quiet "${sha}^{commit}")" || { echo "::error::no such commit: ${ASKED:-$CI_SHA}"; exit 1; }
+          # only what was merged: never a pull request's commit or another branch's
+          if ! git merge-base --is-ancestor "$sha" "origin/$BRANCH"; then
+            echo "::error::$sha is not on $BRANCH: only merged commits are deployed"; exit 1
+          fi
+          # after a merge, only the branch's newest commit: CI runs can finish out of order, and an older one must
+          # never go live over a newer one (its own run deploys the newest)
+          if [ "$EVENT" = "workflow_run" ] && [ "$sha" != "$(git rev-parse "origin/$BRANCH")" ]; then
+            echo "::notice::$sha is no longer the newest commit on $BRANCH; the newest one's own run deploys it."
+            echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # by hand (a redeploy or a rollback): only a commit that was the branch's tip once (a merge, not a commit
+          # inside a merged pull request), and whose CI passed
+          if [ "$EVENT" = "workflow_dispatch" ] && ! git rev-list --first-parent "origin/$BRANCH" | grep -qx "$sha"; then
+            echo "::error::$sha was never the tip of $BRANCH (it is inside a merged pull request)"; exit 1
+          fi
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            passed="$(gh api "repos/$REPOSITORY/commits/$sha/check-runs?check_name=test&per_page=100" \
+                      --jq '[.check_runs[] | select(.conclusion == "success")] | length')"
+            if [ "${passed:-0}" -lt 1 ]; then
+              echo "::error::CI did not pass on $sha, so it is not deployed"; exit 1
+            fi
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          if [ -n "$PROVIDER" ] && [ -n "$DEPLOYER" ] && [ -n "$PROJECT" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Not deployed: the one-time setup is not done (deploy/github/README.md)."
+          fi
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - image: runner
+            dockerfile: deploy/service/Dockerfile
+            smoke: docker run --rm --entrypoint nraiorbit "$IMAGE" --help
+          - image: ui
+            dockerfile: deploy/ui/Dockerfile
+            smoke: docker run --rm "$IMAGE" python -c "import nraiorbit.ui.app"
+    env:
+      SHA: ${{ needs.plan.outputs.sha }}
+      REPO: us-central1-docker.pkg.dev/${{ vars.GCP_PROJECT }}/nraiorbit   # the job env cannot read env.REGION
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Is this commit's image built already?
+        id: have
+        run: |
+          IMAGE="$REPO/${{ matrix.image }}:$SHA"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          if gcloud artifacts docker images describe "$IMAGE" > /dev/null 2>&1; then
+            echo "built=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "built=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.have.outputs.built == 'false'
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - name: Build, check and push
+        if: steps.have.outputs.built == 'false'
+        env:
+          IMAGE: ${{ steps.have.outputs.image }}
+        run: |
+          gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+          docker build -f "${{ matrix.dockerfile }}" --build-arg "GIT_SHA=$SHA" -t "$IMAGE" .
+          ${{ matrix.smoke }}
+          docker push "$IMAGE"
+
+  deploy:
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      SHA: ${{ needs.plan.outputs.sha }}
+      REPO: us-central1-docker.pkg.dev/${{ vars.GCP_PROJECT }}/nraiorbit   # the job env cannot read env.REGION
+      PROJECT: ${{ vars.GCP_PROJECT }}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      # the job first: the next tick runs the new code before the control room can write anything only new code reads.
+      # A running tick keeps the image it started with. Image only: settings, secrets and arguments stay as they are.
+      - name: Runner job
+        run: gcloud run jobs update nraiorbit-runner --project "$PROJECT" --region "$REGION" --image "$REPO/runner:$SHA" --quiet
+      - name: Control room
+        run: gcloud run services update nraiorbit-ui --project "$PROJECT" --region "$REGION" --image "$REPO/ui:$SHA" --quiet
+      - name: Point latest at this commit
+        run: |
+          gcloud artifacts docker tags add "$REPO/runner:$SHA" "$REPO/runner:latest" --quiet
+          gcloud artifacts docker tags add "$REPO/ui:$SHA" "$REPO/ui:latest" --quiet
+      - name: What is live
+        run: |
+          echo "runner: $(gcloud run jobs describe nraiorbit-runner --project "$PROJECT" --region "$REGION" --format='value(spec.template.spec.template.spec.containers[0].image)')"
+          echo "control room: $(gcloud run services describe nraiorbit-ui --project "$PROJECT" --region "$REGION" --format='value(spec.template.spec.containers[0].image)')"

@@ -69,6 +69,28 @@ def doings(store) -> dict[str, dict]:
     return out
 
 
+def job_image(project: str | None, region: str, job: str | None) -> str:
+    """The image the job runs now (what its next tick starts with); '' when it cannot be read."""
+    if not project or not job:
+        return ""
+    try:
+        from google.cloud import run_v2
+
+        client = run_v2.JobsClient(credentials=_creds())
+        got = client.get_job(name=job_name(project, region, job), timeout=5)
+        return got.template.template.containers[0].image
+    except Exception:
+        return ""
+
+
+def short_image(image: str) -> str:
+    """A commit tag (`runner:<sha>` -> its first 7) or a digest (`@sha256:` -> its first 12) as the page shows it."""
+    if "@sha256:" in image:
+        return "sha256:" + image.split("@sha256:", 1)[1][:12]
+    tag = image.rsplit(":", 1)[1] if ":" in image.rsplit("/", 1)[-1] else ""
+    return tag[:7] if len(tag) >= 7 and all(c in "0123456789abcdef" for c in tag) else tag
+
+
 def run(project: str, region: str, job: str) -> str:
     """Start one tick now. Returns the execution's short name."""
     from google.cloud import run_v2

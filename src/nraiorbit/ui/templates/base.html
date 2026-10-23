@@ -216,7 +216,7 @@ footer .line { display:flex; align-items:center; justify-content:space-between; 
 </main>
 <footer>
   <div class="strip" aria-hidden="true"></div>
-  <div class="line"><span>{% if email %}{{ root }}{% endif %}</span><span>THE RUNNER READS THE SAME FILES · THIS PAGE ONLY WRITES THE QUEUE SHEETS AND THE STORIES FOLDER</span></div>
+  <div class="line"><span>{% if email %}{{ root }}{% endif %}</span>{% if versions %}<span>VERSION · CONTROL ROOM {{ versions.ui }}{% if versions.runner %} · RUNNER {{ versions.runner }}{% endif %}</span>{% endif %}<span>THE RUNNER READS THE SAME FILES · THIS PAGE ONLY WRITES THE QUEUE SHEETS AND THE STORIES FOLDER</span></div>
   <div class="strip" aria-hidden="true"></div>
 </footer>
 {% if refresh %}<script>

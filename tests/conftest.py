@@ -14,6 +14,14 @@ def no_running_record_in_a_real_bucket(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_cloud_run_lookup_for_the_footer(monkeypatch):
+    """Every control-room page shows the runner's live image (ui/runner.job_image, read from Cloud Run). Off the
+    cloud that lookup waits seconds for credentials, so the tests see a fixed image; the footer test sets its own."""
+    from nraiorbit.ui import runner as runner_mod
+    monkeypatch.setattr(runner_mod, "job_image", lambda project, region, job: "")
+
+
+@pytest.fixture(autouse=True)
 def no_google_credentials(monkeypatch):
     """No test uses real Google credentials. Without this, every storage client a test makes asks for them, and the
     library probes the cloud metadata server with retries first: about 4.5 s each time on a laptop, longer on CI."""

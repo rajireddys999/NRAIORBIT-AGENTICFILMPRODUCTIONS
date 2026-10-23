@@ -183,7 +183,8 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
         pipeline.log, log = _teed(pipeline.log, progress), _teed(log, progress)
     step = progress.phase if progress is not None else (lambda name: None)
     pol = policy_of(pipeline.cfg, gates=gates, publish=publish)
-    report = {"slug": root.name, "started": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+    report = {"slug": root.name, "version": os.environ.get("NRAIORBIT_VERSION") or "unknown",
+              "started": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
               "policy": pol, "steps": {}, "state": "running"}
 
     if bucket and getattr(pipeline, "remove_remote", None) is None:   # a redone step's throwaways leave the bucket

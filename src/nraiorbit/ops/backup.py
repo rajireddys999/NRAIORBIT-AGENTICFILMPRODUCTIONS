@@ -94,6 +94,21 @@ def remove_remote(project_root: Path, bucket: str | None, paths, log=print) -> i
     return removed
 
 
+def put_report(project_root: Path, bucket: str | None, name: str, log=print) -> bool:
+    """One file of reports/ up to the bucket now, not at the tick's last backup: what the control room shows while
+    the run goes on (the owner's rejection, applied). A failure is logged; the backup sends it later anyway."""
+    local = Path(project_root) / FOLDERS["reports"] / name
+    client = storage_client() if bucket and local.exists() else None
+    if client is None:
+        return False
+    try:
+        gcs.upload_file(local, client.bucket(bucket), f"{Path(project_root).name}/{FOLDERS['reports']}/{name}")
+        return True
+    except Exception as e:
+        log(f"  could not send {name} to the bucket yet ({type(e).__name__}: {str(e)[:120]}); the backup will")
+        return False
+
+
 def sync_workers() -> int:
     """Transfers at once through the one storage client (NRAIORBIT_SYNC_WORKERS, default 8). Sets move one at a time,
     each with all of them: a big set (the inbox of paid clips) is most of a restore, and it gets every transfer."""

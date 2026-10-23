@@ -773,6 +773,10 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
             missing = [i for i in ids if i not in known]
             if missing:
                 return back(f"/film/{slug}", f"No shot {', '.join(missing)} in this film; nothing changed.")
+        current = next((r for r in load_rows(store, STORIES, queue.STORY_COLUMNS) if r["slug"] == slug), None)
+        if current and current["state"].split(":")[0] in films.RUNNING:   # before anything is written: a tick that
+            return back(f"/film/{slug}", f"the runner is on it ({current['state']}); send it back when it stops. "
+                                         "Nothing changed")             # claims the row could otherwise take it
         ask = f"stories/{slug}.rework.json"
         before = store.read_text(ask) or ""                    # an earlier Send back the tick has not taken yet
         store.write_text(ask, json.dumps({"id": f"{queue.now()}-{os.urandom(3).hex()}", "stage": stage, "shots": ids,
@@ -788,13 +792,69 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                 return False
             row.update(state="retry", note=f"sent back to {steps[stage]} by {email}: {notes}"[:200],
                        updated=queue.now())
-        edit_row(store, slug, change)
+        try:
+            edit_row(store, slug, change)
+        except HTTPException:                                  # not in the queue: nothing may be left behind
+            store.write_text(ask, before, "application/json")
+            raise
         if refused:
             store.write_text(ask, before, "application/json")  # as it was: never applied later by surprise
             return back(f"/film/{slug}", refused["msg"])
         what = (f"shots {', '.join(ids)} are planned again from your notes and made anew" if ids else
                 f"every step from {steps[stage]} on is redone, following your notes")
         return back(f"/film/{slug}", f"Sent back: {what}; the gates ask again. " + tick_now("the rework is under way"))
+
+    @app.post("/film/{slug}/reject")
+    def reject(slug: str, email: str = Depends(guard), gate: str = Form(""), notes: str = Form("")):
+        """Reject the cut or the trailer with a note: the runner's AI editor (service/triage) decides what to redo,
+        the narrowest fix first, and redoes it; the page shows its decision. Saved beside the story as
+        stories/<slug>.rework.json (mode "triage"); the next tick applies it once, before anything runs. Spending
+        still stops at the cost and faces checks. Never over a run under way, nor on a page the film has moved on
+        from."""
+        if not SLUG_RE.match(slug):
+            raise HTTPException(404)
+        notes = notes.strip()[:2000]
+        if not notes:
+            return back(f"/film/{slug}", "Write what is wrong and what should change; nothing changed.")
+        if films.rejects_today(store, slug) >= films.REJECTS_PER_DAY:
+            return back(f"/film/{slug}", f"That is {films.REJECTS_PER_DAY} rejections today, the most in a day; "
+                                         "send it back to a step instead, or reject again tomorrow. Nothing changed.")
+
+        def refusal(state: str) -> str:
+            at = state[len("awaiting:"):] if state.startswith("awaiting:") else state
+            if state.split(":")[0] in films.RUNNING:
+                return f"the runner is on it ({state}); reject it when it stops. Nothing changed"
+            if at not in (*films.REJECT_GATES, "done") or at != gate:
+                return f"the film is {state} now, not at the review this page showed; look again. Nothing changed"
+            return ""
+        current = next((r for r in load_rows(store, STORIES, queue.STORY_COLUMNS) if r["slug"] == slug), None)
+        if current is None:
+            raise HTTPException(400, f"{slug} is not in the queue; films made by hand are driven from Claude Code")
+        if refusal(current["state"]):                         # before anything is written: a tick that claims the
+            return back(f"/film/{slug}", refusal(current["state"]))   # row could otherwise take it
+        ask = f"stories/{slug}.rework.json"
+        before = store.read_text(ask) or ""                    # an earlier request the tick has not taken yet
+        store.write_text(ask, json.dumps({"id": f"{queue.now()}-{os.urandom(3).hex()}", "mode": "triage", "gate": gate,
+                                          "notes": notes, "by": email, "at": queue.now()}, ensure_ascii=False),
+                         "application/json")                   # first: a tick that claims the row finds it
+        refused: dict = {}
+
+        def change(row: dict):
+            why = refusal(row["state"])                       # again under the write: the row may have moved since
+            if why:
+                refused["msg"] = why
+                return False
+            row.update(state="retry", note=f"rejected at {gate} by {email}: {notes}"[:200], updated=queue.now())
+        try:
+            edit_row(store, slug, change)
+        except HTTPException:                                  # not in the queue: nothing may be left behind
+            store.write_text(ask, before, "application/json")
+            raise
+        if refused:
+            store.write_text(ask, before, "application/json")  # as it was: never applied later by surprise
+            return back(f"/film/{slug}", refused["msg"])
+        return back(f"/film/{slug}", "Rejected: the AI editor reads your note and decides what to redo; its decision "
+                                     "shows on this page. " + tick_now("the decision is under way"))
 
     @app.post("/film/{slug}/cap-and-rerun")
     def cap_and_rerun(slug: str, email: str = Depends(guard), budget: str = Form("")):

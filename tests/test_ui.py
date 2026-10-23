@@ -1270,7 +1270,7 @@ def test_send_back_never_lands_on_a_run_under_way(client, root):
     (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
     r = client.post("/film/demo/rework", data={"stage": "trailer", "notes": "shorter"}, follow_redirects=True)
     assert "the runner is on it" in r.text and rows(root)[0]["state"] == "producing"
-    assert (root / "stories" / "demo.rework.json").read_text() == ""           # as it was: none, so empty
+    assert not (root / "stories" / "demo.rework.json").exists()                # refused before anything is written
 
 
 def test_a_second_send_back_before_the_tick_keeps_the_first(client, root):
@@ -1306,3 +1306,90 @@ def test_the_delivery_card_reads_what_deliver_writes(client, root):
         {"name": "Rain_720p.mp4", "gs": "gs://b/demo/final/Rain_720p.mp4", "url": "https://x", "mb": 120.5}]}))
     d = films.detail(Store(str(root)), "demo", rows(root)[0])
     assert [x["name"] for x in d["delivery"]] == ["Rain_720p.mp4"]                 # the card lists it
+
+
+def _at_review(root, gate, state=None):
+    """The film cut and waiting at `gate` (or in `state`)."""
+    (root / "demo" / "11_master").mkdir(exist_ok=True)
+    (root / "demo" / "11_master" / "movie.mp4").write_bytes(b"film")
+    (root / "demo" / "reviews" / "faces.pending").unlink(missing_ok=True)
+    if gate:
+        (root / "demo" / "reviews" / f"{gate}.pending").write_text("x")
+    rs = rows(root)
+    rs[0].update(state=state or f"awaiting:{gate}", updated=queue.now())
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+
+
+def test_reject_sits_beside_approve_at_the_cut_and_trailer_reviews_and_saves_the_note_for_the_editor(client, root):
+    assert 'action="/film/demo/reject"' not in client.get("/film/demo").text   # faces: Send back, not Reject
+    _at_review(root, "trailer")
+    page = client.get("/film/demo").text
+    assert 'action="/film/demo/reject"' in page and 'name="gate" value="trailer"' in page and "Reject…" in page
+    r = client.post("/film/demo/reject", data={"gate": "trailer", "notes": "  "}, follow_redirects=True)
+    assert "Write what is wrong" in r.text and not (root / "stories" / "demo.rework.json").exists()
+    r = client.post("/film/demo/reject", data={"gate": "trailer", "notes": "open on the boat chase"},
+                    follow_redirects=True)
+    assert "the AI editor reads your note" in r.text
+    ask = json.loads((root / "stories" / "demo.rework.json").read_text())
+    assert ask["mode"] == "triage" and ask["gate"] == "trailer" and ask["notes"] == "open on the boat chase"
+    assert ask["id"] and ask["by"] == "owner@example.com" and "stage" not in ask
+    row = rows(root)[0]
+    assert row["state"] == "retry" and row["note"].startswith("rejected at trailer by owner@example.com")
+    page = client.get("/film/demo").text
+    assert "the AI editor is deciding what to redo" in page and 'action="/film/demo/reject"' not in page
+    rs = rows(root)                                                     # the editor could not be reached
+    rs[0].update(state="blocked:LLMError", updated=queue.now())
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    assert "Retry runs your rejection again" in client.get("/film/demo").text
+    _at_review(root, "trailer")                                         # back at the review, never applied
+    page = client.get("/film/demo").text
+    assert "was not applied" in page and 'action="/film/demo/reject"' in page
+
+
+def test_reject_is_offered_on_a_finished_film_and_never_on_a_page_the_film_has_left(client, root):
+    _at_review(root, None, "done")
+    assert 'name="gate" value="done"' in client.get("/film/demo").text
+    r = client.post("/film/demo/reject", data={"gate": "final_cut", "notes": "too long"}, follow_redirects=True)
+    assert "not at the review this page showed" in r.text and rows(root)[0]["state"] == "done"
+    assert not (root / "stories" / "demo.rework.json").exists()                 # refused before anything is written
+    _at_review(root, "final_cut", "producing")
+    r = client.post("/film/demo/reject", data={"gate": "final_cut", "notes": "too long"}, follow_redirects=True)
+    assert "the runner is on it" in r.text and rows(root)[0]["state"] == "producing"
+
+
+def test_reject_stops_at_six_a_day(client, root):
+    _at_review(root, "final_cut")
+    today = queue.now()
+    notes = [{"id": f"r{i}", "mode": "triage", "at": today} for i in range(6)]
+    (root / "demo" / "reports" / "owner_notes.jsonl").write_text("".join(json.dumps(n) + "\n" for n in notes))
+    r = client.post("/film/demo/reject", data={"gate": "final_cut", "notes": "too long"}, follow_redirects=True)
+    assert "6 rejections today" in r.text and rows(root)[0]["state"] == "awaiting:final_cut"
+
+
+def test_the_page_shows_what_the_editor_decided(client, root):
+    _at_review(root, "trailer")
+    record = {"id": "t1", "mode": "triage", "gate": "trailer", "owner_notes": "the music drowns the lines",
+              "understood": "The score is too loud under the dialogue.", "why": "A quieter score keeps every line.",
+              "question": "", "needs_code_change": True, "stage": "assemble", "applied": "2026-10-23T10:00:00+00:00",
+              "actions": [{"route": "mix", "shots": [], "notes": "music down 6 dB"},
+                          {"route": "reshoot_shots", "shots": ["sc002_s001"], "notes": "the hero alone"}],
+              "what": "the sound is mixed again (music -6 dB from the original)"}
+    (root / "demo" / "reports" / "owner_notes.jsonl").write_text(json.dumps(record) + "\n")
+    (root / "demo" / "reports" / "trailer_direction.json").write_text(json.dumps(
+        {"rework_id": "t1", "direction": {}, "unmet": ["shot sc006_s003 is not in the trailer"]}))
+    page = client.get("/film/demo").text
+    for says in ("The AI editor's decision", "rejected at the trailer review", "the music drowns the lines",
+                 "The score is too loud under the dialogue.", "Mix the sound again", "Remake shots", "sc002_s001",
+                 "A quieter score keeps every line.", "music -6 dB from the original",
+                 "shot sc006_s003 is not in the trailer", "needs a code change"):
+        assert says in page, says
+    record.update(actions=[], question="Which scene do you mean?", needs_code_change=False)
+    (root / "demo" / "reports" / "owner_notes.jsonl").write_text(json.dumps(record) + "\n")
+    page = client.get("/film/demo").text
+    assert "Nothing was redone. Which scene do you mean?" in page and "is not in the trailer" in page
+    record.update(skipped="the film had moved on from the trailer review")
+    (root / "demo" / "reports" / "owner_notes.jsonl").write_text(json.dumps(record) + "\n")
+    assert "Not applied: the film had moved on from the trailer review." in client.get("/film/demo").text
+    later = {"id": "s1", "stage": "shots", "notes": "fewer close-ups"}                # a Send back takes its place
+    (root / "demo" / "reports" / "owner_notes.jsonl").write_text(json.dumps(record) + "\n" + json.dumps(later) + "\n")
+    assert "The AI editor's decision" not in client.get("/film/demo").text

@@ -57,7 +57,12 @@ SHOT_ID = re.compile(r"^sc\d{3}_s\d{3}$")
 def apply_rework(pipeline: Pipeline, log=print) -> dict | None:
     """The owner's Send back, before anything runs, once (its id goes into reports/owner_notes.jsonl): the shots it
     names are planned again from the notes and remade (the video step), or every step from the one it names is
-    redone; the notes go to the agents of those steps. The gates ask again as each step finishes."""
+    redone; the notes go to the agents of those steps (a trailer's to the editor, as a trailer direction). The gates
+    ask again as each step finishes.
+
+    A Reject (mode "triage", from the film-cut or trailer review) carries only the owner's notes: the editor decides
+    what to redo (service/triage). When the editor cannot be reached this raises and the request stays for the next
+    run; nothing was undone."""
     from ..pipeline import OWNER_NOTES
     path = pipeline.p.root / REWORK_FILE
     if not path.exists():
@@ -73,31 +78,41 @@ def apply_rework(pipeline: Pipeline, log=print) -> dict | None:
             seen.add(json.loads(line).get("id"))
         except ValueError:
             continue
-    stage = REWORK_STAGES.get(str((req or {}).get("stage"))) if isinstance(req, dict) else None
-    if stage is None or not req.get("id") or req["id"] in seen:
+    triage = isinstance(req, dict) and req.get("mode") == "triage"
+    stage = REWORK_STAGES.get(str((req or {}).get("stage"))) if isinstance(req, dict) and not triage else None
+    notes = str((req or {}).get("notes") or "").strip()[:2000] if isinstance(req, dict) else ""
+    if (stage is None and not (triage and notes)) or not req.get("id") or req["id"] in seen:
         path.unlink()
         return None
-    notes = str(req.get("notes") or "").strip()[:2000]
     shots = [s for s in req.get("shots") or [] if isinstance(s, str) and SHOT_ID.fullmatch(s)]
-    if shots and stage == "render":
+    decided = {}
+    if triage:
+        from . import triage as _triage
+        decided = _triage.apply(pipeline, req, log)
+        stage, shots, notes, what = decided.pop("stage"), decided.pop("shots"), decided.pop("notes"), decided.pop("what")
+    elif shots and stage == "render":
         found = pipeline.rework_shots(shots, notes)
         what = f"shots {', '.join(found)} planned again and made anew" if found else "none of those shots exists"
     else:
         from ..pipeline import STAGES
+        if stage == "trailer" and notes:                     # the editor turns the notes into a trailer direction
+            from .triage import write_direction
+            write_direction(pipeline, notes, req["id"])
         if STAGES.index(stage) <= STAGES.index("shots"):     # new plans: no old clip or first frame lands on a shot
             pipeline.fresh_takes(pipeline.made_shots())     # it was not made for (a music redo keeps every clip)
         pipeline.invalidate(stage)
         what = f"every step from {stage} on is redone"
     record = {"id": req["id"], "stage": stage, "shots": shots, "notes": notes, "by": req.get("by"),
-              "at": req.get("at"), "applied": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
+              "at": req.get("at"), "applied": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+              "what": what, **decided}
     pipeline.p.reports.mkdir(parents=True, exist_ok=True)
     cut = done.exists() and not done.read_text(encoding="utf-8").endswith("\n")
     with done.open("a", encoding="utf-8") as f:
         f.write(("\n" if cut else "") + json.dumps(record, ensure_ascii=False) + "\n")
     pipeline._owner_notes()                            # the agents of the steps redone follow the notes
     path.unlink()
-    log(f"  sent back by {req.get('by') or 'the owner'}: {what}")
-    return {**record, "what": what}
+    log(f"  {'rejected' if triage else 'sent back'} by {req.get('by') or 'the owner'}: {what}")
+    return record
 
 
 def approve(pipeline: Pipeline, gate: str, text: str = "approved by policy\n") -> None:
@@ -177,7 +192,11 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
         pipeline.remove_remote = lambda paths: _backup.remove_remote(root, bucket, paths, log=log)
     rework = apply_rework(pipeline, log)                  # the owner's Send back, before anything runs
     if rework:
-        report["steps"]["rework"] = f"{rework['stage']}: {rework['what']}"
+        report["steps"]["rework"] = f"{rework['stage'] or 'nothing'}: {rework['what']}"
+        if bucket:                                        # the page shows the decision now, not after the run
+            from ..ops import backup as _backup
+            from ..pipeline import OWNER_NOTES
+            _backup.put_report(root, bucket, OWNER_NOTES, log=log)
 
     def finish(state: str) -> dict:
         report["state"] = state

@@ -38,6 +38,13 @@ REWORK_STEPS = [("story", "Story bible"), ("outline", "Outline"), ("scenes", "Sc
 REWORK_DEFAULT = {"story": "story", "outline": "outline", "scenes": "scenes", "cast": "cast", "shots": "shots",
                   "cost": "shots", "faces": "render", "render": "render", "pacing": "assemble",
                   "final_cut": "assemble", "trailer": "trailer", "publish": "assemble", "assemble": "assemble"}
+# where Reject is offered (the film-cut and trailer reviews, the upload, and a finished film): the AI editor in the
+# runner (service/triage) decides what to redo from the owner's note
+REJECT_GATES = ("pacing", "final_cut", "trailer", "publish")
+REJECTS_PER_DAY = 6
+ROUTE_LABELS = {"reshoot_shots": "Remake shots", "trailer": "Cut the trailer again", "mix": "Mix the sound again",
+                "music": "Plan the score again", "shots": "Shot lists again", "scenes": "Scenes & dialogue again",
+                "cast": "Cast again", "outline": "Outline again", "story": "Story bible again"}
 RUNNING = {"new", "approved", "retry", "producing"}       # row states in which the runner is, or is about to be, on it
 SETTLED = {"done", "skipped", "held"}                     # statuses that let the next step count
 ADVISORY = {"qa"}                                         # steps that never stop the run: no later step waits on them
@@ -163,6 +170,36 @@ def _jsonl(store: Store, rel: str) -> list[dict]:
             except ValueError:
                 continue
     return out
+
+
+def triage_view(store: Store, slug: str) -> dict:
+    """The owner's latest Reject as the page shows it: still being decided (saved, not yet applied by the runner),
+    or what the editor decided and is redoing. Nothing once a later Send back has taken its place."""
+    notes = [r for r in _jsonl(store, f"{slug}/reports/owner_notes.jsonl") if isinstance(r, dict)]
+    ask = _json(store, f"stories/{slug}.rework.json")
+    if isinstance(ask, dict) and ask.get("mode") == "triage" and ask.get("id") \
+            and ask["id"] not in {r.get("id") for r in notes}:
+        return {"pending": True, "gate": ask.get("gate"), "owner_notes": ask.get("notes"), "at": ask.get("at")}
+    latest = notes[-1] if notes else None
+    if not latest or latest.get("mode") != "triage":
+        return {}
+    direction = _json(store, f"{slug}/reports/trailer_direction.json")
+    unmet = direction.get("unmet") if isinstance(direction, dict) and direction.get("rework_id") == latest.get("id") \
+        else None
+    return {**latest, "pending": False, "unmet": [str(u) for u in unmet or []],
+            "actions": [{**a, "label": ROUTE_LABELS.get(a.get("route"), str(a.get("route")))}
+                        for a in latest.get("actions") or [] if isinstance(a, dict)]}
+
+
+def rejects_today(store: Store, slug: str) -> int:
+    """Rejects the owner made today (UTC), applied or still waiting for the runner."""
+    today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+    ids = {r.get("id") for r in _jsonl(store, f"{slug}/reports/owner_notes.jsonl")
+           if isinstance(r, dict) and r.get("mode") == "triage" and str(r.get("at") or "").startswith(today)}
+    ask = _json(store, f"stories/{slug}.rework.json")
+    if isinstance(ask, dict) and ask.get("mode") == "triage" and str(ask.get("at") or "").startswith(today):
+        ids.add(ask.get("id"))
+    return len(ids)
 
 
 def film_slugs(store: Store, rows: list[dict]) -> list[str]:
@@ -669,6 +706,9 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
     return {
         "slug": slug, "row": row, "cfg": cfg, "bible": bible, "outline": scenes_out, "cast": cast_cards,
         "scenes": scene_views, "shots": shot_views, "keyframes": keyframe_cards, "stages": stage, "gates": gates,
+        "reject_gate": (next((g for g in gates if g in REJECT_GATES), None) or ("done" if state == "done" else None))
+        if "movie.mp4" in media else None,
+        "triage": triage_view(store, slug), "rejects_per_day": REJECTS_PER_DAY,
         "rework_steps": REWORK_STEPS, "rework_default": REWORK_DEFAULT.get(
             (gates[0] if gates else (issue or {}).get("stage")) or "", "render"),
         "gate_for": gate_for, "next_stage": next_stage, "live": live, "animatic": mock, "issue": issue,

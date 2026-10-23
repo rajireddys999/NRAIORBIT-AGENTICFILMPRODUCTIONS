@@ -1,8 +1,8 @@
 name: ci
 
-# Pull requests (one run each, the newest wins), pushes to the default branch (the merged result is tested, and its
-# pip cache is the one new PRs can read), by hand, and from other workflows. Other branches no longer run on push,
-# so a branch with a PR no longer runs twice.
+# Pull requests (one run each, the newest wins), pushes to the default branch (a merge is tested unless its pull
+# request already tested exactly that code; either way its pip and ffmpeg caches are the ones new PRs can read, and
+# the deploy waits on it), by hand, and from other workflows. Other branches never run on push.
 on:
   pull_request:
   push:
@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: read
+  actions: read                         # whether a merge's pull request already passed (below)
 
 jobs:
   test:
@@ -22,6 +23,32 @@ jobs:
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2                # a merge commit and both its parents
+      - name: Already tested in its pull request?
+        # A merge whose code is exactly its pull request's head (the same tree, and the head already held the base
+        # it was merged into) was tested by that pull request's newest ci run, if it passed: the tests are not run
+        # again, only the caches below are kept warm for new pull requests, and the deploy that waits on this run
+        # starts at once. Anything else, or an answer GitHub cannot give, is tested in full.
+        id: tested
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          repo="${{ github.repository }}"
+          head=$(git rev-parse --verify --quiet "HEAD^2" || true)
+          if [ -n "$head" ] && [ "$(git rev-parse "HEAD^{tree}")" = "$(git rev-parse "$head^{tree}")" ]; then
+            base=$(git rev-parse "HEAD^1")
+            held=$(gh api "repos/$repo/compare/$base...$head" --jq .status) || held=unknown
+            last=$(gh api "repos/$repo/actions/workflows/ci.yml/runs?head_sha=$head&event=pull_request&per_page=1" \
+              --jq '.workflow_runs[0].conclusion // "none"') || last=unknown
+            if { [ "$held" = ahead ] || [ "$held" = identical ]; } && [ "$last" = success ]; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::Its pull request already tested exactly this code ($head); the tests are not run again."
+            else
+              echo "::notice::Tested in full: the head holds the base? $held; its pull request's newest ci run: $last."
+            fi
+          fi
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"        # the images run 3.11 (deploy/ui/Dockerfile, deploy/service/Dockerfile)
@@ -53,9 +80,12 @@ jobs:
         # ui: the control room's tests (tests/test_ui.py) skip without FastAPI, so CI must install it
         run: pip install -e ".[dev,google,ui]" ruff
       - name: Lint
+        if: steps.tested.outputs.skip != 'true'
         run: ruff check src tests
       - name: Validate asset library manifests
+        if: steps.tested.outputs.skip != 'true'
         run: nraiorbit library validate
       - name: Tests (the offline end-to-end demo and the control room included)
+        if: steps.tested.outputs.skip != 'true'
         # every core of the runner; the slowest tests are listed so a new slow one is seen at once
         run: pytest -q -n auto --durations=15

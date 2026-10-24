@@ -32,7 +32,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from ..costing import BudgetExceeded, SpendLedger
-from ..pipeline import GatePending, Pipeline, PipelineBlocked
+from ..pipeline import GatePending, LinesTooLong, Pipeline, PipelineBlocked
 from .queue import GATES as GATE_ORDER
 
 RUNNER_GATES = ("cost", "faces", "publish")          # raised here, between pipeline runs, not inside a stage
@@ -219,6 +219,162 @@ def replan_child_shots(pipeline: Pipeline, log=print) -> tuple[list[str], str]:
                     + ". Send them back with a note on who or what should be in frame instead")
 
 
+DIALOGUE_FIT = "dialogue_fit.json"         # reports/: lines shortened to fit their shots, by block id
+MIN_LINE_S = 1.0                           # no line is asked to be shorter than this
+
+
+def _measured_lines(pipeline: Pipeline, scripts: dict) -> dict[str, float]:
+    """The voiced length of every line whose words are still the ones voiced: from the cut (reports/edl.json, which
+    notes each line's words); a line this step shortened since is estimated until it is voiced again."""
+    from ..planning.fit import text_sha as _text_sha
+    try:
+        edl = json.loads((pipeline.p.reports / "edl.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    try:
+        changed = json.loads((pipeline.p.reports / DIALOGUE_FIT).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        changed = {}
+    changed = changed if isinstance(changed, dict) else {}
+    texts = {b.block_id: b.text_te for script in scripts.values() for b in script.blocks}
+    out = {}
+    for d in edl.get("dialogue") or []:
+        bid = d.get("ref_id")
+        if bid not in texts:
+            continue
+        sha = d.get("text_sha")
+        if (sha and sha != _text_sha(texts[bid])) or (not sha and bid in changed):
+            continue                                       # its words changed since it was voiced
+        out[bid] = float(d.get("duration_s") or 0)
+    return out
+
+
+FIT_TRIES = 2                              # times one line may be rewritten before the run stops and says so
+
+
+def fit_dialogue(pipeline: Pipeline, log=print, measured: dict[str, float] | None = None) -> list[str]:
+    """Lines that would run past the shots carrying them (planning/fit) are written shorter by the screenwriter, so
+    every voice plays over its own picture: lengths as voiced (the render step that just stopped, or the last cut),
+    else estimated. The first line that overruns and the lines that pushed it late share their room; a line with no
+    room left (MIN_LINE_S) is dropped. Every scene is asked before anything is written; a changed line's old voice
+    files go, so it is voiced again, and the cut is made again from the clips already paid for. A line is rewritten
+    at most FIT_TRIES times, never when a voice artist recorded it (inbox/dialogue), and a rewrite counts only when
+    its words change and fit the length asked. Returns the lines changed ([] when everything fits, nothing more can
+    be done, or the film is not planned yet)."""
+    import shutil
+    from ..planning.fit import DIALOGUE_GAP_S, OVERRUN_TOL_S, chars_for, plan_lines, speech_seconds
+    from ..planning.runtime import scene_start_times
+    from ..providers.inbox import _find_audio
+    from ..schemas import Outline, SceneScript, ShotList, StoryBible
+    from ..shotpack import inbox_dir
+    p = pipeline.p
+    if not p.outline.exists():
+        return []
+    outline = Outline.model_validate_json(p.outline.read_text(encoding="utf-8"))
+    starts, scenes, scripts = scene_start_times(outline), [], {}
+    for sc in outline.scenes:
+        sp, pp = p.scenes / f"{sc.scene_id}.json", p.shots / f"{sc.scene_id}.json"
+        if not (sp.exists() and pp.exists()):
+            return []                                       # still being planned: the planning checks see to it
+        scripts[sc.scene_id] = SceneScript.model_validate_json(sp.read_text(encoding="utf-8"))
+        shots = ShotList.model_validate_json(pp.read_text(encoding="utf-8")).shots
+        scenes.append((sc.scene_id, starts[sc.scene_id], shots, scripts[sc.scene_id].blocks))
+    film_end = float(sum(sc.target_seconds for sc in outline.scenes))
+    durations = {**_measured_lines(pipeline, scripts), **(measured or {})}
+    try:
+        record = json.loads((p.reports / DIALOGUE_FIT).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        record = {}
+    record = record if isinstance(record, dict) else {}
+    recorded = inbox_dir(p.root, "dialogue")
+    fixed = {bid for bid, r in record.items() if isinstance(r, dict) and int(r.get("tries") or 0) >= FIT_TRIES}
+    fixed |= {b.block_id for sc in scripts.values() for b in sc.blocks
+              if b.kind == "dialogue" and _find_audio(recorded, b.block_id) is not None}   # a voice artist's take
+    targets: dict[str, float] = {}
+    for _ in range(200):                     # the first line that overruns, and the lines that pushed it late
+        lines = plan_lines(scenes, {**durations, **targets}, film_end)
+        first = next((i for i, ln in enumerate(lines) if ln.overrun_s(film_end) > 0), None)
+        if first is None:
+            break
+        j = first                            # back to the line that starts on time: the chain shares the room
+        while j > 0 and lines[j].scene_id == lines[j - 1].scene_id and lines[j].start_s > lines[j].earliest_s + 1e-3:
+            j -= 1
+        chain = lines[j:first + 1]
+        room = min(lines[first].window_end_s + OVERRUN_TOL_S, film_end) - chain[0].earliest_s \
+            - DIALOGUE_GAP_S * (len(chain) - 1)
+        total = sum(ln.dur_s for ln in chain if ln.block_id not in fixed) or 1.0
+        share = max(0.0, room - sum(ln.dur_s for ln in chain if ln.block_id in fixed)) / total
+        moved = False
+        for ln in chain:
+            if ln.block_id in fixed:
+                continue
+            want = round(ln.dur_s * min(share, 0.97), 2)
+            if want < MIN_LINE_S:
+                want = 0.0                   # no room for it: dropped rather than cut to one word
+            if want < ln.dur_s - 1e-3:
+                targets[ln.block_id] = want
+                moved = True
+        if not moved:
+            break                            # nothing left that may change: the checks stop the run and say so
+    blocks = {b.block_id: (sid, b) for sid, script in scripts.items() for b in script.blocks}
+    shrink = {bid: t for bid, t in targets.items()
+              if t < (durations.get(bid) or speech_seconds(blocks[bid][1].text_te)) - 0.05}
+    if not shrink:
+        return []
+    bible = StoryBible.model_validate_json(p.bible.read_text(encoding="utf-8"))
+    answers: dict[str, dict[str, tuple[str, str]]] = {}
+    for sid in sorted({blocks[bid][0] for bid in shrink}):   # every scene asked before anything is written
+        want = {bid: t for bid, t in shrink.items() if blocks[bid][0] == sid}
+        got = {bid: ("", "") for bid, t in want.items() if t == 0.0}    # no room: dropped
+        for attempt in (1, 2):                              # a line still too long is asked for once more
+            ask = {bid: chars_for(t if attempt == 1 else t * 0.85) for bid, t in want.items() if bid not in got}
+            if not ask:
+                break
+            try:
+                out = pipeline.screenwriter.shorten_lines(bible, outline, scripts[sid], ask)
+            except Exception as exc:                        # this scene stays as it is; the checks stop it later
+                log(f"  {sid}: the screenwriter could not shorten its lines ({type(exc).__name__}: {str(exc)[:120]})")
+                break
+            for line in out.lines:
+                te = line.text_te.strip()
+                if line.block_id in ask and te != blocks[line.block_id][1].text_te.strip() and \
+                        speech_seconds(te) <= want[line.block_id]:
+                    got[line.block_id] = (te, line.text_en.strip())        # "" drops the line
+        if got:
+            answers[sid] = got
+    done = []
+    for sid, got in answers.items():
+        new_blocks = [b.model_copy(update={"text_te": got[b.block_id][0], "text_en": got[b.block_id][1]})
+                      if b.block_id in got else b for b in scripts[sid].blocks
+                      if not (b.block_id in got and not got[b.block_id][0])]     # a dropped line leaves the scene
+        p.scenes.joinpath(f"{sid}.json").write_text(scripts[sid].model_copy(update={"blocks": new_blocks})
+                                                    .model_dump_json(indent=2), encoding="utf-8")
+        for bid, (te, _) in got.items():
+            shutil.rmtree(p.dialogue / bid, ignore_errors=True)   # voiced again with the new words
+            was = record.get(bid) if isinstance(record.get(bid), dict) else {}
+            record[bid] = {"was_te": was.get("was_te", blocks[bid][1].text_te), "now_te": te,
+                           "keep_to_s": round(shrink[bid], 2), "tries": int(was.get("tries") or 0) + 1}
+            done.append(bid)
+    for bid in shrink:                                       # asked but not rewritten: that counts as a try too
+        if bid not in done:
+            was = record.get(bid) if isinstance(record.get(bid), dict) else {}
+            record[bid] = {**was, "was_te": was.get("was_te", blocks[bid][1].text_te),
+                           "tries": int(was.get("tries") or 0) + 1}
+    p.reports.mkdir(parents=True, exist_ok=True)
+    (p.reports / DIALOGUE_FIT).write_text(json.dumps(record, indent=1, ensure_ascii=False), encoding="utf-8")
+    if not done:
+        return []
+    (p.edit / "timeline.json").unlink(missing_ok=True)     # the cut is made again with the new voices
+    pipeline.invalidate("assemble")
+    for suffix in ("approved", "pending"):                 # the new voices are reviewed again where that is asked
+        (p.reviews / f"render.{suffix}").unlink(missing_ok=True)
+    kept = [b for b in done if record[b]["now_te"]]
+    dropped = [b for b in done if not record[b]["now_te"]]
+    log("  to fit their shots: " + "; ".join(x for x in (f"shortened {', '.join(kept)}" if kept else "",
+                                                         f"dropped {', '.join(dropped)}" if dropped else "") if x))
+    return done
+
+
 def approve(pipeline: Pipeline, gate: str, text: str = "approved by policy\n") -> None:
     pipeline.p.reviews.mkdir(parents=True, exist_ok=True)
     (pipeline.p.reviews / f"{gate}.pending").unlink(missing_ok=True)
@@ -339,6 +495,12 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
         report["steps"]["children"] = f"blocked: {stop}"
         return finish(f"blocked:{stop[:160]}")
 
+    # lines that would run past their shots are written shorter now, before anything is paid for them
+    shortened = fit_dialogue(pipeline, log)
+    if shortened:
+        report["steps"]["dialogue"] = f"shortened to fit their shots: {', '.join(shortened)}"
+        clear(pipeline, "cost", "approved")              # their new voices (and lip-sync) are asked for again
+
     # a film that cannot be voiced is never offered a cost to approve: speech runs after each scene's clips
     step("voices")                                       # its stop belongs on the voices step, not the shot lists
     voiceless = pipeline._voiceless()
@@ -401,6 +563,22 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
                 continue
             report["steps"]["render"] = f"awaiting:{g.gate}"
             return finish(f"awaiting:{g.gate}")
+        except LinesTooLong as long_lines:                # voiced lines past their shots: shortened, cost asked
+            shortened = fit_dialogue(pipeline, log, measured=long_lines.measured)
+            if not shortened:
+                report["steps"]["render"] = f"blocked: {long_lines}"
+                return finish(f"blocked:{str(long_lines)[:120]}")
+            report["steps"]["dialogue"] = f"shortened to fit their shots: {', '.join(shortened)}"
+            _, preview = cost_gate(pipeline)
+            estimate = {k: preview[k] for k in ("total_usd", "video_usd", "keyframe_usd", "tts_usd", "music_usd",
+                                                "lipsync_usd") if k in preview} if preview else {}
+            if not float(estimate.get("total_usd") or 0):    # nothing to pay for them: straight on
+                continue
+            clear(pipeline, "cost", "approved")
+            report["steps"]["estimate"] = estimate
+            hold(pipeline, "cost", json.dumps(estimate) + "\n")
+            report["steps"]["cost"] = "awaiting:cost (lines shortened to fit their shots)"
+            return finish("awaiting:cost")
         except (PipelineBlocked, BudgetExceeded) as b:
             from ..providers.google_ai import quota_used_up
             if not isinstance(b, BudgetExceeded) and quota_used_up(b):   # what was made is kept: the next tick

@@ -13,7 +13,8 @@ import yaml
 
 from nraiorbit.config import deep_merge, load_pipeline_config
 from nraiorbit.demo import DEMO_CONFIG, DEMO_PLOT, demo_llm
-from nraiorbit.pipeline import DIALOGUE_GAP_S, GatePending, Pipeline
+from nraiorbit.pipeline import DIALOGUE_GAP_S, GatePending, LinesTooLong, Pipeline
+from nraiorbit.post.cards import END_CARD_S
 from nraiorbit.post import ffmpeg
 from nraiorbit.post.speech import level_gain_db, tighten_pauses
 from nraiorbit.post.trailer import PUNCH_DROP_S
@@ -72,7 +73,8 @@ def test_demo_end_to_end(tmp_path):
 
     master = root / "11_master"
     movie = ffmpeg.duration(master / "movie.mp4")
-    assert movie == pytest.approx(180, abs=1.0)
+    assert movie == pytest.approx(180 + END_CARD_S, abs=1.0)                # cards: auto adds శుభం / THE END after it
+    assert json.loads((root / "reports" / "sync.json").read_text())["ok"] is True   # every line over its own shots
     assert ffmpeg.duration(master / "trailer.mp4") <= 31
     srt = (master / "subs_te.srt").read_text(encoding="utf-8")
     assert "నా మాటే శాసనం" in srt
@@ -118,8 +120,9 @@ def test_demo_end_to_end(tmp_path):
     assert len(llm.calls) == calls
 
 
-def test_long_line_runs_into_the_next_scene_intact(tmp_path):
-    """A line longer than what is left of its scene is neither pulled earlier nor cut at the scene cut."""
+def test_a_line_longer_than_its_shots_stops_the_video_step_before_lip_sync(tmp_path):
+    """A voiced line that would run on past the shots carrying it (over the next scene's faces) is never placed
+    there: the video step stops before lip-sync, naming it with its measured length, so it can be shortened."""
     from nraiorbit.providers.base import register
     from nraiorbit.providers.mock import MockTTS
 
@@ -137,26 +140,12 @@ def test_long_line_runs_into_the_next_scene_intact(tmp_path):
 
     root, cfg = _project(tmp_path)
     cfg["providers"]["tts"] = "long_line_test"
-    Pipeline(root, demo_llm(), cfg=cfg, log=lambda m: None).run(until="assemble")
-
-    timeline = json.loads((root / "10_edit" / "timeline.json").read_text())
-    _assert_no_overlap(timeline["dialogue"])
-    lines = {e["ref_id"]: e for e in timeline["dialogue"]}
-    line, scene_end = lines[long_id], json.loads((root / "02_outline.json").read_text())["scenes"][0]["target_seconds"]
-    assert line["start_s"] == pytest.approx(14.2) and line["duration_s"] == pytest.approx(long_s)
-    assert line["start_s"] + long_s > scene_end + 10
-    assert lines["sc002_b002"]["start_s"] >= line["start_s"] + long_s + DIALOGUE_GAP_S - 1e-3   # the next line waits
-
-    stem = _samples(root / "11_master" / "stems" / "dialogue.wav")
-    source = _levelled(Path(line["path"]), cfg)                             # as placed: at the speaking level
-    at = int(round(line["start_s"] * SR))
-    assert len(source) == pytest.approx(long_s * SR, abs=2)
-    assert np.abs(stem[at:at + len(source)] - source).max() < 1e-3           # sample-exact across the scene cut
-    level = _db(source, 0, long_s)
-    assert _db(stem, scene_end, scene_end + 10) == pytest.approx(level, abs=0.5)       # still speaking after the cut
-    assert _db(stem, scene_end - 0.05, scene_end + 0.05) == pytest.approx(level, abs=0.5)  # no gap at the cut
-    srt = (root / "11_master" / "subs_te.srt").read_text(encoding="utf-8")
-    assert "00:00:14,200 --> 00:00:36,700" in srt                            # subtitles keep the real film time
+    with pytest.raises(LinesTooLong) as stop:
+        Pipeline(root, demo_llm(), cfg=cfg, log=lambda m: None).run(until="assemble")
+    over = {o["block_id"]: o for o in stop.value.over}
+    assert long_id in over and over[long_id]["seconds"] == pytest.approx(long_s)
+    assert over[long_id]["room_s"] < long_s and stop.value.measured[long_id] == pytest.approx(long_s)
+    assert not (root / "10_edit" / "timeline.json").exists()         # no cut is made from lines that cannot match
 
 
 def test_place_audio_trims_heads_and_tails_in_whole_samples(tmp_path):
@@ -243,9 +232,11 @@ def test_a_cut_into_take_keeps_its_place_on_the_clock():
 
 
 def test_cut_in_keeps_a_line_pulled_to_the_film_end_and_skips_a_scene_start(tmp_path):
-    """cut_in_s on the film's last shot, whose line is pulled to end with the film: the line keeps its time, so the
-    take and its lip-sync audio stay the same (nothing would be paid again). On a scene's first shot it is ignored and
-    reported: a scene starts at a fixed time, so no shot before it can take the time, and its line stays put."""
+    """cut_in_s on the film's last shot, whose line is pulled (within its own shot) to end with the film: the line
+    keeps its time, so the take and its lip-sync audio stay the same (nothing would be paid again). On a scene's first
+    shot it is ignored and reported: a scene starts at a fixed time, so no shot before it can take the time, and its
+    line stays put. (A line longer than its last shot would run past the film's end: that stops the video step, see
+    test_a_line_longer_than_its_shots_stops_the_video_step_before_lip_sync.)"""
     import hashlib
 
     from nraiorbit.providers.base import register
@@ -278,13 +269,13 @@ def test_cut_in_keeps_a_line_pulled_to_the_film_end_and_skips_a_scene_start(tmp_
         shot = shots.shots[index]
         shot.block_ids.append(line.block_id)
         shot.characters_in_frame = list(dict.fromkeys(shot.characters_in_frame + [line.character_id]))
-        return path, shots, shot
+        return path, shots, shot, min(8.0, max(0.8, len(line.text_te) / 11))   # the mock voice's length
 
-    path, shots, end = give_line(scenes[-1].scene_id, -1)
-    prev = shots.shots[-2]
-    prev.duration_s, end.duration_s = round(prev.duration_s + end.duration_s - 2.0, 3), 2.0   # line runs past the end
+    path, shots, end, said = give_line(scenes[-1].scene_id, -1)
+    prev, room = shots.shots[-2], round(said + 0.1, 3)            # just short of the lead-in: pulled 0.1 s earlier
+    prev.duration_s, end.duration_s = round(prev.duration_s + end.duration_s - room, 3), room
     path.write_text(shots.model_dump_json(indent=2))
-    first_path, first_shots, first = give_line(scenes[1].scene_id, 0)
+    first_path, first_shots, first, _ = give_line(scenes[1].scene_id, 0)
     first_path.write_text(first_shots.model_dump_json(indent=2))
     cfg["providers"]["lipsync"] = "rec_cut_in"
     cfg["lipsync"] = {**cfg.get("lipsync", {}), "speaker_lock": False, "shots": {}}
@@ -299,7 +290,9 @@ def test_cut_in_keeps_a_line_pulled_to_the_film_end_and_skips_a_scene_start(tmp_
         return {s["shot_id"]: s for s in tl["shots"]}, {e["ref_id"]: e["start_s"] for e in tl["dialogue"]}
 
     keys, (was, lines) = {s: key(s) for s in (end.shot_id, first.shot_id)}, timeline()
-    assert lines[end.block_ids[-1]] + 4.0 > 180 > was[end.shot_id]["start_s"] + 0.2 + 1e-6 > lines[end.block_ids[-1]]
+    pulled = lines[end.block_ids[-1]]
+    assert pulled + said == pytest.approx(180, abs=1e-3)                  # ends with the film
+    assert was[end.shot_id]["start_s"] <= pulled < was[end.shot_id]["start_s"] + 0.2   # earlier than its lead-in
     sent.clear()
     prev.duration_s, end.duration_s = round(prev.duration_s + 0.25, 3), round(end.duration_s - 0.25, 3)
     path.write_text(shots.model_dump_json(indent=2))

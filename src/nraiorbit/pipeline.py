@@ -66,8 +66,7 @@ def gates_of(stage: str) -> tuple[str, ...]:
 # review_gates lists them: the control room's template does, so a queued film stops at every step; a project that
 # never mentions them (the CLI's defaults, the demo configs) runs through as before.
 STEP_GATES = {"outline", "scenes", "shots", "render"}
-DIALOGUE_LEAD_IN_S = 0.2
-DIALOGUE_GAP_S = 0.25        # breath between consecutive lines
+from .planning.fit import DIALOGUE_GAP_S, DIALOGUE_LEAD_IN_S, OVERRUN_TOL_S, place_start  # noqa: E402  (one rule)
 
 
 class GatePending(Exception):
@@ -78,6 +77,17 @@ class GatePending(Exception):
 
 class PipelineBlocked(Exception):
     pass
+
+
+class LinesTooLong(PipelineBlocked):
+    """Voiced lines that run past the shots that carry them (planning/fit): stopped before lip-sync is paid, so the
+    screenwriter can shorten them (service/produce.fit_dialogue). `measured`: {block_id: seconds} of every line."""
+
+    def __init__(self, over: list[dict], measured: dict[str, float]):
+        self.over, self.measured = over, measured
+        names = ", ".join(f"{o['block_id']} ({o['seconds']:.1f} s, {o['room_s']:.1f} s of shots)" for o in over[:6])
+        super().__init__(f"{len(over)} line(s) run past the shots that carry them: {names}"
+                         + (" ..." if len(over) > 6 else "") + "; they are shortened before lip-sync is paid")
 
 
 SAFETY_REWRITES = "safety_rewrites.jsonl"
@@ -434,6 +444,8 @@ class Pipeline:
         return cls.model_validate_json(path.read_text(encoding="utf-8"))
 
     def _report(self, name: str, record: dict) -> None:
+        if name == "lipsync" and getattr(self, "_render_id", None):   # the sync check reads this render's records
+            record = {**record, "render": self._render_id}
         self.p.reports.mkdir(parents=True, exist_ok=True)
         with open(self.p.reports / f"{name}.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
@@ -500,12 +512,13 @@ class Pipeline:
         known = {c.id for c in bible.characters}
         rounds = self.cfg["llm"].get("critique_rounds", 2)
         pass_score = self.cfg["llm"].get("critique_pass_score", 8)
-        previous = None
+        previous, wrote = None, False
         for sc in outline.scenes:
             path = self.p.scenes / f"{sc.scene_id}.json"
             if path.exists():
                 previous = self._load(path, SceneScript).synopsis
                 continue
+            wrote = True
             script = self.screenwriter.scene(bible, outline, sc, previous)
             for _ in range(rounds):
                 critique = self.critic.review(bible, script)
@@ -525,6 +538,53 @@ class Pipeline:
             self._save(path, script)
             previous = script.synopsis
             self.log(f"  {sc.scene_id}: {sum(b.kind == 'dialogue' for b in script.blocks)} lines")
+        if wrote or not any(self.p.shots.glob("*.json")):   # until the shots are planned: a film planned before
+            self._fit_scene_lengths(bible, outline)           # this check keeps its scenes (its shots exist)
+
+    def _fit_scene_lengths(self, bible: StoryBible, outline: Outline) -> Outline:
+        """Every scene made long enough for its dialogue (planning/fit.lengthen_scenes), the film up to
+        film.max_runtime_minutes (by default 5/3 of the runtime asked for: proper output over the exact length).
+        Past that the screenwriter shortens the dialogue of the scenes over, once; a film that still cannot hold its
+        dialogue stops here, before a shot is planned or anything is paid. Saves the outline's new lengths."""
+        from .planning.fit import chars_for, lengthen_scenes, max_runtime_s, scene_speech
+        grid = self._grid_lengths()                   # the same step as the outline: lengths the clips add up to
+        cap, step = max_runtime_s(self._film), (math.gcd(*grid) if grid else 1)
+        known = {c.id for c in bible.characters}
+        lengths = {sc.scene_id: sc.target_seconds for sc in outline.scenes}
+        for attempt in (1, 2):
+            scripts = {sc.scene_id: self._load(self.p.scenes / f"{sc.scene_id}.json", SceneScript)
+                       for sc in outline.scenes}
+            speech = {sid: scene_speech(script.blocks) for sid, script in scripts.items()}
+            new, cut = lengthen_scenes(lengths, speech, cap, step)
+            if not cut:
+                break
+            if attempt == 2:
+                raise PipelineBlocked(
+                    f"the dialogue does not fit even a {cap / 60:.1f}-minute film (film.max_runtime_minutes): "
+                    + "; ".join(f"{sid} has {speech[sid]:.0f} s of talking, {cut[sid]:.0f} s too much" for sid in cut)
+                    + ". Shorten those scenes, or allow a longer film")
+            for sid, seconds in cut.items():
+                keep = max(2.0, speech[sid] - seconds)
+                fix = Critique(score=0, issues=[f"The dialogue takes about {speech[sid]:.0f} s to say, but the scene "
+                                                f"can hold about {keep:.0f} s: lines would play over the wrong shots."],
+                               revision_instructions=[f"Shorten the dialogue to about {chars_for(keep)} Telugu letters "
+                                                      f"in all ({keep:.0f} s spoken), keeping every story beat: "
+                                                      "fewer, shorter lines. Keep block ids where the block survives."])
+                revised = self.screenwriter.revise(bible, outline, scripts[sid], fix)
+                if self._script_problems(revised, known):          # a revision that breaks a speaker is not kept
+                    continue
+                revised = self._animal_lines_as_sound(revised.model_copy(update={"scene_id": sid}), bible)
+                self._save(self.p.scenes / f"{sid}.json", revised)
+        grown = {sid: (lengths[sid], int(new[sid])) for sid in lengths if int(new[sid]) != lengths[sid]}
+        if grown:
+            outline = outline.model_copy(update={"scenes": [
+                sc.model_copy(update={"target_seconds": int(new[sc.scene_id])}) for sc in outline.scenes]})
+            self._save(self.p.outline, outline)
+            total = sum(int(v) for v in new.values())
+            self._report("scene_fit", {"lengthened": grown, "film_seconds": total})
+            self.log(f"  scenes lengthened to fit their dialogue: {len(grown)}; the film runs "
+                     f"{total // 60}:{total % 60:02d}")
+        return outline
 
     def _animal_lines_as_sound(self, script: SceneScript, bible: StoryBible) -> SceneScript:
         """An animal's "lines" are its sounds: an action line, never dialogue, so no voice reads a description aloud
@@ -770,6 +830,34 @@ class Pipeline:
                     self._report("shot_issues", {"scene_id": prepared[i].sc.scene_id, "off_screen": (
                         f"asked again to keep {', '.join(off_screen[c] for c in seen[i])} out of frame; the plan "
                         "still shows them, and those shots will stop the video step")})
+        from .planning.fit import shot_problems
+
+        def problems_of(i, plan) -> list[str]:          # on the plan as it will be fitted to the scene's length
+            p = prepared[i]
+            fitted = self._fit_shots(plan.model_copy(update={"scene_id": p.sc.scene_id}), p.sc)
+            return shot_problems(p.script.blocks, fitted.shots, 0.0, off_screen=off_screen or {})
+        def timing(problems: list[str]) -> list[str]:   # asked again for these; a voice-over is not one
+            return [x for x in problems if "is in no shot" in x or "needs about" in x]
+        unfit = {i: probs for i, plan in plans.items() if (probs := timing(problems_of(i, plan)))}
+
+        def refit(i):
+            p = prepared[i]
+            return self.director.shots(bible, lock, p.sc, p.script, p.actions, p.camera, **kw, issue=(
+                "its dialogue does not fit its shots, so voices would play over the wrong faces: "
+                + "; ".join(unfit[i][:8])))
+        for j, out in ordered_map(refit, list(unfit), workers(self.cfg)):
+            i = list(unfit)[j]
+            better = out.error is None and not any(c in (off_screen or {}) for s in out.value.shots
+                                                   for c in s.characters_in_frame)
+            if better and lengths:                      # never off the billed clip lengths
+                better = shots_fit(len(out.value.shots), prepared[i].sc.target_seconds, lengths)
+            if better and len(timing(problems_of(i, out.value))) < len(unfit[i]):
+                plans[i] = out.value
+            left = problems_of(i, plans[i])
+            if left:
+                self._report("shot_issues", {"scene_id": prepared[i].sc.scene_id, "dialogue_fit": (
+                    f"asked again to fit its dialogue; still: {'; '.join(left[:4])}. A voiced line that runs past "
+                    "its shots stops the video step before lip-sync")})
         for i in sorted(plans):
             sc, script, plan = prepared[i].sc, prepared[i].script, plans[i]
             shots = self._clean_shots(plan.model_copy(update={"scene_id": sc.scene_id}), script, lock)
@@ -868,6 +956,8 @@ class Pipeline:
             self.invalidate("render")
         outline = self._load(self.p.outline, Outline)
         lock = self._lock()
+        import uuid
+        self._render_id = uuid.uuid4().hex[:12]           # stamps this render's lip-sync records (the sync check)
         prov = self.cfg["providers"]
         video = get_provider("video", prov["video"], **self._provider_kwargs("video", prov["video"], lock))
         if hasattr(video, "safer"):                     # a frame or clip Google refuses is worded again once
@@ -891,6 +981,7 @@ class Pipeline:
         starts = scene_start_times(outline)
         film_end = sum(s.target_seconds for s in outline.scenes)
         prev_end = -DIALOGUE_GAP_S                            # end of the last placed line, across shots and scenes
+        over, measured = [], {}                               # lines past their shots; every line's length
         for sc in outline.scenes:
             script = self._load(self.p.scenes / f"{sc.scene_id}.json", SceneScript)
             blocks = {b.block_id: b for b in script.blocks}
@@ -898,6 +989,10 @@ class Pipeline:
             shot_list = self._load(self.p.shots / f"{sc.scene_id}.json", ShotList)
             ctx = RenderContext(cast=lock, scene_id=sc.scene_id, resolution=resolution, fps=fps)
             t, placed = starts[sc.scene_id], set()
+            carried_until, u = {}, t                        # each line's last shot ends here: it must end by then
+            for shot in shot_list.shots:
+                u += shot.duration_s
+                carried_until.update({bid: u for bid in shot.block_ids})
             for shot in shot_list.shots:
                 take = self.takes.get(shot.shot_id, 1)
                 paid = clips_for(self.p.root, shot.shot_id) if uses_inbox else []
@@ -932,13 +1027,16 @@ class Pipeline:
                         continue
                     voice = lock.characters[block.character_id].voice_asset if block.character_id in lock.characters else None
                     wav, dur = self._render_line(tts, block, voice, voice_guard, speaker_embedder)
-                    # Lines never overlap and are never cut: a long line runs on into the next shot or scene, and the
-                    # next line waits for it. Only the film's last lines are pulled earlier to end with the film.
-                    # the lead-in counts from the take's first frame: a shot cut into later keeps its lines in place
-                    start = max(t - head + DIALOGUE_LEAD_IN_S, prev_end + DIALOGUE_GAP_S)
-                    if start + dur > film_end:
-                        start = max(prev_end + DIALOGUE_GAP_S, min(start, max(t - head, film_end - dur)))
-                    start = round(start, 3)
+                    # Lines never overlap and are never cut; one that would run past the shots carrying it is
+                    # recorded and the run stops below, before lip-sync (planning/fit). The lead-in counts from the
+                    # take's first frame: a shot cut into later keeps its lines in place.
+                    start = place_start(t - head + DIALOGUE_LEAD_IN_S, dur, prev_end, film_end, t - head)
+                    limit = min(carried_until.get(bid, t + shot.duration_s) + OVERRUN_TOL_S, film_end)
+                    measured[bid] = dur
+                    if start + dur > limit + 1e-3:
+                        over.append({"block_id": bid, "scene_id": sc.scene_id, "seconds": round(dur, 2),
+                                     "start_s": start, "room_s": round(limit - (t - head + DIALOGUE_LEAD_IN_S), 2),
+                                     "over_s": round(start + dur - limit, 2)})
                     dialogue_out.append(assemble.AudioEvent(wav, start, dur, "dialogue", ref_id=bid))
                     placed.add(bid)
                     prev_end = start + dur
@@ -946,6 +1044,9 @@ class Pipeline:
 
         self._hold_for_new_frames()
         self._stop_for_slides()
+        if over and (self.cfg.get("dialogue") or {}).get("fit_check", True):
+            self._report("dialogue_fit", {"over": over})
+            raise LinesTooLong(over, measured)                 # nothing paid for lip-sync on a cut that cannot match
 
         lipsync = prov.get("lipsync") or "none"
         if lipsync != "none":                          # the speaker's mouth redrawn to the Telugu line, shot by shot
@@ -964,6 +1065,7 @@ class Pipeline:
                                                  cue.duration_s - cue.silence_before_s, "music", -4.0, cue.cue_id))
 
         timeline = {
+            "render_id": self._render_id,
             "only": only,
             "takes": self.takes,
             "crowd": crowd,
@@ -1362,7 +1464,43 @@ class Pipeline:
             self._master(movie)
         self._place_cards(movie)
         self._write_edl()
+        self._check_sync()
         self.gate("pacing" if self._animatic() else "final_cut")
+
+    def _check_sync(self) -> None:
+        """Before the owner is shown the cut: every line against the picture (planning/fit.sync_problems). A cut whose
+        voices do not match its pictures stops here with the list, in reports/sync.json, instead of being shown."""
+        from .characters import minors_off_screen
+        from .planning.fit import sync_problems
+        if not (self.cfg.get("dialogue") or {}).get("fit_check", True):
+            return
+        tl = json.loads((self.p.edit / "timeline.json").read_text(encoding="utf-8"))
+        scripts = self._script_blocks()
+        plans = {s.shot_id: s for path in sorted(self.p.shots.glob("*.json")) for s in self._load(path, ShotList).shots}
+        lipsync = None
+        if (self.cfg.get("providers") or {}).get("lipsync", "none") != "none" and tl.get("render_id"):
+            lipsync = {}                                   # this render's records only: older runs' do not apply
+            path = self.p.reports / "lipsync.jsonl"
+            for line in path.read_text(encoding="utf-8").splitlines() if path.exists() else []:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict) and rec.get("shot_id") and rec.get("render") == tl["render_id"]:
+                    lipsync[rec["shot_id"]] = rec
+        per_shot = (self.cfg.get("lipsync") or {}).get("shots") or {}
+        no_lipsync = {sid for sid, o in per_shot.items() if isinstance(o, dict) and o.get("sync") is False}
+        no_lipsync |= {s["shot_id"] for s in tl["shots"] if not s.get("real", True)}      # placeholders
+        bible = self._load(self.p.bible, StoryBible)
+        problems = sync_problems(tl, scripts, plans, off_screen=minors_off_screen(bible.characters, self.cfg),
+                                 lipsync=lipsync, no_lipsync=no_lipsync)
+        self.p.reports.mkdir(parents=True, exist_ok=True)
+        (self.p.reports / "sync.json").write_text(json.dumps({"ok": not problems, "problems": problems}, indent=1,
+                                                             ensure_ascii=False), encoding="utf-8")
+        if problems:
+            raise PipelineBlocked(f"the cut does not match its pictures, so it is not shown: {len(problems)} "
+                                  f"problem(s), first {problems[0]} (all in reports/sync.json)")
+        self.log(f"  sync check: every one of {len(tl['dialogue'])} lines plays over its own shots")
 
     def _write_edl(self) -> None:
         """Where every shot and line sits in the cut, in reports/ (backed up; 10_edit is not): what the editor reads
@@ -1371,10 +1509,13 @@ class Pipeline:
         if not path.exists():
             return
         tl = json.loads(path.read_text(encoding="utf-8"))
+        blocks = self._script_blocks()
+        from .planning.fit import text_sha as _text_sha
         edl = {"film_seconds": tl.get("film_seconds"),
                "shots": [{"shot_id": s["shot_id"], "scene_id": s.get("scene_id"), "start_s": s["start_s"],
                           "duration_s": s["duration_s"], "real": s.get("real", True)} for s in tl["shots"]],
-               "dialogue": [{"ref_id": e["ref_id"], "start_s": e["start_s"], "duration_s": e["duration_s"]}
+               "dialogue": [{"ref_id": e["ref_id"], "start_s": e["start_s"], "duration_s": e["duration_s"],
+                             "text_sha": _text_sha(blocks[e["ref_id"]].text_te) if e["ref_id"] in blocks else None}
                             for e in tl["dialogue"]]}
         self.p.reports.mkdir(parents=True, exist_ok=True)
         (self.p.reports / EDL).write_text(json.dumps(edl, indent=1), encoding="utf-8")
@@ -1459,7 +1600,15 @@ class Pipeline:
         While cards are on, the master without them is kept in 10_edit/movie_nocards.mp4 and cards.json records the
         cards on movie.mp4. Without cards movie.mp4 is the master itself, exactly as assembled.
         """
-        cards = [Card.from_config(c, self.p.root) for c in self.cfg.get("cards") or []]
+        chosen = self.cfg.get("cards")
+        if chosen == "auto":                     # the film's name over its opening, శుభం / THE END after it
+            from .post.cards import auto_cards
+            bible = self._load(self.p.bible, StoryBible)
+            tl = json.loads((self.p.edit / "timeline.json").read_text(encoding="utf-8"))
+            first = min((e["start_s"] for e in tl.get("dialogue") or []), default=None)
+            cards = auto_cards(bible.title_te, bible.title_en, first)
+        else:
+            cards = [Card.from_config(c, self.p.root) for c in chosen or []]
         wanted = [c.record() for c in cards]
         clean, record = self.p.edit / "movie_nocards.mp4", self.p.edit / "cards.json"
         if not clean.exists() and record.exists():

@@ -13,6 +13,7 @@ from nraiorbit.config import load_pipeline_config
 from nraiorbit.demo import OUTLINE, SCENES, SHOTS, STORY_BIBLE
 from nraiorbit.llm import LLMError, ReplayLLM
 from nraiorbit.pipeline import EDL, OWNER_MIX, OWNER_NOTES, TRAILER_DIRECTION, TRAILER_PLAN, Pipeline
+from nraiorbit.planning.fit import text_sha
 from nraiorbit.planning.runtime import scene_start_times
 from nraiorbit.post.trailer import PACE, SECTIONS, plan_trailer, unmet
 from nraiorbit.schemas import Outline, ReworkedShot, SceneScript, ShotList, StoryBible, TrailerDirection, TriageAction
@@ -341,7 +342,9 @@ def test_the_cut_writes_where_every_shot_and_line_sits(film):
     assert json.loads((root / "reports" / EDL).read_text()) == {
         "film_seconds": 20, "shots": [{"shot_id": "sc001_s001", "scene_id": "sc001", "start_s": 0, "duration_s": 8,
                                        "real": False}],
-        "dialogue": [{"ref_id": "sc001_b002", "start_s": 1.2, "duration_s": 2.0}]}
+        "dialogue": [{"ref_id": "sc001_b002", "start_s": 1.2, "duration_s": 2.0,
+                      "text_sha": text_sha(next(b.text_te for b in SceneScript.model_validate_json(
+                          (root / "03_scenes" / "sc001.json").read_text()).blocks if b.block_id == "sc001_b002"))}]}
 
 
 def test_a_rejection_the_film_has_moved_on_from_is_recorded_and_never_applied(film):

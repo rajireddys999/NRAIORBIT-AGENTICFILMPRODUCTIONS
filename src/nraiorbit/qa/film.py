@@ -74,7 +74,12 @@ def check(project_root: Path, master: Path | None = None, fps: int = FPS, sample
         if st["codec_type"] == "video":
             report["frames"] = int(st.get("nb_frames") or 0)
         report[f"{st['codec_type']}_seconds"] = float(st.get("duration") or 0)
-    report["expected_frames"] = int(round(tl["film_seconds"] * fps))
+    try:                                           # cards added after the film's last frame (cards: auto's end)
+        cards = json.loads((project_root / "10_edit" / "cards.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        cards = []
+    after = sum(float(c.get("length_s") or 0) for c in cards if isinstance(c, dict) and c.get("after"))
+    report["expected_frames"] = int(round((tl["film_seconds"] + after) * fps))
     report.update(loudness(master))
     log(f"  frames {report.get('frames')} of {report['expected_frames']} expected; "
         f"{report.get('lufs', float('nan')):.1f} LUFS, true peak {report.get('true_peak_dbtp', float('nan')):.1f} dBTP")

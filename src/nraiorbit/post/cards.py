@@ -3,7 +3,8 @@
 A card is an overlay on the live picture for [at_s, at_s + length_s]: the film keeps its length and its sync with
 dialogue and music. The picture is darkened under the card and both fade in and out together. Each card is rendered
 once as a transparent PNG (Pillow; Telugu needs complex-script shaping, so RAQM) and every card goes onto the movie
-in a single ffmpeg pass, the sound copied untouched.
+in a single ffmpeg pass, the sound copied untouched. A card marked `after` (the end card of `cards: auto`) is added
+after the film's last frame instead, on black, with silence: nothing in the film moves.
 """
 
 from __future__ import annotations
@@ -42,23 +43,39 @@ class Card:
     text_te: str = ""
     text_en: str = ""
     image: Path | None = None            # a designed title image, used instead of the text
+    after: bool = False                  # added after the film's last frame (on black), not laid over it
 
     @classmethod
     def from_config(cls, entry: dict, root: Path) -> Card:
         if entry.get("kind") not in CARD_TEXT_PX:
             raise ValueError(f"card kind must be one of {sorted(CARD_TEXT_PX)}: {entry}")
         image = entry.get("image")
-        return cls(entry["kind"], float(entry["at_s"]), float(entry["length_s"]), entry.get("text_te") or "",
-                   entry.get("text_en") or "", root / image if image else None)
+        return cls(entry["kind"], float(entry.get("at_s") or 0), float(entry["length_s"]), entry.get("text_te") or "",
+                   entry.get("text_en") or "", root / image if image else None, bool(entry.get("after", False)))
 
     def record(self) -> dict:
         """What the rendered card depends on: its config, plus the image file and the Telugu font actually used, so
         dropping in or redesigning the image, or installing a Telugu font, lays the cards again."""
         art = self.image.stat() if self.image is not None and self.image.exists() else None
         return {"kind": self.kind, "at_s": self.at_s, "length_s": self.length_s, "text_te": self.text_te,
-                "text_en": self.text_en, "image": str(self.image) if self.image else None,
+                "text_en": self.text_en, "image": str(self.image) if self.image else None, "after": self.after,
                 "image_file": [art.st_size, art.st_mtime_ns] if art else None,
                 "telugu_font": telugu_font() if self.text_te and art is None else None}
+
+
+TITLE_CARD_S = 4.0                       # cards: auto
+END_CARD_S = 4.0
+
+
+def auto_cards(title_te: str, title_en: str, first_line_s: float | None) -> list[Card]:
+    """`cards: auto`: the film's name over its opening, ended before the first line is spoken (1.5 to TITLE_CARD_S
+    seconds; none when a line starts sooner, so no speaker is darkened), and an end card after its last frame: శుభం /
+    THE END, as Telugu films close."""
+    end = Card("end", 0.0, END_CARD_S, "శుభం", "THE END", after=True)
+    length = TITLE_CARD_S if first_line_s is None else min(TITLE_CARD_S, first_line_s - 0.8)
+    if length < 1.5:
+        return [end]
+    return [Card("title", 0.3, round(length, 2), title_te or "", (title_en or "").upper()), end]
 
 
 def telugu_font() -> str | None:
@@ -130,10 +147,19 @@ def _overlay_frame(card_png: Path, out: Path) -> Path:
 
 def apply_cards(source: Path, cards: list[Card], out: Path, resolution: tuple[int, int], fps: int,
                 card_dir: Path | None = None, log: Callable[[str], None] = print) -> Path:
-    """Lay the cards over `source` in one ffmpeg pass: picture re-encoded, sound copied, length unchanged.
+    """Lay the cards over `source` in one ffmpeg pass: picture re-encoded, sound copied, length unchanged; then add
+    the `after` cards past its last frame (append_cards).
 
     A card starting after the end of the film is skipped; one running past it is cut at the end.
     """
+    after = [c for c in cards if c.after]
+    if after:
+        laid = apply_cards(source, [c for c in cards if not c.after], out.parent / f".{out.stem}" / f"laid{out.suffix}",
+                           resolution, fps, card_dir, log)
+        try:
+            return append_cards(laid, after, out, resolution, fps, card_dir, log)
+        finally:
+            laid.unlink(missing_ok=True)                 # a whole copy of the film: never left to be backed up
     work = out.parent / f".{out.stem}"
     card_dir = card_dir or work / "cards"
     for d in (work, card_dir):
@@ -164,4 +190,42 @@ def apply_cards(source: Path, cards: list[Card], out: Path, resolution: tuple[in
     ffmpeg.run([*inputs, "-filter_complex_script", str(script), "-map", "[vout]", "-map", "0:a?",
                 *ffmpeg.VIDEO_ENCODE, "-c:a", "copy", "-t", f"{total:.6f}", str(out)])
     script.unlink()
+    return out
+
+
+def append_cards(source: Path, cards: list[Card], out: Path, resolution: tuple[int, int], fps: int,
+                 card_dir: Path | None = None, log: Callable[[str], None] = print) -> Path:
+    """Add each card after `source`'s last frame: the card on black for length_s, fading in and out, with silence;
+    picture and sound re-encoded once, so the film and the cards play as one file."""
+    work = out.parent / f".{out.stem}"
+    card_dir = card_dir or work / "cards"
+    for d in (work, card_dir):
+        d.mkdir(parents=True, exist_ok=True)
+    total = ffmpeg.frame_count(source) / fps            # the picture's own length, frame-exact
+    w, h = resolution
+    inputs = ["-i", str(source)]
+    filters = [f"[0:v]fps={fps},scale={w}:{h},format=yuv420p,setsar=1[fv]",       # the film as the cards are made
+               f"[0:a]aformat=sample_rates={ffmpeg.SAMPLE_RATE}:channel_layouts=stereo,apad,"
+               f"atrim=0:{total:.6f}[fa]"]                                     # its sound exactly as long as its picture
+    joined = "[fv][fa]"
+    for n, card in enumerate(cards, start=1):
+        png = render_card(card, card_dir / f"after_{n:02d}_{card.kind}.png", resolution, log)
+        frame = card_dir / f"after_{n:02d}_{card.kind}_on_black.png"
+        art = Image.open(png).convert("RGBA")
+        Image.alpha_composite(Image.new("RGBA", art.size, (0, 0, 0, 255)), art).convert("RGB").save(frame)
+        length, fade = card.length_s, min(CARD_FADE_S, card.length_s / 3)
+        inputs += ["-loop", "1", "-framerate", str(fps), "-t", f"{length:.3f}", "-i", str(frame),
+                   "-f", "lavfi", "-t", f"{length:.3f}", "-i", f"anullsrc=r={ffmpeg.SAMPLE_RATE}:cl=stereo"]
+        filters.append(f"[{2 * n - 1}:v]scale={w}:{h},fade=t=in:st=0:d={fade:.3f},"
+                       f"fade=t=out:st={length - fade:.3f}:d={fade:.3f},format=yuv420p,setsar=1[cv{n}]")
+        filters.append(f"[{2 * n}:a]aformat=sample_rates={ffmpeg.SAMPLE_RATE}:channel_layouts=stereo[ca{n}]")
+        joined += f"[cv{n}][ca{n}]"
+    script = work / "append.filter.txt"
+    script.write_text(";\n".join([*filters, f"{joined}concat=n={len(cards) + 1}:v=1:a=1[vout][aout]"]),
+                      encoding="utf-8")
+    ffmpeg.run([*inputs, "-filter_complex_script", str(script), "-map", "[vout]", "-map", "[aout]",
+                *ffmpeg.VIDEO_ENCODE, "-r", str(fps), "-c:a", "aac", "-b:a", "256k", "-ar", str(ffmpeg.SAMPLE_RATE),
+                str(out)])
+    script.unlink()
+    log(f"  cards after the film: {', '.join(f'{c.kind} ({c.length_s:.1f} s)' for c in cards)}")
     return out

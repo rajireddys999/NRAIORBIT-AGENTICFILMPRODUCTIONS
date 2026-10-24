@@ -21,7 +21,8 @@ animatic:
 # length or its sync: the frame is darkened under it and it fades in and out (post/cards.py). Times are film seconds;
 # a card past the end of the film is skipped, one running past it is cut. Telugu needs a Noto/Lohit Telugu font and
 # Pillow with RAQM, else only the English line is drawn. Changing cards re-lays them without re-mastering.
-cards: []
+cards: auto                        # the film's name over its opening (before the first line), and శుభం / THE END
+                                   # after its last frame; [] for none, or a list as below
 # cards:
 #   - {kind: title, at_s: 75.5, length_s: 2.5, text_te: "గోదావరి సింహం", text_en: "GODAVARI SIMHAM"}
 #   - {kind: interval, at_s: 261.0, length_s: 2.0, text_te: "విరామం", text_en: "INTERVAL"}

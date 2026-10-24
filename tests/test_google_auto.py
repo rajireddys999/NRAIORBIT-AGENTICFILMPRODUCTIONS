@@ -15,6 +15,7 @@ from nraiorbit.library.registry import AssetRegistry
 from nraiorbit.pipeline import Pipeline, PipelineBlocked
 from nraiorbit.poc import create_poc
 from nraiorbit.post import ffmpeg
+from nraiorbit.post.cards import END_CARD_S
 from nraiorbit.providers import google_ai
 from nraiorbit.providers.google_ai import GeminiImages, tts_instruction
 from nraiorbit.schemas import ShotList
@@ -270,7 +271,7 @@ def test_trailer_test_run_end_to_end(setup):
     pipeline, _ = setup.make(only=["trailer"])
     pipeline.run()
     master = setup.root / "11_master"
-    assert ffmpeg.duration(master / "movie.mp4") == pytest.approx(300, abs=1.5)
+    assert ffmpeg.duration(master / "movie.mp4") == pytest.approx(300 + END_CARD_S, abs=1.5)   # + the end card
     assert ffmpeg.duration(master / "trailer.mp4") > 10
     generated = {s.shot_id for s in _selected_shots(setup.root, trailer_only=True)}
     plan = json.loads((setup.root / "10_edit" / "trailer_plan.json").read_text())

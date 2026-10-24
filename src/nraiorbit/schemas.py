@@ -247,6 +247,20 @@ class TrailerDirection(BaseModel):
     why: str = Field(description="How this direction answers the owner, in plain English")
 
 
+class ShortLine(BaseModel):
+    """One dialogue line written shorter, so it fits the shots that carry it."""
+
+    block_id: str = Field(description="The line's block id, unchanged")
+    text_te: str = Field(description="The shorter line in spoken Telugu, Telugu script")
+    text_en: str = Field(description="Its English subtitle")
+
+
+class ShortenedLines(BaseModel):
+    """Dialogue lines shortened to fit the picture; every other line of the scene is kept as it is."""
+
+    lines: list[ShortLine]
+
+
 class SaferShot(BaseModel):
     """A shot Google refused for safety, worded again to show the same moment without what the filter blocks."""
 

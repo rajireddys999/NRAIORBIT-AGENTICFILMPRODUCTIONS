@@ -117,7 +117,8 @@ def test_the_scenes_step_saves_an_animals_line_as_its_sound(tmp_path, bible):
                         screenwriter=SimpleNamespace(scene=lambda *a: _script(bible), revise=lambda *a: _script(bible)),
                         critic=SimpleNamespace(review=lambda *a: Critique(score=9, issues=[], revision_instructions=[])),
                         _report=lambda *a: None, _save=Pipeline._save, _load=Pipeline._load,
-                        _script_problems=Pipeline._script_problems)
+                        _script_problems=Pipeline._script_problems,
+                        _fit_scene_lengths=lambda *a: None)              # the dialogue-fit check has its own tests
     p._animal_lines_as_sound = lambda script, b: Pipeline._animal_lines_as_sound(p, script, b)
     Pipeline._scenes(p)
     saved = SceneScript.model_validate_json((paths.scenes / "sc001.json").read_text(encoding="utf-8"))

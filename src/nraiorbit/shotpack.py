@@ -47,6 +47,16 @@ def inbox_dir(root: Path, kind: str) -> Path:
     return root / "inbox" / kind
 
 
+def paid_clip(root: Path, shot_id: str, take: int) -> Path | None:
+    """The paid clip the video step uses for a shot's take, picked the way it picks it (providers/google_ai): the
+    take-th attempt when there are that many, else the take's own file; None when there is none."""
+    paid = clips_for(root, shot_id)
+    if take <= len(paid):
+        return paid[take - 1]
+    named = inbox_dir(root, "video") / (f"{shot_id}.mp4" if take == 1 else f"{shot_id}_{take}.mp4")
+    return named if named.exists() else None
+
+
 def clip_for_take(root: Path, shot_id: str, take: int) -> Path | None:
     """The clip of a shot's take: the take's own file (<shot>.mp4 for take 1, <shot>_<take>.mp4 after), which is
     where the video step saves it however the take numbers skip, else the take-th attempt; None when there is none."""

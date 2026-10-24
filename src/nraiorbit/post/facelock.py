@@ -341,15 +341,23 @@ def _summarise(tracks: list[Track], frames: int) -> None:
         t.score = float(np.median([f.score for f in fs]))
 
 
-def analyse(video: Path, detector: Detector, cache_dir: Path | None = None) -> Analysis:
+def analyse(video: Path, detector: Detector, cache_dir: Path | None = None, key: str | None = None) -> Analysis:
     """Faces of every frame of a clip, linked into tracks, with focus and mouth motion. Cached as JSON in cache_dir
-    under the clip's content hash, so a re-rendered identical clip is not analysed again."""
-    cache = cache_dir / f"{hashlib.sha1(video.read_bytes()).hexdigest()[:16]}.json" if cache_dir else None
-    if cache and cache.exists():
+    under `key` (what the clip is: its paid source and take, the same on every machine) or else the clip's content
+    hash, so the clip is not analysed again and its crops come out the same."""
+    legacy = hashlib.sha1(video.read_bytes()).hexdigest()[:16] if video.exists() else None
+    cache = cache_dir / f"{key or legacy}.json" if cache_dir and (key or legacy) else None
+    found = [cache] + ([cache_dir / f"{legacy}.json"] if cache_dir and key and legacy else [])
+    for path in [f for f in found if f is not None and f.exists()]:   # its meaning's, else what was kept by content
         try:
-            return Analysis.from_json(cache.read_text(encoding="utf-8"))
+            known = Analysis.from_json(path.read_text(encoding="utf-8"))
         except (ValueError, KeyError, TypeError):
-            pass
+            continue
+        if video.exists() and probe(video)[:2] != (known.width, known.height):
+            continue                                       # another size: not this clip's faces
+        if path != cache:
+            cache.write_text(known.to_json(), encoding="utf-8")
+        return known
     w, h, fps = probe(video)
     per_frame: list[list[Face]] = []
     patches: dict[tuple[int, int], tuple[np.ndarray | None, np.ndarray | None]] = {}
@@ -458,12 +466,12 @@ def fill_gaps(track: Track, frames: int, max_gap: int = 3) -> list[Face | None]:
 
 
 def meshes(video: Path, faces: list[Face | None], mesher: Callable | None,
-           cache_dir: Path | None = None) -> list[np.ndarray | None]:
+           cache_dir: Path | None = None, clip_key: str | None = None) -> list[np.ndarray | None]:
     """The speaker's mesh points in every frame where `faces` has the speaker (None elsewhere, or where the mesh
-    finds no face). Cached under the clip's content and the face boxes looked at."""
+    finds no face). Cached under what the clip is (clip_key) or its content, and the face boxes looked at."""
     cache = None
     if cache_dir is not None:
-        key = hashlib.sha1(video.read_bytes())
+        key = hashlib.sha1(clip_key.encode()) if clip_key else hashlib.sha1(video.read_bytes())
         key.update(json.dumps([None if f is None else [round(v) for v in f.box] for f in faces]).encode())
         cache = Path(cache_dir) / f"{key.hexdigest()[:16]}.mesh{MESH_VERSION}.json"
         if cache.exists():

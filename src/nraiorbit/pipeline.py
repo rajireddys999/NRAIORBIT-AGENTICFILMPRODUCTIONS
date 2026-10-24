@@ -43,7 +43,7 @@ from .post.trailer import PUNCH_DROP_S, TrailerLine, elevation_arc, plan_trailer
 from .providers import RenderContext, get_provider
 from .providers.google_ai import FirstFrameToLookAt, GoogleAPIError, ShotFiltered
 from .providers.mock import MockTTS, MockVideo
-from .shotpack import clip_for_take, clips_for, selected
+from .shotpack import clip_for_take, clips_for, paid_clip, selected
 from .schemas import CastLock, Critique, Cue, CueSheet, Outline, SceneScript, ShotList, StoryBible, TrailerDirection
 
 STAGES = ["story_bible", "outline", "scenes", "cast", "shots", "music_plan", "render", "assemble", "trailer"]
@@ -987,6 +987,8 @@ class Pipeline:
         ls = self.cfg.get("lipsync") or {}
         per_shot = ls.get("shots") or {}
         jobs = []                                       # (index, timeline shot, audio, raw output)
+        self._lip_meanings = {}                         # index -> (the clip, the lines): what each job is
+        blocks, lock = self._script_blocks(), self._lock()
         for i, (ts, (_, shot), (origin, length)) in enumerate(zip(shots_out, spans, takes)):
             spoken = {b for b in shot.block_ids if speaker_of.get(b) in shot.characters_in_frame}
             opts = per_shot.get(shot.shot_id) or {}
@@ -1001,14 +1003,19 @@ class Pipeline:
             windows = [(e.start_s - origin, e.start_s - origin + e.duration_s) for e in dialogue
                        if e.ref_id in spoken and e.start_s < origin + length and e.start_s + e.duration_s > origin]
             jobs.append((i, replace(ts, duration_s=length), audio, work / f"{ts.clip.stem}_lipsync_raw.mp4", windows))
+            self._lip_meanings[i] = self._lip_meaning(ts, length, resolution, fps, [
+                e for e in dialogue if e.ref_id in spoken and e.start_s < origin + length
+                and e.start_s + e.duration_s > origin], origin, blocks, lock)
         out = list(shots_out)
         if not jobs:
             return out
         if ls.get("speaker_lock", True):
             return self._lip_sync_locked(syncer, out, jobs, resolution, fps)
+        stable = getattr(syncer, "stable_keys", False)
         try:
             if hasattr(syncer, "apply_many"):
-                raws = syncer.apply_many([(ts.clip, audio, raw) for _, ts, audio, raw, _ in jobs])
+                raws = syncer.apply_many([(ts.clip, audio, raw, *([self._meaning(i, "whole")] if stable else []))
+                                          for i, ts, audio, raw, _ in jobs])
             else:
                 raws = [syncer.apply(ts.clip, audio, raw) for _, ts, audio, raw, _ in jobs]
         except (BudgetExceeded, GoogleAPIError) as stop:
@@ -1016,7 +1023,8 @@ class Pipeline:
         kept = 0
         for (i, ts, audio, _, _), raw in zip(jobs, raws):
             if raw is None:                              # LatentSync could not do this shot: it keeps its clip
-                why = syncer.failure(ts.clip, audio) if hasattr(syncer, "failure") else None
+                why = syncer.failure(ts.clip, audio, **({"meaning": self._meaning(i, "whole")} if stable else {})) \
+                    if hasattr(syncer, "failure") else None
                 self._report("review_queue", {"shot_id": ts.shot_id, "reason": [
                     "lip-sync failed; the clip is not lip-synced" + (f": {why.strip().splitlines()[-1]}" if why else "")]})
                 kept += 1
@@ -1037,6 +1045,46 @@ class Pipeline:
             self.face_mesh = facelock.FaceMesh((self.cfg.get("lipsync") or {}).get("model_dir"))
         return self.face_mesh
 
+    def _lip_meaning(self, ts, length: float, resolution, fps: int, events: list, origin: float, blocks: dict,
+                     lock) -> tuple[str, str]:
+        """What a lip-sync job is, the same on every machine: the clip (the paid source clip's content, the shot,
+        the take the video step used and how it is fitted to the edit) and the lines (their words, speaker, voice,
+        the voiced file's content (a copy of the voice cache, the same everywhere), place and length, to 10 ms). Not
+        the bytes of the files the pipeline re-makes in each container, which can differ by a pixel or a rounding
+        (and would be paid for again)."""
+        import hashlib
+        import re as _re
+        used = _re.fullmatch(r"take_(\d+)", Path(ts.clip).stem)      # the take the video step actually used
+        take = int(used.group(1)) if used else self.takes.get(ts.shot_id, 1)
+        source = paid_clip(self.p.root, ts.shot_id, take)
+        if not hasattr(self, "_source_sha"):
+            self._source_sha = {}
+        clip_file = source if source is not None else Path(ts.clip)   # free (mock) clips: their own bytes
+        stat = clip_file.stat()
+        mark = (str(clip_file), stat.st_size, stat.st_mtime_ns)    # a file replaced under its name is hashed again
+        if mark not in self._source_sha:
+            self._source_sha[mark] = hashlib.sha1(clip_file.read_bytes()).hexdigest()[:16]
+        clip = json.dumps([ts.shot_id, take, self._source_sha[mark], round(length, 3), list(resolution), fps,
+                           round(getattr(ts, "in_s", 0.0), 3)])
+        voices = (self.cfg.get("voice") or {}).get("cast") or {}
+        lines = []
+        for e in events:
+            b = blocks.get(e.ref_id)
+            who = b.character_id if b else None
+            voice = lock.characters[who].voice_asset if who in lock.characters else None
+            voiced = hashlib.sha1(Path(e.path).read_bytes()).hexdigest()[:16] if Path(e.path).exists() else None
+            lines.append([e.ref_id, b.text_te if b else "", who, voice, voices.get(who), self.cfg["providers"]["tts"],
+                          voiced, round(e.start_s - origin, 2), round(e.duration_s, 2), round(e.gain_db, 1)])
+        return clip, json.dumps(lines, ensure_ascii=False, sort_keys=True)
+
+    def _meaning(self, i: int, *more) -> str | None:
+        """Job i's meaning (with what is cut from it: a crop's frames and window), for the provider's cache key."""
+        import hashlib
+        got = getattr(self, "_lip_meanings", {}).get(i)
+        if got is None:
+            return None
+        return hashlib.sha1(json.dumps([*got, *more], ensure_ascii=False).encode()).hexdigest()
+
     def _lip_sync_locked(self, syncer, out: list, jobs: list, resolution: tuple[int, int], fps: int) -> list:
         """Speaker lock (post/facelock.py). The speaker's face is found in every frame of the shot. A whole-frame
         result already paid for (the provider's cache) is reused when it really moved that face's mouth in all but
@@ -1052,13 +1100,17 @@ class Pipeline:
         ratio, floor = float(ls.get("lock_ratio", 1.5)), float(ls.get("lock_floor", 10.0))
         max_off = int(ls.get("max_off_speaker_frames", 3))
         offline = bool(ls.get("offline", False)) and hasattr(syncer, "cached")
+        stable = getattr(syncer, "stable_keys", False)
+        meaning: dict[int, str | None] = {}             # id(crop) -> its meaning (stable providers only)
         detector = self._face_detector()
         plans: dict[int, tuple[facelock.Plan, dict]] = {}
         crops: list[tuple[int, tuple]] = []             # (index, (segment, crop video, crop audio, raw output))
         for i, ts, audio, raw, windows in jobs:
             sid, work, stem = ts.shot_id, raw.parent, ts.clip.stem
             opts = per_shot.get(sid) or {}
-            analysis = facelock.analyse(ts.clip, detector, cache_dir=self.p.root / "cache" / "faces")
+            clip_key = self._meaning(i, "faces")             # the same tracks, so the same crops, on any machine
+            analysis = facelock.analyse(ts.clip, detector, cache_dir=self.p.root / "cache" / "faces",
+                                        key=clip_key[:16] + ".v2" if clip_key else None)
             track = facelock.pick_speaker(analysis, hint=opts.get("speaker"))
             facelock.review_sheet(ts.clip, analysis, track, work / f"{stem}.speaker.jpg")
             record: dict = {"shot_id": sid, "clip": str(ts.clip)}
@@ -1094,10 +1146,13 @@ class Pipeline:
             plan = facelock.Plan(shown, keep=keep | filmed, repair=repair, protect=opts.get("protect"),
                                  fade=int(opts.get("fade_frames") or 0))
             if opts.get("mesh", ls.get("mesh", False)):     # mask on the face mesh: on the lips, clipped to the face
-                points = facelock.meshes(ts.clip, shown, self._face_mesh(), cache_dir=self.p.root / "cache" / "faces")
+                points = facelock.meshes(ts.clip, shown, self._face_mesh(), cache_dir=self.p.root / "cache" / "faces",
+                                         clip_key=clip_key)
                 plan.faces, plan.meshes = facelock.mesh_faces(shown, points)
                 record["mesh_frames"] = sum(p is not None for p in plan.meshes)
-            whole = syncer.cached(ts.clip, audio) if hasattr(syncer, "cached") and opts.get("mode") != "crop" else None
+            whole_kw = {"meaning": self._meaning(i, "whole")} if stable else {}
+            whole = syncer.cached(ts.clip, audio, **whole_kw) if hasattr(syncer, "cached") and opts.get("mode") != "crop" \
+                else None
             if whole is not None:
                 full = ffmpeg.conform_clip(whole, work / f"{stem}_lipsync_full.mp4", ts.duration_s, resolution, fps)
                 off = facelock.off_speaker_frames(facelock.edit_locations(ts.clip, full, faces), keep, ratio, floor)
@@ -1120,11 +1175,21 @@ class Pipeline:
                 video = facelock.write_crop(ts.clip, seg, others, faces, work / f"{stem}_crop{k}.mp4")
                 sound = facelock.cut_audio(audio, seg.start / fps, (seg.end - seg.start) / fps,
                                            work / f"{stem}_crop{k}.wav")
-                crops.append((i, (seg, video, sound, work / f"{stem}_crop{k}_raw.mp4")))
+                crop = (seg, video, sound, work / f"{stem}_crop{k}_raw.mp4")
+                if stable:                                  # whose mouth, and which faces are blanked, in its frames
+                    span = range(seg.start, seg.end)
+                    meaning[id(crop)] = self._meaning(
+                        i, "crop", seg.start, seg.end, list(seg.window), track.id,
+                        [None if faces[n] is None else [round(v) for v in faces[n].box] for n in span],
+                        [[[round(v) for v in box] for box in others.get(n, [])] for n in span])
+                crops.append((i, crop))
             plans[i] = (plan, {**record, "mode": "speaker crops", "segments": [asdict(s) for s in segments]})
-        todo = [(i, c) for i, c in crops if not offline or syncer.cached(c[1], c[2]) is not None]
+        def kw(c) -> dict:
+            return {"meaning": meaning[id(c)]} if meaning.get(id(c)) else {}
+        todo = [(i, c) for i, c in crops if not offline or syncer.cached(c[1], c[2], **kw(c)) is not None]
         try:
-            items = [(video, sound, raw) for _, (_, video, sound, raw) in todo]
+            items = [(video, sound, raw, *([meaning[id(c)]] if meaning.get(id(c)) else []))
+                     for _, c in todo for (_, video, sound, raw) in [c]]
             raws = (syncer.apply_many(items) if hasattr(syncer, "apply_many")
                     else [syncer.apply(*item) for item in items]) if items else []
         except (BudgetExceeded, GoogleAPIError) as stop:
@@ -1136,7 +1201,7 @@ class Pipeline:
             got = done.get(id(c))
             if got is None:
                 why = ("not made yet (lipsync.offline)" if id(c) not in {id(x) for _, x in todo} else
-                       (syncer.failure(video, sound) or "failed") if hasattr(syncer, "failure") else "failed")
+                       (syncer.failure(video, sound, **kw(c)) or "failed") if hasattr(syncer, "failure") else "failed")
                 record.setdefault("failed_segments", []).append({"start": seg.start, "end": seg.end,
                                                                  "why": why.strip().splitlines()[-1][:300]})
                 continue

@@ -117,32 +117,62 @@ class SyncSoLipSync:
 
     # -- provider API (the same as the GPU worker's)
 
-    def key(self, video: Path, audio: Path) -> str:
+    stable_keys = True          # the pipeline names each job by what it is (Pipeline._lip_meanings): see key()
+
+    def key(self, video: Path, audio: Path, meaning: str | None = None) -> str:
+        """The job's cache key. With `meaning` (the paid clip, the take, the crop and the lines in it), the same job
+        on any machine: the crop the pipeline cuts again in a fresh container can differ by a pixel (scaling and face
+        tracking vary with the CPU) and its bytes would be a new, paid job. Without it, the bytes."""
+        if meaning:
+            return hashlib.sha1(json.dumps(["sync_so", self.model, self.sync_mode, "meaning", meaning])
+                                .encode()).hexdigest()[:16]
         h = hashlib.sha1(json.dumps(["sync_so", self.model, self.sync_mode]).encode())
         h.update(video.read_bytes())
         h.update(audio.read_bytes())
         return h.hexdigest()[:16]
 
+    def _found(self, video: Path, audio: Path, meaning: str | None) -> str:
+        """The key this job's result is cached under: its meaning's. What an earlier run kept under the job's byte
+        key comes over: its result (copied whole, then renamed, so a crash never leaves half a video taken for a
+        result), a generation still running (moved, so it is polled, never paid for again) and a failure note."""
+        k = self.key(video, audio, meaning)
+        if not meaning:
+            return k
+        old = self.key(video, audio)
+        for suffix, move in ((".mp4", False), (".pending.json", True), (".failed.json", False)):
+            new, was = self.cache / f"{k}{suffix}", self.cache / f"{old}{suffix}"
+            if new.exists() or not was.exists():
+                continue
+            self.cache.mkdir(parents=True, exist_ok=True)
+            if move:
+                os.replace(was, new)
+            else:
+                tmp = new.with_name(f".{new.name}.tmp")
+                shutil.copy2(was, tmp)
+                os.replace(tmp, new)
+        return k
+
     def apply(self, video: Path, audio: Path, out: Path) -> Path | None:
         return self.apply_many([(video, audio, out)])[0]
 
-    def cached(self, video: Path, audio: Path) -> Path | None:
-        path = self.cache / f"{self.key(video, audio)}.mp4"
+    def cached(self, video: Path, audio: Path, meaning: str | None = None) -> Path | None:
+        path = self.cache / f"{self._found(video, audio, meaning)}.mp4"
         return path if path.exists() else None
 
-    def failure(self, video: Path, audio: Path) -> str | None:
-        marker = self.cache / f"{self.key(video, audio)}.failed.json"
+    def failure(self, video: Path, audio: Path, meaning: str | None = None) -> str | None:
+        marker = self.cache / f"{self.key(video, audio, meaning)}.failed.json"
         return json.loads(marker.read_text(encoding="utf-8")).get("error") if marker.exists() else None
 
-    def apply_many(self, items: list[tuple[Path, Path, Path]]) -> list[Path | None]:
-        keys = [self.key(v, a) for v, a, _ in items]
+    def apply_many(self, items: list[tuple]) -> list[Path | None]:
+        """(video, audio, out) or (video, audio, out, meaning) per job."""
+        keys = [self._found(it[0], it[1], it[3] if len(it) > 3 else None) for it in items]
         known_bad = set() if self.retry_failed else {k for k in keys if (self.cache / f"{k}.failed.json").exists()}
-        todo = {k: (v, a) for k, (v, a, _) in zip(keys, items)
+        todo = {k: (it[0], it[1]) for k, it in zip(keys, items)
                 if not (self.cache / f"{k}.mp4").exists() and k not in known_bad}
         if todo:
             self._run(todo)
         outs = []
-        for k, (_, _, out) in zip(keys, items):
+        for k, (_, _, out, *_) in zip(keys, items):
             if not (self.cache / f"{k}.mp4").exists():
                 outs.append(None)
                 continue

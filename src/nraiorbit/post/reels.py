@@ -30,6 +30,7 @@ LEAD_MIN_S, LEAD_MAX_S = 0.3, 1.5    # picture before the line starts
 TAIL_MIN_S = 0.3             # and after it ends
 APART_S = 8.0                # reels never closer than this in the film
 STEP_S = 0.1
+TOL_S = 1e-3                 # starts are kept to the millisecond: a line on a frame time is never shut out by it
 FOLDER = "reels"             # under 11_master/
 RECORD = "reels.json"
 AI_TAG = "AI-made film · AI తో రూపొందించిన చిత్రం"
@@ -82,7 +83,7 @@ def plan_reels(edl: dict, plans: dict[str, Shot], lines: list[TrailerLine], role
 
     def usable(a: float) -> list[tuple[dict, float]] | None:
         b = a + length
-        if a < lo - 1e-6 or b > hi + 1e-6 or _crossing(a, b, placed):
+        if a < lo - TOL_S or b > hi + TOL_S or _crossing(a, b, placed):
             return None
         under = _shots_under(a, b, shots)
         if not under or any(not s.get("real", True) for s, _ in under):
@@ -98,8 +99,8 @@ def plan_reels(edl: dict, plans: dict[str, Shot], lines: list[TrailerLine], role
                         key=abs)                         # the centred window first, then nearer ones
         for shift in shifts:
             a = round(ln.film_start_s - lead + shift, 3)
-            if not (LEAD_MIN_S - 1e-6 <= ln.film_start_s - a and
-                    a + length - (ln.film_start_s + ln.duration_s) >= TAIL_MIN_S - 1e-6):
+            if not (LEAD_MIN_S - TOL_S <= ln.film_start_s - a and
+                    a + length - (ln.film_start_s + ln.duration_s) >= TAIL_MIN_S - TOL_S):
                 continue
             under = usable(a)
             if under is None:

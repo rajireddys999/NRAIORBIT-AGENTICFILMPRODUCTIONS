@@ -296,3 +296,18 @@ def test_a_failed_recut_offers_no_reels_rather_than_a_mix_of_two_cuts(tmp_path, 
     record = json.loads((root / "11_master" / "reels" / "reels.json").read_text())
     assert record == {"film": None, "reels": []} and not (root / "11_master" / ".reels.new").exists()
     assert {p.read_bytes() for p in (root / "11_master" / "reels").glob("reel_*.mp4")} == {b"reel"}   # none new
+
+
+def test_the_films_first_line_can_have_a_reel_whatever_frame_it_starts_on():
+    for at in (10.0, 10.041667, 10.0454, 10.0456):                          # 24 fps frame times and between
+        edl, plans, placed = _film(lines=[(f"b{i}", t, 2.0) for i, t in enumerate((at, 30.0), 1)])
+        assert "b1" in {p["line_id"] for p in reels.plan_reels(edl, plans, placed, ROLES)}, at
+
+
+def test_one_films_unreadable_record_never_holds_up_the_next_films_shorts(cloud):
+    for slug in ("aaa", "rain"):
+        cloud.put(f"stories/{slug}.shorts.json", b'{"privacy": "public"}')
+    cloud.put("aaa/reports/youtube_shorts.json", b"{not json")
+    sent = []
+    assert shorts.run(cloud, lambda: [], log=lambda *_: None, upload=lambda v, m, c: sent.append(m) or "ID",
+                      creds="c") == ["rain"] and len(sent) == 3

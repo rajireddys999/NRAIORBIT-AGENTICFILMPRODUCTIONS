@@ -2,7 +2,7 @@
 from the film's own upload and its approval.
 
 The control room's button writes stories/<slug>.shorts.json ({id, by, at, privacy}) and starts a tick. The tick
-(queue.tick, after its story step) takes each request by deleting it under its generation, so two ticks never upload
+(queue.tick, before its story step) takes each request by deleting it under its generation, so two ticks never upload
 the same Shorts, reads the film's reels from the bucket and uploads each one that has not gone up yet (the same file
 is never uploaded twice), sending <slug>/reports/youtube_shorts.json to the bucket after every upload. Nothing here
 re-renders or pays for anything; a failure is written into that record for the page to show, and the owner asks again.
@@ -144,6 +144,7 @@ def upload_film_shorts(bucket, slug: str, ask: dict, log: Callable[[str], None] 
                 gcs.download_blob(bucket.blob(f"{slug}/11_master/reels/{reel['file']}"), local)
                 key = f"reel_{n}"
                 if uploaded_already(record, key, local):
+                    record[key]["film"] = mark                # the same file in a new cut is still this one
                     continue
                 video_id = upload(local, metadata(bible, reel, privacy, film_id), creds)
                 record[key] = {"id": video_id, "file": fingerprint(local), "at": _now(), "film": mark}
@@ -169,12 +170,15 @@ def run(bucket, rows: Callable[[], list[dict]], log: Callable[[str], None] = pri
     for slug in asked:
         if slug in busy:
             continue                                      # the next tick, once the run has written its reels
-        under_way = bucket.get_blob(f"{slug}/reports/{RECORD}")
-        if under_way is not None and uploading(json.loads(under_way.download_as_text() or "{}")):
-            continue                                      # another tick is uploading them now
-        ask = take(bucket, slug)
-        if ask is None:
-            continue
-        upload_film_shorts(bucket, slug, ask, log=log, upload=upload, creds=creds)
-        done.append(slug)
+        try:
+            under_way = bucket.get_blob(f"{slug}/reports/{RECORD}")
+            if under_way is not None and uploading(json.loads(under_way.download_as_text() or "{}")):
+                continue                                  # another tick is uploading them now
+            ask = take(bucket, slug)
+            if ask is None:
+                continue
+            upload_film_shorts(bucket, slug, ask, log=log, upload=upload, creds=creds)
+            done.append(slug)
+        except Exception as exc:                          # one film's unreadable record never holds up the rest
+            log(f"  Shorts of {slug} not looked at: {type(exc).__name__}: {str(exc)[:120]}")
     return done

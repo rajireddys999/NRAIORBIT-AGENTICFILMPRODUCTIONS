@@ -178,6 +178,7 @@
         {% for d in a.done %}<li><span style="color:var(--ok)">✓</span> {{ d.text }}{% if d.at %} <span class="tiny dim">{{ d.at }}</span>{% endif %}</li>{% endfor %}
       </ul>
       {% endif %}
+      {% if f.reels %}<p class="small" style="margin-top:8px">Reels: {{ f.reels|length }} ready for Instagram, to download under <a href="#reels">Step 9 · Film &amp; trailer</a>. YouTube Shorts: {% if f.shorts_up|length >= f.reels|length %}all {{ f.reels|length }} up{% elif f.shorts_asked %}going up now{% elif f.shorts_up %}{{ f.shorts_up|length }} of {{ f.reels|length }} up{% elif f.shorts_mode == 'auto' and (f.row.publish if f.row and f.row.publish else f.policy.publish or 'none') != 'none' %}they go up on their own with the film{% else %}waiting for your button{% endif %} (<a href="#publish">Step 12 · YouTube</a>).</p>{% endif %}
       {% if f.hint and state0 != 'blocked' %}<p class="small bad" style="margin-top:8px">{{ f.hint }}</p>{% endif %}
       {% set t = f.triage %}
       {% if t and not t.pending %}
@@ -457,8 +458,18 @@
   {% if pub is mapping %}{% for k, v in pub.items() %}<p>{{ k }}: {% if v is mapping and v.id %}<a href="https://youtu.be/{{ v.id }}" target="_blank" rel="noopener">youtu.be/{{ v.id }}</a>{% elif v is string and v|length < 20 %}<a href="https://youtu.be/{{ v }}" target="_blank" rel="noopener">youtu.be/{{ v }}</a>{% else %}{{ v }}{% endif %}</p>{% endfor %}
   {% elif pub %}<p>{{ pub }}</p>{% else %}<p class="muted">Not published. Policy: {{ f.row.publish if f.row and f.row.publish else f.policy.publish or 'none' }}.</p>{% endif %}
   {% if youtube.channel %}<p class="small muted">Channel: {{ youtube.channel }}</p>{% elif youtube.can_connect %}<p class="small"><a href="/youtube/connect">Connect YouTube</a> first; the runner uploads on its next pass over a finished film whose publish setting is not none.</p>{% endif %}
-  {% if f.reels %}
   <h3 style="margin-top:16px">Shorts</h3>
+  {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/shorts-mode" style="margin-bottom:8px">
+    <select name="mode" aria-label="How the reels go up as Shorts" style="width:auto">
+      <option value="auto"{% if f.shorts_mode == 'auto' %} selected{% endif %}>Shorts: automatic, right after the film's upload</option>
+      <option value="ask"{% if f.shorts_mode == 'ask' %} selected{% endif %}>Shorts: only when I press the button</option>
+    </select>
+    <button class="quiet sm">Save</button>
+  </form>{% endif %}
+  {% set ytpub = f.row.publish if f.row and f.row.publish else f.policy.publish or 'none' %}
+  <p class="tiny dim" style="margin:0 0 8px">{% if ytpub == 'none' %}YouTube uploads are off for this film (YouTube: none), so no Shorts go up on their own; the button below still sends them.{% elif f.shorts_mode == 'auto' %}The reels go up as YouTube Shorts on their own, with the film's visibility, as soon as the film is uploaded (your approval of that upload covers them).{% else %}The reels go up as YouTube Shorts only when you press the button below.{% endif %} Instagram is yours: download each reel under <a href="#reels">Step 9 · Film &amp; trailer</a> and post it from your phone.</p>
+  {% if not f.reels %}<p class="small muted">No reels yet: they are cut right after the trailer is approved.</p>{% endif %}
+  {% if f.reels %}
   {% for s in f.shorts_up %}<p>Short {{ s.n }}: <a href="https://youtube.com/shorts/{{ s.id }}" target="_blank" rel="noopener">youtube.com/shorts/{{ s.id }}</a>{% if f.shorts.privacy %} <span class="small muted">({{ f.shorts.privacy }})</span>{% endif %}</p>{% endfor %}
   {% if f.shorts.error %}<p class="small" style="color:var(--warn)">The last Shorts upload stopped: {{ f.shorts.error }}</p>{% endif %}
   {% if f.shorts_asked %}<p><span class="live-dot" style="margin-right:8px"></span>You asked for the Shorts; the runner uploads them on its next pass (a few minutes, after any film it is busy with). This page refreshes by itself.</p>

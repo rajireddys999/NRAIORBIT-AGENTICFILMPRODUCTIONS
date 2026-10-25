@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ f.title }} · {{ settings.title }}{% endblock %}
-{% set refresh = 20 if f.live else (45 if f.state in ['new','approved','retry','producing'] else 0) %}
+{% set refresh = 20 if f.live else (45 if f.state in ['new','approved','retry','producing'] else (30 if f.shorts_asked else 0)) %}
 {% block style %}
 .desk-head { display:flex; align-items:flex-end; justify-content:space-between; gap:20px; flex-wrap:wrap; margin-bottom:20px }
 .desk-head h1 { font-family:var(--te); font-weight:700; font-size:48px; line-height:1.05 } .desk-head h1 .en { font-family:var(--serif); font-weight:400; color:var(--muted); font-size:24px; display:block; margin-top:8px }
@@ -395,6 +395,23 @@
     {% if f.media['trailer.mp4'] %}<div><h3 style="margin-top:0">Trailer</h3><video controls preload="metadata" src="{{ f.media['trailer.mp4'] }}"></video></div>{% endif %}
   </div>
   {% if not f.media %}<p class="muted">Not assembled yet.</p>{% endif %}
+  {% if f.reels %}
+  <h3 id="reels">Reels for Instagram and YouTube Shorts</h3>
+  <p class="small muted">{{ f.reels|length }} upright {{ f.reels[0].duration_s|round|int }}-second clips cut from the film itself, its own picture and sound (nothing paid). Download one, post it as a Reel, and paste its caption.</p>
+  <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">{% for r in f.reels %}
+    <div>
+      <video controls preload="metadata" playsinline src="{{ r.url }}" style="width:100%;aspect-ratio:9/16;background:#000;border-radius:12px"></video>
+      <p class="tiny dim" style="margin:6px 0">{{ r.line_en or 'picture only' }}</p>
+      <a class="btn sm" href="{{ r.download }}" download>Download reel {{ r.n }}</a>
+      <button type="button" class="btn quiet sm" data-copy="caption-{{ r.n }}">Copy caption</button>
+      <textarea id="caption-{{ r.n }}" readonly rows="6" style="min-height:0;margin-top:8px;font-size:12px">{{ r.caption }}</textarea>
+    </div>{% endfor %}
+  </div>
+  <script>document.querySelectorAll("[data-copy]").forEach(function (b) { b.addEventListener("click", function () {
+    var t = document.getElementById(b.dataset.copy); t.select();
+    (navigator.clipboard ? navigator.clipboard.writeText(t.value) : Promise.reject()).then(function () { b.textContent = "Copied"; },
+      function () { document.execCommand("copy"); b.textContent = "Copied"; }); }); });</script>
+  {% endif %}
 </div>
 
 <div class="card" id="qa">
@@ -422,6 +439,22 @@
   {% if pub is mapping %}{% for k, v in pub.items() %}<p>{{ k }}: {% if v is mapping and v.id %}<a href="https://youtu.be/{{ v.id }}" target="_blank" rel="noopener">youtu.be/{{ v.id }}</a>{% elif v is string and v|length < 20 %}<a href="https://youtu.be/{{ v }}" target="_blank" rel="noopener">youtu.be/{{ v }}</a>{% else %}{{ v }}{% endif %}</p>{% endfor %}
   {% elif pub %}<p>{{ pub }}</p>{% else %}<p class="muted">Not published. Policy: {{ f.row.publish if f.row and f.row.publish else f.policy.publish or 'none' }}.</p>{% endif %}
   {% if youtube.channel %}<p class="small muted">Channel: {{ youtube.channel }}</p>{% elif youtube.can_connect %}<p class="small"><a href="/youtube/connect">Connect YouTube</a> first; the runner uploads on its next pass over a finished film whose publish setting is not none.</p>{% endif %}
+  {% if f.reels %}
+  <h3 style="margin-top:16px">Shorts</h3>
+  {% for s in f.shorts_up %}<p>Short {{ s.n }}: <a href="https://youtube.com/shorts/{{ s.id }}" target="_blank" rel="noopener">youtube.com/shorts/{{ s.id }}</a>{% if f.shorts.privacy %} <span class="small muted">({{ f.shorts.privacy }})</span>{% endif %}</p>{% endfor %}
+  {% if f.shorts.error %}<p class="small" style="color:var(--warn)">The last Shorts upload stopped: {{ f.shorts.error }}</p>{% endif %}
+  {% if f.shorts_asked %}<p><span class="live-dot" style="margin-right:8px"></span>You asked for the Shorts; the runner uploads them on its next pass (a few minutes, after any film it is busy with). This page refreshes by itself.</p>
+  {% elif f.shorts_up|length < f.reels|length %}
+    {% if youtube.channel %}
+    {% set pub = f.row.publish if f.row and f.row.publish in ['private','unlisted','public'] else 'private' %}
+    <form class="inline" method="post" action="/film/{{ f.slug }}/shorts">
+      <select name="privacy" aria-label="Shorts visibility" style="width:auto">{% for p in ['private','unlisted','public'] %}<option value="{{ p }}"{% if p == pub %} selected{% endif %}>{{ p }}</option>{% endfor %}</select>
+      <button>Upload the {{ f.reels|length - f.shorts_up|length }} reels to YouTube as Shorts</button>
+    </form>
+    <p class="tiny dim" style="margin-top:6px">Apart from the film's own upload and its approval. Only public Shorts count toward YouTube's Shorts views.</p>
+    {% else %}<p class="small muted">Connect YouTube to upload the reels as Shorts.</p>{% endif %}
+  {% endif %}
+  {% endif %}
 </div>
 
 <div class="card report" id="report">

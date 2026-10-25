@@ -26,8 +26,9 @@ FOLDERS = {                    # set name -> folder under the project; synced bo
     "post": "post",
     "reviews": "reviews",      # the gates' .pending / .approved marks: state, not media
 }
-RUN_WRITES = {"reports": ("progress.json", "progress.json.part")}   # the run sends these itself (service/progress),
-#                     every two minutes: a backup sending its own copy too would race the heartbeat for the object
+RUN_WRITES = {"reports": ("progress.json", "progress.json.part",   # the run sends these itself (service/progress),
+                           "youtube_shorts.json")}   # every two minutes, and the Shorts step its record (service/
+#   shorts): a backup sending its own copy too would race the heartbeat, or put an older record back
 # Never 10_edit, 07_video or 05_dialogue: the timeline there points at clips and takes a fresh container re-makes
 # from the caches for free, and a restored timeline without them would make the render step skip and the trailer
 # fail. Assembly masters again when its intermediates are gone (pipeline._assemble).

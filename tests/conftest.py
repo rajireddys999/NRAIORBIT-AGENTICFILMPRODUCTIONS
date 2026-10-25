@@ -14,6 +14,13 @@ def no_running_record_in_a_real_bucket(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_shorts_requests_in_a_real_bucket(monkeypatch):
+    """After its story step a tick with a bucket looks for the owner's Shorts requests there (service/shorts.py); the
+    tests that drive that step put their own in its place."""
+    monkeypatch.setattr(queue, "SHORTS", lambda bucket, rows, log: [])
+
+
+@pytest.fixture(autouse=True)
 def no_cloud_run_lookup_for_the_footer(monkeypatch):
     """Every control-room page shows the runner's live image (ui/runner.job_image, read from Cloud Run). Off the
     cloud that lookup waits seconds for credentials, so the tests see a fixed image; the footer test sets its own."""

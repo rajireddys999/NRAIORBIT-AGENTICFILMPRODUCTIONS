@@ -1451,3 +1451,58 @@ def test_saving_a_producing_films_settings_keeps_the_runs_claim(client, root):
     client.post("/film/demo/row", data={"budget": "75", "publish": "unlisted"}, follow_redirects=False)
     row = rows(root)[0]
     assert row["budget_usd"] == "75" and row["publish"] == "unlisted" and row["updated"] == "2026-10-25T04:16:04+00:00"
+
+
+def _reels(root, n=3):
+    folder = root / "demo" / "11_master" / "reels"
+    folder.mkdir(parents=True, exist_ok=True)
+    made = []
+    for i in range(1, n + 1):
+        (folder / f"reel_{i}.mp4").write_bytes(b"reel")
+        made.append({"file": f"reel_{i}.mp4", "start_s": 10.0 * i, "duration_s": 5.0, "line_id": None, "line_te": "",
+                     "line_en": f"line {i}", "caption": f"caption {i}"})
+    (folder / "reels.json").write_text(json.dumps({"film": "x", "reels": made}))
+
+
+def test_the_film_page_offers_each_reel_to_download_with_its_caption(client, root):
+    assert 'id="reels"' not in client.get("/film/demo").text
+    _reels(root)
+    html = client.get("/film/demo").text
+    assert 'id="reels"' in html and "Download reel 3" in html and "caption 2" in html and "Copy caption" in html
+    assert 'href="/file/demo/11_master/reels/reel_1.mp4" download' in html
+
+
+def test_shorts_go_up_only_when_the_owner_asks_and_never_twice(client, root):
+    from urllib.parse import unquote
+    r = client.post("/film/demo/shorts", data={"privacy": "public"}, follow_redirects=False)
+    assert "no reels yet" in unquote(r.headers["location"]) and client.started == []
+    _reels(root)
+    html = client.get("/film/demo").text
+    assert "Connect YouTube to upload the reels as Shorts" in html and 'action="/film/demo/shorts"' not in html
+    (root / "settings").mkdir(exist_ok=True)
+    (root / "settings" / "youtube.json").write_text(json.dumps({"channel": "NRAIORBIT"}))
+    rs = rows(root)
+    rs[0]["publish"] = "unlisted"
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    html = client.get("/film/demo").text
+    assert 'action="/film/demo/shorts"' in html and "Upload the 3 reels to YouTube as Shorts" in html
+    assert '<option value="unlisted" selected>' in html                      # the film's own setting by default
+    r = client.post("/film/demo/shorts", data={"privacy": "sideways"}, follow_redirects=False)
+    assert "Pick private, unlisted or public" in unquote(r.headers["location"]) and client.started == []
+    r = client.post("/film/demo/shorts", data={"privacy": "public"}, follow_redirects=False)
+    assert r.status_code == 303 and client.started == ["nraiorbit-runner"]
+    ask = json.loads((root / "stories" / "demo.shorts.json").read_text())
+    assert ask["privacy"] == "public" and ask["by"] == "owner@example.com"
+    assert "You asked for the Shorts" in client.get("/film/demo").text
+    (root / "stories" / "demo.shorts.json").unlink()                          # the runner took it and is uploading
+    from nraiorbit.service import shorts as shorts_mod
+    (root / "demo" / "reports" / "youtube_shorts.json").write_text(json.dumps({"uploading": {"at": shorts_mod._now()}}))
+    assert "You asked for the Shorts" in client.get("/film/demo").text       # no button while they go up
+    r = client.post("/film/demo/shorts", data={"privacy": "public"}, follow_redirects=False)
+    assert "going up now" in unquote(r.headers["location"]) and not (root / "stories" / "demo.shorts.json").exists()
+    (root / "demo" / "reports" / "youtube_shorts.json").write_text(json.dumps(
+        {"privacy": "public", "reel_1": {"id": "S1", "film": "x"}, "reel_2": {"id": "OldCutShort", "film": "an older cut"},
+         "error": "RuntimeError: quotaExceeded"}))
+    html = client.get("/film/demo").text
+    assert "youtube.com/shorts/S1" in html and "OldCutShort" not in html and "Upload the 2 reels" in html
+    assert "quotaExceeded" in html

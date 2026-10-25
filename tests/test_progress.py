@@ -483,7 +483,7 @@ def test_produce_reports_every_stage_and_step_then_the_state(tmp_path, monkeypat
     assert report["state"] == "done"
     phases = [n for k, n in heard.calls if k == "phase"]
     plan = STAGES[:STAGES.index("shots") + 1]
-    assert phases == plan + ["voices", "cost", "faces"] + STAGES + ["qa", "deliver", "publish", "backup"]
+    assert phases == plan + ["voices", "cost", "faces"] + STAGES + ["reels", "qa", "deliver", "publish", "backup"]
     assert heard.calls[-1] == ("finish", "done")
     lines = [n for k, n in heard.calls if k == "line"]
     assert "[story_bible]" in lines and "film check: ok" in lines and lines[-1] == "produce: done"

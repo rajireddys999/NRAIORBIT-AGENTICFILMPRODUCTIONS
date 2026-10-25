@@ -807,6 +807,28 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                 f"every step from {steps[stage]} on is redone, following your notes")
         return back(f"/film/{slug}", f"Sent back: {what}; the gates ask again. " + tick_now("the rework is under way"))
 
+    @app.post("/film/{slug}/shorts")
+    def shorts(slug: str, email: str = Depends(guard), privacy: str = Form("private")):
+        """Upload the film's reels to YouTube as Shorts, apart from the film's own upload and its approval: saved as
+        stories/<slug>.shorts.json, which the next tick takes once (service/shorts.py) and uploads each reel not up
+        yet. Nothing is re-rendered or paid for."""
+        from ..service import shorts as shorts_mod
+        if not SLUG_RE.match(slug):
+            raise HTTPException(404)
+        if privacy not in shorts_mod.PRIVACY:
+            return back(f"/film/{slug}", "Pick private, unlisted or public for the Shorts; nothing changed.")
+        if not (films._json(store, f"{slug}/11_master/reels/reels.json") or {}).get("reels"):
+            return back(f"/film/{slug}", "This film has no reels yet: they are cut after its trailer is approved. "
+                                         "Nothing changed.")
+        if not youtube_status().get("channel"):
+            return back(f"/film/{slug}", "Connect YouTube first; nothing changed.")
+        if shorts_mod.uploading(films._json(store, f"{slug}/reports/{shorts_mod.RECORD}")):
+            return back(f"/film/{slug}", "The Shorts are going up now; nothing changed.")
+        store.write_text(f"{shorts_mod.REQUESTS}{slug}{shorts_mod.SUFFIX}",
+                         json.dumps({"id": f"{queue.now()}-{os.urandom(3).hex()}", "by": email, "at": queue.now(),
+                                     "privacy": privacy}), "application/json")
+        return back(f"/film/{slug}", f"Shorts asked for ({privacy}); " + tick_now("they go up in a minute or two"))
+
     @app.post("/film/{slug}/reject")
     def reject(slug: str, email: str = Depends(guard), gate: str = Form(""), notes: str = Form("")):
         """Reject the cut or the trailer with a note: the runner's AI editor (service/triage) decides what to redo,

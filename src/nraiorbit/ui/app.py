@@ -952,7 +952,62 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
     @app.get("/references", response_class=HTMLResponse)
     def references(request: Request, email: str = Depends(guard)):
         refs = load_rows(store, REFERENCES, queue.REFERENCE_COLUMNS)
+        for r in refs:
+            r.update(reference_price(r))
         return page("references.html", request, email, refs=refs)
+
+    def reference_price(r: dict) -> dict:
+        """What watching a reference costs, as the runner prices it: from the length on its row, else from the
+        runner's own note on a watch it stopped (the length it read from YouTube), else as a 150 min film."""
+        from ..costing import load_pricing
+        from ..service import learn as learn_mod
+        try:
+            minutes = float(r.get("minutes") or 0) or learn_mod.DEFAULT_MINUTES
+        except ValueError:
+            minutes = learn_mod.DEFAULT_MINUTES
+        out = {"estimate_usd": learn_mod.estimate_usd(minutes, pricing=load_pricing(None))[0],
+               "known_length": bool(r.get("minutes"))}
+        priced = re.search(r"this ([\d.]+) min video costs about \$([\d.]+)", r.get("note") or "")
+        if r.get("state") == "blocked:LearnCostError" and priced:
+            out.update(minutes=priced.group(1), estimate_usd=float(priced.group(2)), known_length=True)
+        return out
+
+    @app.post("/references/approve")
+    def approve_reference(email: str = Depends(guard), url: str = Form(...), learn: str = Form(""),
+                          usd: str = Form("")):
+        """The owner approves a watch the cost guard stopped (over $1): the row gets the amount (with a tenth
+        spare, as the token count is an estimate) and goes back to the runner."""
+        try:
+            shown = float(usd)
+        except ValueError:
+            shown = -1.0
+        changed: list[str] = []
+        refused: dict = {}
+
+        def change(text: str) -> str | None:
+            refs = queue.rows_of(text, queue.REFERENCE_COLUMNS)
+            changed.clear()
+            for r in refs:
+                if r["url"] == url and (not learn or r["learn"] == learn) and r["state"] == "blocked:LearnCostError":
+                    price = reference_price(r)["estimate_usd"]           # worked out here, never the form's
+                    if abs(price - shown) > 0.01:
+                        refused["msg"] = f"the price is now ${price:.2f}; look again before approving. Nothing changed."
+                        return None
+                    if not 0 < price <= queue.MAX_APPROVE_USD:
+                        refused["msg"] = (f"${price:.2f} is over the ${queue.MAX_APPROVE_USD:.0f} one watch may be "
+                                          "approved for here; nothing changed.")
+                        return None
+                    cap = min(price * 1.1, queue.MAX_APPROVE_USD)        # a tenth spare: the tokens are estimated
+                    r.update(state="retry", approved_usd=f"{cap:.2f}", updated=queue.now(),
+                             note=f"approved up to ${cap:.2f} by {email}")
+                    changed.append(r["learn"])
+            return queue.csv_of(refs, queue.REFERENCE_COLUMNS)
+        store.update_text(REFERENCES, change, "text/csv")
+        if refused:
+            return back("/references", refused["msg"])
+        if not changed:
+            return back("/references", "nothing to approve: that watch is no longer waiting on its cost")
+        return back("/references", f"approved about ${shown:.2f}; " + tick_now("Gemini is watching it"))
 
     @app.post("/references")
     def add_reference(email: str = Depends(guard), url: str = Form(...), title: str = Form(""),
@@ -967,8 +1022,12 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                 minutes = f"{float(minutes):g}"
             except ValueError:
                 raise HTTPException(400, "minutes must be a number") from None
+        else:                                             # read from the video's page, so the price is its own
+            from ..service import learn as learn_mod
+            found = learn_mod.video_minutes(url)
+            minutes = f"{found:g}" if found else ""
         new = {"url": url, "title": title.strip(), "learn": learn, "minutes": minutes, "state": "new",
-               "profile_uri": "", "note": "", "updated": queue.now()}
+               "profile_uri": "", "note": "", "updated": queue.now(), "approved_usd": ""}
 
         def add(text: str) -> str:
             refs = queue.rows_of(text, queue.REFERENCE_COLUMNS)

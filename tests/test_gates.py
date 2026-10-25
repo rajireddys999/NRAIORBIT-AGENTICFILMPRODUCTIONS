@@ -958,3 +958,36 @@ def test_the_reels_follow_the_film_to_youtube_when_its_shorts_are_automatic(tmp_
     assert not (paths.reviews / "publish.approved").exists()                 # spent by the upload
     report = produce.produce(pipeline, log=lambda *_: None)                  # a later run: the film is up already
     assert report["state"] == "done" and asked == ["asked", "asked"]         # (the job uploads nothing twice)
+
+
+
+def test_an_approved_watch_gets_its_amount_and_a_stopped_one_says_what_it_would_cost(tmp_path):
+    from nraiorbit.service import queue
+    from nraiorbit.service.learn import LearnCostError
+    st, rf = tmp_path / "stories.csv", tmp_path / "references.csv"
+    queue.save(str(st), [], queue.STORY_COLUMNS)
+    url = "https://www.youtube.com/watch?v=CEvTjeXOC3U"
+    queue.save(str(rf), [{"url": url, "learn": "all", "state": "new"}], queue.REFERENCE_COLUMNS)
+    asked = []
+
+    def stopped(u, title, what, minutes, max_usd=1.0):
+        asked.append(max_usd)
+        raise LearnCostError("watching this 150 min video costs about $2.21", minutes=150.0, usd=2.21)
+    queue.tick(str(st), str(rf), tmp_path / "projects", bucket=None, produce_fn=None, learn_fn=stopped,
+               log=lambda *_: None)
+    row = queue.load(str(rf), queue.REFERENCE_COLUMNS)[0]
+    assert row["state"] == "blocked:LearnCostError" and "150 min" in row["note"] and asked == [1.0]
+    row.update(state="retry", approved_usd="2.43")                           # the owner's approve button
+    queue.save(str(rf), [row], queue.REFERENCE_COLUMNS)
+    queue.tick(str(st), str(rf), tmp_path / "projects", bucket=None, produce_fn=None,
+               learn_fn=lambda u, title, what, minutes, max_usd=1.0: asked.append(max_usd) or tmp_path / "p.json",
+               log=lambda *_: None)
+    assert asked[-1] == 2.43 and queue.load(str(rf), queue.REFERENCE_COLUMNS)[0]["state"] == "done"
+    for written, gets in (("inf", None), ("500", queue.MAX_APPROVE_USD)):    # a hand-edited sheet: capped
+        row = queue.load(str(rf), queue.REFERENCE_COLUMNS)[0]
+        row.update(state="retry", approved_usd=written)
+        queue.save(str(rf), [row], queue.REFERENCE_COLUMNS)
+        queue.tick(str(st), str(rf), tmp_path / "projects", bucket=None, produce_fn=None,
+                   learn_fn=lambda u, title, what, minutes, max_usd=1.0: asked.append(max_usd) or tmp_path / "p.json",
+                   log=lambda *_: None)
+        assert asked[-1] == (gets if gets is not None else 1.0)

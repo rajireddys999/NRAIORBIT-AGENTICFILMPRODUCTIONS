@@ -86,10 +86,36 @@ Focus: {focus}."""
 
 
 class LearnCostError(RuntimeError):
-    pass
+    """A watch that costs more than the runner spends without asking; `minutes` and `usd` say what it would be,
+    for the control room's approve button."""
+
+    def __init__(self, message: str, minutes: float = 0.0, usd: float = 0.0):
+        super().__init__(message)
+        self.minutes, self.usd = minutes, usd
 
 
 DEFAULT_MINUTES = 150.0          # a feature film, when nothing says how long the video is
+
+
+def video_minutes(url: str, fetch=None) -> float | None:
+    """The video's length, read from its public YouTube page (the page only: no key, nothing downloaded); None when
+    it cannot be read. `fetch(page_url) -> html` for tests."""
+    vid = re.search(r"(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{6,})", url)
+    if not vid:
+        return None
+    page_url = f"https://www.youtube.com/watch?v={vid.group(1)}"
+    try:
+        if fetch is None:
+            import urllib.request
+            req = urllib.request.Request(page_url, headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "en-US"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                fetch_text = r.read(4_000_000).decode("utf-8", "replace")
+        else:
+            fetch_text = fetch(page_url)
+    except Exception:
+        return None
+    m = re.search(r'"lengthSeconds":"(\d+)"', fetch_text or "")
+    return round(int(m.group(1)) / 60, 1) if m and int(m.group(1)) > 0 else None
 
 
 def estimate_usd(minutes: float, fps: float = SAMPLE_FPS, pricing: dict | None = None) -> tuple[float, int]:
@@ -118,13 +144,21 @@ def learn(url: str, title: str | None = None, what: str = "all", cfg: dict | Non
     is refused above `max_usd` unless `yes`."""
     from google.genai import types
 
+    guessed = False
     if minutes is None:
-        minutes = (end_s - start_s) / 60 if start_s is not None and end_s is not None else DEFAULT_MINUTES
+        if start_s is not None and end_s is not None:
+            minutes = (end_s - start_s) / 60
+        else:
+            minutes = video_minutes(url)                  # the real length, from the video's page
+            guessed = minutes is None
+            minutes = minutes or DEFAULT_MINUTES
     est, tokens = estimate_usd(minutes, fps, pricing)
     if est > max_usd and not yes:
-        raise LearnCostError(f"watching {minutes:.0f} min at {fps:g} frames/s is about ${est:.2f} ({tokens:,} tokens), "
-                             f"over the ${max_usd:.2f} limit; give --minutes or --start/--end, raise --max-usd, "
-                             "or pass --yes")
+        what = (f"this video (length not known, priced as {minutes:.0f} min)" if guessed
+                else f"this {minutes:.0f} min video")
+        raise LearnCostError(f"watching {what} costs about ${est:.2f} ({tokens:,} tokens), over the ${max_usd:.2f} "
+                             "limit: approve it on the References page (or run nraiorbit learn with --max-usd, "
+                             "--minutes or --start/--end)", minutes=minutes, usd=est)
     g = (cfg or {}).get("google", {})
     client = client or google_client(g, "image")
     meta = {"fps": fps}

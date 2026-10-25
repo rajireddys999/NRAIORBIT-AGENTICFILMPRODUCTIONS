@@ -168,7 +168,7 @@ def test_learn_refuses_an_expensive_watch_unless_told_yes(tmp_path):
     short, _ = learn.estimate_usd(10, pricing=pricing)
     assert short < 0.2
     fake = FakeGemini()
-    with pytest.raises(learn.LearnCostError, match=r"150 min .* over the \$1.00 limit"):
+    with pytest.raises(learn.LearnCostError, match=r"length not known, priced as 150 min.* over the \$1.00 limit"):
         learn.learn("https://www.youtube.com/watch?v=abc123xyz", cfg={"google": {}}, client=fake,
                     out_dir=tmp_path / "refs", pricing=pricing)
     assert fake.calls == []

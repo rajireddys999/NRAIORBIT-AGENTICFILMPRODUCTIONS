@@ -1555,3 +1555,47 @@ def test_switching_a_film_already_on_youtube_to_automatic_sends_its_reels_now_wi
     (root / "demo" / "reports" / "youtube.json").unlink()                    # not on YouTube: only the setting
     client.post("/film/demo/shorts-mode", data={"mode": "auto"}, follow_redirects=False)
     assert not (root / "stories" / "demo.shorts.json").exists()
+
+
+
+def test_references_are_priced_from_their_length_and_a_costly_one_waits_for_the_owners_approval(client, root,
+                                                                                               monkeypatch):
+    from urllib.parse import unquote
+
+    from nraiorbit.service import learn
+    monkeypatch.setattr(learn, "video_minutes", lambda url, fetch=None: 12.6)
+    client.post("/references", data={"url": "https://www.youtube.com/watch?v=CEvTjeXOC3U", "learn": "all"},
+                follow_redirects=False)
+    rows_ = queue.load(str(root / "queue" / "references.csv"), queue.REFERENCE_COLUMNS)
+    assert rows_[0]["minutes"] == "12.6"                                     # read from the video's page
+    html = client.get("/references").text
+    assert "Costs about <b>$0.1" in html and "(12.6 min)" in html
+    rows_[0].update(state="blocked:LearnCostError", minutes="", note="over the $1.00 limit")
+    queue.save(str(root / "queue" / "references.csv"), rows_, queue.REFERENCE_COLUMNS)
+    html = client.get("/references").text
+    assert "Approve $2.21 and watch it" in html and "priced as a 150 min film" in html and "Retry</button>" not in html
+    rows_[0]["note"] = "watching this 170 min video costs about $2.50 (950,000 tokens), over the $1.00 limit"
+    queue.save(str(root / "queue" / "references.csv"), rows_, queue.REFERENCE_COLUMNS)
+    html = client.get("/references").text                                   # the runner found the real length
+    assert "Approve $2.50 and watch it" in html and "(170 min)" in html
+    r = client.post("/references/approve", data={"url": rows_[0]["url"], "learn": "all", "usd": "2.50"},
+                    follow_redirects=False)
+    row = queue.load(str(root / "queue" / "references.csv"), queue.REFERENCE_COLUMNS)[0]
+    assert row["state"] == "retry" and row["approved_usd"] == "2.75" and client.started == ["nraiorbit-runner"]
+    r = client.post("/references/approve", data={"url": rows_[0]["url"], "learn": "all", "usd": "2.50"},
+                    follow_redirects=False)
+    assert "no longer waiting" in unquote(r.headers["location"])             # approved once
+    rows_ = queue.load(str(root / "queue" / "references.csv"), queue.REFERENCE_COLUMNS)
+    rows_[0].update(state="blocked:LearnCostError", note="watching this 2000 min video costs about $40.00 (x tokens)")
+    queue.save(str(root / "queue" / "references.csv"), rows_, queue.REFERENCE_COLUMNS)
+    r = client.post("/references/approve", data={"url": rows_[0]["url"], "learn": "all", "usd": "1.00"},
+                    follow_redirects=False)
+    assert "the price is now $40.00" in unquote(r.headers["location"])      # the server's price, not the form's
+    r = client.post("/references/approve", data={"url": rows_[0]["url"], "learn": "all", "usd": "40.00"},
+                    follow_redirects=False)
+    assert "over the $25" in unquote(r.headers["location"])
+    assert queue.load(str(root / "queue" / "references.csv"), queue.REFERENCE_COLUMNS)[0]["state"] == \
+        "blocked:LearnCostError"
+    rows_[0].update(note="watching this video (length not known, priced as 150 min) costs about $2.21")
+    queue.save(str(root / "queue" / "references.csv"), rows_, queue.REFERENCE_COLUMNS)
+    assert "priced as a 150 min film" in client.get("/references").text     # a guess never reads as measured

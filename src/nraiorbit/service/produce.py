@@ -624,7 +624,8 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
     if _faces_needed(pipeline) and pol["gates"] == "ask":
         if keyframes is not None:
             try:
-                keyframes(SimpleNamespace(slug=root.name, only=None, max_spend=None, yes=True, ledger=pipeline.ledger))
+                keyframes(SimpleNamespace(slug=root.name, only=None, max_spend=None, yes=True, ledger=pipeline.ledger,
+                                          director=getattr(pipeline, "director", None)))   # its references
             except SystemExit as e:                      # the command reports its own reason
                 report["steps"]["faces"] = f"blocked: {e}"
                 return finish(f"blocked:{str(e)[:120]}")

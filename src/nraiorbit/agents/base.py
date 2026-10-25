@@ -27,6 +27,7 @@ REFERENCE_PARTS = {
     "director": ("action", "emotion"),
     "music_director": ("score",),
     "trailer": ("trailer",),
+    "editor": ("trailer", "emotion"),                  # cuts the trailer again when the owner rejects it
 }
 
 
@@ -39,13 +40,18 @@ class Agent:
         self.cfg = cfg
         self.effort = cfg.get("llm", {}).get("effort", {}).get(self.name, "high")
         self.system = load_prompt(SHARED_PROMPT) + "\n\n" + load_prompt(self.prompt_name or self.name)
-        self.references = reference_examples(self.name, cfg)
-
     notes: str = ""                                    # the owner's notes when the film was sent back for rework
+    film_categories = staticmethod(lambda: ())         # set by the pipeline: the film's categories, once it has a story
+
+    @property
+    def references(self) -> str:
+        """Craft notes from the references that best match the film being made (as it stands when asked)."""
+        return reference_examples(self.name, self.cfg, categories=self.film_categories())
 
     def ask(self, schema: type[T], *, context: str, task: str) -> T:
-        if self.references:
-            context = (context + "\n\n" if context else "") + self.references
+        references = self.references
+        if references:
+            context = (context + "\n\n" if context else "") + references
         if self.notes and self.notes not in task:      # rework_shot carries them already
             task += ("\n\nThe owner sent this film back for rework with these notes; follow them wherever they "
                      f"touch this step:\n<owner_notes>\n{self.notes}\n</owner_notes>")
@@ -55,14 +61,16 @@ class Agent:
         )
 
 
-def reference_examples(agent_name: str, cfg: dict) -> str:
-    """Craft notes learned from public films (library/references), as examples for this agent; '' when there are
-    none or references.enabled is false. They are patterns to learn from, never material to copy."""
+def reference_examples(agent_name: str, cfg: dict, categories=()) -> str:
+    """Craft notes learned from public films (library/references), as examples for this agent: the references that
+    share the most of the film's `categories` first; '' when there are none or references.enabled is false. They
+    are patterns to learn from, never material to copy."""
     r = cfg.get("references") or {}
     if r.get("enabled", True) is False:
         return ""
     from ..service.learn import examples_text, load_profiles
-    profiles = load_profiles(Path(r["folder"]) if r.get("folder") else None, limit=int(r.get("limit", 3)))
+    profiles = load_profiles(Path(r["folder"]) if r.get("folder") else None, limit=int(r.get("limit", 3)),
+                             categories=categories)
     body = examples_text(profiles, parts=("summary", "lessons", *REFERENCE_PARTS.get(agent_name, ())))
     if not body:
         return ""

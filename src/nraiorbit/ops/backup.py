@@ -311,10 +311,11 @@ def sync_library(bucket: str, direction: str = "backup", sets=LIBRARY_SETS, log=
         if direction == "backup":
             if not local.exists() or not any(local.rglob("*")):
                 continue
-            if client is not None:
-                gcs.sync_up(client, local, remote, sync_workers(), only_missing=only_missing)
+            owner = tuple(p.relative_to(local).as_posix() for p in local.rglob("tags.json"))  # the control room's
+            if client is not None:                        # corrections: a run's restored copy never goes back over them
+                gcs.sync_up(client, local, remote, sync_workers(), only_missing=only_missing, exclude=owner)
             else:
-                gcs.rsync(local, remote, no_clobber=only_missing)
+                gcs.rsync(local, remote, no_clobber=only_missing, exclude=owner)
         else:
             local.mkdir(parents=True, exist_ok=True)
             if client is not None:

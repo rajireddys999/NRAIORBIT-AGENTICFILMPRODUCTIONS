@@ -214,6 +214,9 @@ class Pipeline:
         self.director = Director(llm, self.cfg)
         self.music_director = MusicDirector(llm, self.cfg)
         self.editor = Editor(llm, self.cfg)            # the owner's rejection of the cut or the trailer (service/triage)
+        for agent in (self.story_analyst, self.screenwriter, self.critic, self.casting, self.director,
+                      self.music_director, self.editor):  # references matched to the film, from its story
+            agent.film_categories = self._film_categories
         self._owner_notes()
 
     # ------------------------------------------------------------------ driver
@@ -467,6 +470,20 @@ class Pipeline:
         self.p.reports.mkdir(parents=True, exist_ok=True)
         with open(self.p.reports / f"{name}.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+
+    def _film_categories(self) -> list[str]:
+        """The film's categories (service/learn.film_categories) from its story bible; none before it has one."""
+        from types import SimpleNamespace
+
+        from .service.learn import film_categories
+        try:
+            if self.p.bible.exists():
+                return film_categories(self._load(self.p.bible, StoryBible))
+            if self.p.story_input.exists():               # before the bible: the plot it is written from
+                return film_categories(SimpleNamespace(logline=self.p.story_input.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+        return []
 
     def _lock(self) -> CastLock:
         return CastLock.model_validate(yaml.safe_load(self.p.lock.read_text(encoding="utf-8")))

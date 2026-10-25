@@ -18,7 +18,7 @@
   <div>
     <p class="eyebrow">Reference films · {{ refs|length }} queued · {{ done|length }} learned</p>
     <h1 style="margin:0">Films the agents <em>learn from.</em></h1>
-    <p class="muted" style="margin-top:12px;max-width:620px">Gemini watches a public YouTube link and writes craft notes (score, emotional beats, action, characters, trailer). Nothing is downloaded or copied. Each watch is priced from the video's length (read from YouTube); one over $1 waits here for your approval. A feature film at one frame every four seconds is about $2. What Gemini learns goes to the agents on every film: the score notes to the music director, action and emotion to the director, the trailer notes to the trailer cutter, characters and emotion to the writers and casting.</p>
+    <p class="muted" style="margin-top:12px;max-width:620px">Gemini watches a public YouTube link and writes craft notes (score, emotional beats, action, characters, trailer). Nothing is downloaded or copied. Each watch is priced from the video's length (read from YouTube); one over $1 waits here for your approval. Gemini also says what kinds of film each one is an example of (action, family, devotional…): every new film learns first from the references of its own kind. A feature film at one frame every four seconds is about $2. What Gemini learns goes to the agents on every film: the score notes to the music director, action and emotion to the director, the trailer notes to the trailer cutter, characters and emotion to the writers and casting.</p>
   </div>
 </div>
 
@@ -56,6 +56,17 @@
         {% if r.state != 'done' %}<p class="note">Costs about <b>${{ '%.2f'|format(r.estimate_usd) }}</b> to watch{% if r.known_length %} ({{ r.minutes }} min){% else %} (length not known: priced as a 150 min film){% endif %}{% if r.approved_usd %} · approved up to ${{ r.approved_usd }}{% endif %}.</p>{% endif %}
         {% if r.note and r.state != 'blocked:LearnCostError' %}<p class="note">{{ r.note|short(160) }}</p>{% endif %}
         {% if r.state == 'blocked:LearnCostError' %}<p class="note">Over the $1 the runner spends without asking, so it waits for you.</p>{% endif %}
+        {% if r.profile_id %}
+        <p class="note">Used by films that are: {% for c in r.categories %}<span class="learn" style="margin-right:4px">{{ c }}</span>{% else %}<i>no category yet: used only when no better match exists</i>{% endfor %}{% if r.corrected %} <span class="tiny dim">(your choice)</span>{% endif %}</p>
+        {% if r.lessons %}<ul class="note" style="margin:0 0 0 16px">{% for l in r.lessons %}<li>{{ l }}</li>{% endfor %}</ul>{% endif %}
+        <details><summary class="tiny">Change its categories</summary>
+          <form method="post" action="/references/categories" style="display:flex;flex-wrap:wrap;gap:6px 12px;margin-top:8px">
+            <input type="hidden" name="profile_id" value="{{ r.profile_id }}">
+            {% for c in categories %}<label class="tiny" style="display:flex;gap:4px;align-items:center"><input type="checkbox" name="category" value="{{ c }}" style="width:auto"{% if c in r.categories %} checked{% endif %}>{{ c }}</label>{% endfor %}
+            <button class="quiet sm">Save</button>
+          </form>
+        </details>
+        {% endif %}
         <div class="row between" style="margin-top:4px">
           <span class="mono tiny dim">{% if r.updated %}{{ r.updated|local }}{% endif %}</span>
           {% if r.state == 'blocked:LearnCostError' %}<form class="inline" method="post" action="/references/approve"><input type="hidden" name="url" value="{{ r.url }}"><input type="hidden" name="learn" value="{{ r.learn }}"><input type="hidden" name="usd" value="{{ '%.2f'|format(r.estimate_usd) }}"><button class="sm">Approve ${{ '%.2f'|format(r.estimate_usd) }} and watch it</button></form>

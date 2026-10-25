@@ -62,10 +62,49 @@ class TrailerNotes(BaseModel):
     music_and_cuts: str
 
 
+# the kinds of Telugu film a reference is an example of; a film is matched to references by these (film_categories)
+CATEGORIES = ("action", "mass", "family", "drama", "romance", "comedy", "thriller", "horror", "devotional",
+              "mythological", "village", "kids", "animal", "fantasy", "historical", "social", "musical", "sports")
+Category = Literal["action", "mass", "family", "drama", "romance", "comedy", "thriller", "horror", "devotional",
+                   "mythological", "village", "kids", "animal", "fantasy", "historical", "social", "musical", "sports"]
+# whole words in a film's story bible (genres, tone, structure, logline) that make it one of the categories; a
+# word ending in * is a stem (mytholog* matches mythological, mythology)
+CATEGORY_WORDS = {
+    "action": ("action", "fight", "fights", "fighting", "chase", "battle", "battles", "war", "wars"),
+    "mass": ("mass", "commercial", "masala", "elevation"),
+    "family": ("family", "families", "mother", "father", "brother", "sister", "family_drama"),
+    "drama": ("drama", "emotional", "family_drama"), "romance": ("romance", "romantic", "love", "lovers"),
+    "comedy": ("comedy", "comic", "funny", "humour", "humor"),
+    "thriller": ("thriller", "suspense", "mystery", "crime", "detective"), "horror": ("horror", "ghost", "haunted"),
+    "devotional": ("devotional", "bhakti", "temple", "god", "goddess", "divine"),
+    "mythological": ("mytholog*", "myth", "myths", "epic", "puran*", "avatar"),
+    "village": ("village", "villages", "rural", "palle", "village_action"),
+    "kids": ("kids", "children", "child", "childrens"),
+    "animal": ("animal", "animals", "monkey", "monkeys", "elephant", "tiger", "dog", "dogs", "bird", "birds"),
+    "fantasy": ("fantasy", "magic", "magical", "supernatural"), "historical": ("historical", "history"),
+    "social": ("social", "society", "politic*"), "musical": ("musical", "music", "song", "songs", "dance"),
+    "sports": ("sport*", "cricket*", "kabaddi")}
+
+
+def _says(words: set[str], word: str) -> bool:
+    return any(w.startswith(word[:-1]) for w in words) if word.endswith("*") else word in words
+
+
+def film_categories(bible) -> list[str]:
+    """The categories a film is, read from its story bible (genres, tone, structure, logline; a plot alone before
+    there is one), word by word: which references its agents learn from first."""
+    text = " ".join([*(getattr(bible, "genres", None) or []), str(getattr(bible, "tone", "") or ""),
+                     str(getattr(bible, "structure_template", "") or ""), str(getattr(bible, "logline", "") or "")])
+    words = set(re.findall(r"[a-z_]+", text.lower()))
+    return [c for c in CATEGORIES if any(_says(words, w) for w in CATEGORY_WORDS[c])]
+
+
 class ReferenceProfile(BaseModel):
     title: str
     language: str
     kind: Literal["film", "trailer", "scene", "song", "other"]
+    categories: list[Category] = Field(description="the kinds of Telugu film this piece is an example of, from the "
+                                                   "list; all that apply")
     summary: str = Field(description="two sentences on what the piece is and what it does well; no plot spoilers needed")
     score: ScoreNotes
     emotion: EmotionNotes
@@ -199,18 +238,35 @@ def learn(url: str, title: str | None = None, what: str = "all", cfg: dict | Non
     return folder / "profile.json"
 
 
-def load_profiles(folder: Path | None = None, limit: int = 3) -> list[dict]:
-    """The newest reference profiles, for the agents' context."""
+TAGS = "tags.json"           # library/references/<id>/tags.json: the owner's corrected categories (control room)
+
+
+def profile_categories(folder: Path, profile: dict) -> list[str]:
+    """A reference's categories: the owner's correction when there is one, else what Gemini said."""
+    try:
+        owner = json.loads((Path(folder) / TAGS).read_text(encoding="utf-8"))
+        if isinstance(owner, list):
+            return [c for c in owner if c in CATEGORIES]
+    except (OSError, ValueError):
+        pass
+    return [c for c in (profile.get("categories") or []) if c in CATEGORIES]
+
+
+def load_profiles(folder: Path | None = None, limit: int = 3, categories=()) -> list[dict]:
+    """The reference profiles for the agents' context: those sharing the most of the film's `categories` first,
+    the newest first among equals (with no categories, simply the newest), each with its categories."""
     folder = Path(folder or REFERENCES_DIR)
     if not folder.exists():
         return []
-    items = []
+    wanted, items = set(categories or ()), []
     for p in folder.glob("*/profile.json"):
         try:
-            items.append((p.stat().st_mtime, json.loads(p.read_text(encoding="utf-8"))))
+            d = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-    return [d for _, d in sorted(items, key=lambda t: -t[0])[:limit]]
+        d = {**d, "categories": profile_categories(p.parent, d)}
+        items.append((len(wanted & set(d["categories"])), p.stat().st_mtime, d))
+    return [d for _, _, d in sorted(items, key=lambda t: (-t[0], -t[1]))[:limit]]
 
 
 def examples_text(profiles: list[dict], parts: tuple[str, ...] = ("summary", "lessons")) -> str:
@@ -219,6 +275,7 @@ def examples_text(profiles: list[dict], parts: tuple[str, ...] = ("summary", "le
         return ""
     out = []
     for d in profiles:
-        block = {"title": d.get("title"), **{k: d.get(k) for k in parts if k in d}}
+        block = {"title": d.get("title"), "categories": d.get("categories") or [],
+                 **{k: d.get(k) for k in parts if k in d}}
         out.append(json.dumps(block, ensure_ascii=False, indent=1))
     return "\n".join(out)

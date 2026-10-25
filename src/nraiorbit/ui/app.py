@@ -951,10 +951,38 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
 
     @app.get("/references", response_class=HTMLResponse)
     def references(request: Request, email: str = Depends(guard)):
+        from ..service import learn as learn_mod
         refs = load_rows(store, REFERENCES, queue.REFERENCE_COLUMNS)
         for r in refs:
             r.update(reference_price(r))
-        return page("references.html", request, email, refs=refs)
+            pid = reference_id(r)
+            if r["state"] == "done" and pid:              # what Gemini learned: its kinds, and the owner's correction
+                profile = films._json(store, f"library/references/{pid}/profile.json") or {}
+                owner = films._json(store, f"library/references/{pid}/{learn_mod.TAGS}")
+                r.update(profile_id=pid, lessons=(profile.get("lessons") or [])[:3],
+                         categories=[c for c in (owner if isinstance(owner, list) else profile.get("categories") or [])
+                                     if c in learn_mod.CATEGORIES],
+                         corrected=isinstance(owner, list))
+        return page("references.html", request, email, refs=refs, categories=learn_mod.CATEGORIES)
+
+    def reference_id(r: dict) -> str:
+        """The library folder of a learned reference, from where the runner wrote its profile."""
+        parts = str(r.get("profile_uri") or "").replace("\\", "/").rstrip("/").split("/")
+        pid = parts[-2] if len(parts) >= 2 and parts[-1] == "profile.json" else ""
+        return pid if re.fullmatch(r"[A-Za-z0-9_-]{1,80}", pid) else ""
+
+    @app.post("/references/categories")
+    async def reference_categories(request: Request, email: str = Depends(guard)):
+        """The owner corrects what kinds of film a learned reference is an example of: written beside its profile
+        (library/references/<id>/tags.json), which wins over Gemini's and is never sent back by a run."""
+        from ..service import learn as learn_mod
+        form = await request.form()
+        pid = str(form.get("profile_id") or "")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", pid) or not store.exists(f"library/references/{pid}/profile.json"):
+            return back("/references", "no such learned reference; nothing changed")
+        chosen = [c for c in learn_mod.CATEGORIES if c in form.getlist("category")]
+        store.write_text(f"library/references/{pid}/{learn_mod.TAGS}", json.dumps(chosen), "application/json")
+        return back("/references", f"categories saved: {', '.join(chosen) or 'none'}; the next film uses them")
 
     def reference_price(r: dict) -> dict:
         """What watching a reference costs, as the runner prices it: from the length on its row, else from the

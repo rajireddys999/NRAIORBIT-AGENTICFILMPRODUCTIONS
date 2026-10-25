@@ -136,7 +136,8 @@ def test_tick_records_failures_as_blocked(tmp_path):
 # ------------------------------------------------------------------------------------------------------- learn
 
 PROFILE = {
-    "title": "Example Film", "language": "Telugu", "kind": "film", "summary": "A village hero film. Strong interval.",
+    "title": "Example Film", "language": "Telugu", "kind": "film", "categories": ["village", "mass", "action"],
+    "summary": "A village hero film. Strong interval.",
     "score": {"cue_anatomy": "slow build, hit on the cut", "instruments_by_rasa": {"veera": "nadaswaram, dhol"},
               "motifs": "one hero theme", "tempo_and_percussion": "fast dhol in fights"},
     "emotion": {"beat_pacing": "long holds before violence", "rasa_curve": ["shanta", "veera", "karuna", "raudra"],
@@ -243,3 +244,42 @@ def test_a_watch_is_priced_from_the_videos_real_length_and_an_expensive_one_says
                     out_dir=tmp_path / "refs")
     assert learn.learn("https://www.youtube.com/watch?v=other12345", cfg={"google": {}}, client=fake,
                        out_dir=tmp_path / "refs", max_usd=stopped.value.usd * 1.1).exists()   # once approved
+
+
+
+def test_a_film_learns_first_from_the_references_of_its_own_kind(tmp_path):
+    """Each film's agents get the references that share the most of its categories (from its story bible), the
+    newest among equals; the owner's corrected categories win over Gemini's."""
+    import os
+    import time
+
+    from nraiorbit.service.learn import CATEGORIES, film_categories
+    refs = tmp_path / "refs"
+    for n, (name, cats) in enumerate([("climax", ["action", "mass"]), ("lullaby", ["family", "devotional"]),
+                                      ("jungle", ["animal", "kids", "family"]), ("newest", ["comedy"])]):
+        (refs / name).mkdir(parents=True)
+        (refs / name / "profile.json").write_text(json.dumps({**PROFILE, "title": name, "categories": cats}))
+        os.utime(refs / name / "profile.json", (time.time() + n, time.time() + n))
+    bible = SimpleNamespace(genres=["Family", "Animal adventure"], tone="warm, kids", structure_template="family_drama",
+                            logline="A young monkey saves the forest watcher")
+    cats = film_categories(bible)
+    assert {"family", "animal", "kids"} <= set(cats) and set(cats) <= set(CATEGORIES)
+    assert "action" not in cats                                              # "warm" is not war
+    for logline, wrong in (("A detective looking for a lost boy on the Godavari", {"devotional", "historical"}),
+                           ("A software engineer and the heroine walk towards grace, making peace",
+                            {"action", "mass", "kids", "historical", "sports", "animal"}),
+                           ("An underdog cricketer's mythological dream", {"animal"})):
+        assert not wrong & set(film_categories(SimpleNamespace(logline=logline))), logline
+    assert {"sports", "mythological"} <= set(film_categories(SimpleNamespace(logline="An underdog cricketer's "
+                                                                                      "mythological dream")))
+    got = [p["title"] for p in learn.load_profiles(refs, limit=2, categories=cats)]
+    assert got == ["jungle", "lullaby"]                                     # its own kind first
+    assert [p["title"] for p in learn.load_profiles(refs, limit=2)] == ["newest", "jungle"]   # no story yet: newest
+    (refs / "climax" / "tags.json").write_text(json.dumps(["animal", "kids", "family", "not-a-category"]))
+    got = [p["title"] for p in learn.load_profiles(refs, limit=2, categories=cats)]
+    assert got == ["jungle", "climax"]                                      # now as close a match: newer first
+    climax = next(p for p in learn.load_profiles(refs, limit=4) if p["title"] == "climax")
+    assert climax["categories"] == ["animal", "kids", "family"]             # the owner's correction wins
+    cfg = {"references": {"folder": str(refs), "limit": 1}}
+    block = reference_examples("music_director", cfg, categories=["devotional"])
+    assert '"title": "lullaby"' in block and '"devotional"' in block

@@ -4,8 +4,9 @@ film is on now instead of inferring it from plan files that land only when `prod
 Two small records, each always written whole (never read, changed and written back, so two executions cannot race
 on one):
 
-    <slug>/reports/progress.json      the film: state, phase (a pipeline stage or a runner step), its last log line.
-                                      Also kept in the project's reports/, so the normal backup carries it.
+    <slug>/reports/progress.json      the film: state, phase (a pipeline stage or a runner step), its last log line,
+                                      the claim it runs under and its heartbeat. Also kept in the project's
+                                      reports/ (the backup leaves it out: only the run writes the bucket's copy).
     queue/running/<execution>.json    the execution: what it is doing (library-restore, reference, story, idle,
                                       library-backup), on which film and phase. Removed when the tick exits.
 
@@ -24,6 +25,16 @@ from pathlib import Path
 
 RUNNING = "queue/running/"
 THROTTLE_S = 15.0            # a line-only update goes up at most this often; a phase change goes up at once
+HEARTBEAT_S = 120.0          # a film's record is touched this often while its run lives, silent steps included
+STALL_S = 15 * 60            # a film whose run has not beaten for this long is dead: the next tick takes it over
+FENCE_S = 10 * 60            # a run whose beats have not landed for this long pays for nothing more (LostContact)
+BEAT_TRIES = 3               # a beat that does not land is sent again, BEAT_RETRY_S apart
+BEAT_RETRY_S = 10.0
+
+
+class LostContact(RuntimeError):
+    """The bucket has not taken this run's heartbeat for FENCE_S: a later tick may judge the run dead and take the
+    film over, so this run stops before its next paid call rather than pay alongside the new one."""
 MIN_GAP_S = 1.1              # Cloud Storage takes one write a second to the same object; a faster one is refused
 STALE_HOURS = 7.0            # longer than the job's time limit: a running record this old was left behind
 TIMEOUT_S = 10               # a slow bucket must not hold the film up for the client's default minute
@@ -68,8 +79,8 @@ class Tracker:
                        "doing": doing, **fields}
         self.send(self.path, self.record)
 
-    def film(self, slug: str, root: Path) -> "FilmProgress":
-        return FilmProgress(self, slug, Path(root))
+    def film(self, slug: str, root: Path, claim: str | None = None) -> "FilmProgress":
+        return FilmProgress(self, slug, Path(root), claim)
 
     def touch(self, **fields) -> None:
         """The film's phase and last line onto the running record, sent whenever the film's own record is."""
@@ -92,16 +103,19 @@ class Tracker:
             finally:
                 self._last[self.path] = self.clock()
 
-    def send(self, path: str, record: dict) -> None:
+    def send(self, path: str, record: dict) -> bool:
+        """Whether the record landed."""
         if not self.bucket:
-            return
+            return False
         self._space(path)
         try:
             self.uploader(path, json.dumps(record, indent=1, ensure_ascii=False))
         except Exception as exc:
             self.failed(exc)
+            return False
         finally:
             self._last[path] = self.clock()              # the gap runs from when this change landed
+        return True
 
     def _space(self, path: str) -> None:
         """Cloud Storage takes one change a second to the same object and refuses a faster one with 429, so a
@@ -163,14 +177,69 @@ class FilmProgress:
     """One film's progress record while `produce` drives it: a phase goes up at once, log lines at most every
     THROTTLE_S, and the last state when it finishes."""
 
-    def __init__(self, tracker: Tracker, slug: str, root: Path):
+    def __init__(self, tracker: Tracker, slug: str, root: Path, claim: str | None = None):
         self.tracker, self.root = tracker, root
         self.path = f"{slug}/reports/progress.json"
         now = tracker.clock()
         self.record = {"slug": slug, "execution": tracker.execution, "state": "running", "phase": None,
                        "phase_started": None, "started": stamp(now), "updated": stamp(now), "last_line": "",
-                       "lines": 0}
+                       "lines": 0, "beat": stamp(now), "claim": claim}
         self._sent = now
+        import threading
+        self._lock, self._stop = threading.Lock(), threading.Event()
+        self._thread, self.landed = None, None            # the beat thread; when a beat last reached the bucket
+        self.lost = False                                 # out of touch past FENCE_S: never beats or pays again
+
+    def start_beat(self, interval: float = HEARTBEAT_S) -> None:
+        """Touch the record now and every `interval` seconds until stop_beat(), from a thread of its own: a step
+        that logs nothing for half an hour (lip-sync polling) still shows its run is alive, and a run the platform
+        killed (preempted) stops beating, so a later tick takes the film over (queue.claim_dead). It beats on after
+        finish(), through the backup, until the tick has written the film's row."""
+        import threading
+
+        def beat():
+            while not self._stop.wait(interval):
+                for _ in range(BEAT_TRIES):
+                    try:
+                        now = self.tracker.clock()
+                        if self._out_of_touch(now):       # a later tick may own the film by now: never write again
+                            return
+                        self.record["beat"] = stamp(now)
+                        if self.flush(now):
+                            self.landed = now
+                            break
+                    except Exception as exc:              # a beat that fails is sent again, never the thread's end
+                        self.tracker.failed(exc)
+                    if self._stop.wait(BEAT_RETRY_S):
+                        return
+        now = self.tracker.clock()
+        if self.flush(now):                               # this claim's record is in the bucket from the start
+            self.landed = now
+        self.landed = self.landed or now                  # the fence counts from here even if that first one failed
+        self._thread = threading.Thread(target=beat, name="film-heartbeat", daemon=True)
+        self._thread.start()
+
+    def stop_beat(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=15)                 # a beat in flight lands before the tick closes its records
+
+    def _out_of_touch(self, now: float) -> bool:
+        """Whether this run's beats have not reached the bucket for FENCE_S; once so, for good (`lost`): a beat that
+        lands later must not make a run that a later tick may have taken over (STALL_S) look alive again."""
+        if not self.lost and self._thread is not None and self.landed is not None and now - self.landed > FENCE_S:
+            self.lost = True
+            self.tracker.log(f"  this run has not reached the bucket for {(now - self.landed) / 60:.0f} minutes: "
+                             "it pays for nothing more and leaves the film to the next tick")
+        return self.lost
+
+    def fence(self) -> None:
+        """Called before every paid call (SpendLedger.check) and before the YouTube upload: raises LostContact once
+        this run is out of touch (_out_of_touch), before a later tick could judge it dead (STALL_S) and pay for the
+        same work."""
+        if self._out_of_touch(self.tracker.clock()):
+            raise LostContact("this run lost touch with the bucket for over 10 minutes; it stops before paying for "
+                              "more, so no second run pays for the same work. Retry once the bucket answers.")
 
     def phase(self, name: str) -> None:
         now = self.tracker.clock()
@@ -188,16 +257,27 @@ class FilmProgress:
 
     def finish(self, state: str) -> None:
         now = self.tracker.clock()
-        self.record.update(state=state_head(state), updated=stamp(now))
+        self.record.update(state=state_head(state), updated=stamp(now), beat=stamp(now))
         self.flush(now)
 
-    def flush(self, now: float) -> None:
+    def flush(self, now: float) -> bool:
+        """Whether the record reached the bucket."""
+        with self._lock:                                  # the heartbeat thread and the run never write at once
+            return self._flush(now)
+
+    def _flush(self, now: float) -> bool:
         self._sent = now
         try:
             (self.root / "reports").mkdir(parents=True, exist_ok=True)
-            (self.root / "reports" / "progress.json").write_text(
-                json.dumps(self.record, indent=1, ensure_ascii=False), encoding="utf-8")
+            part = self.root / "reports" / "progress.json.part"
+            part.write_text(json.dumps(self.record, indent=1, ensure_ascii=False), encoding="utf-8")
+            os.replace(part, self.root / "reports" / "progress.json")   # never read half-written
         except Exception as exc:                          # a full disk or a line that will not encode: never the run's end
             self.tracker.failed(exc)
-        self.tracker.send(self.path, self.record)
+        if self.lost:                                     # the bucket's record may be the run that took over: its own
+            return False
+        landed = self.tracker.send(self.path, self.record)
+        if landed:
+            self.landed = now
         self.tracker.touch(phase=self.record["phase"], last_line=self.record["last_line"])
+        return landed

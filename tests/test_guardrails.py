@@ -98,7 +98,7 @@ def test_produce_holds_publish_for_the_owner_and_says_when_the_film_check_failed
     from nraiorbit.qa import film
     monkeypatch.setattr(film, "check", lambda root, log=print: {"ok": False, "why": "a 90 ms lag"})
     uploads = []
-    monkeypatch.setattr(produce, "publish_youtube", lambda root, privacy: uploads.append(privacy) or {"film": "x"})
+    monkeypatch.setattr(produce, "publish_youtube", lambda root, privacy, bucket=None: uploads.append(privacy) or {"film": "x"})
     p = _demo_pipeline(tmp_path, policy={"gates": "auto", "publish": "private"})
     report = produce.produce(p, log=lambda *_: None)
     assert report["state"] == "awaiting:publish" and report["steps"]["qa_film"] == "look" and uploads == []

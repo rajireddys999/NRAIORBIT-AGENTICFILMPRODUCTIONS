@@ -636,8 +636,10 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         if stopped_run(slug, row, panel):
             hours = float(os.environ.get("NRAIORBIT_CLAIM_HOURS") or queue.CLAIM_HOURS)   # as the job's claimed() reads
             since = films.when(row.get("updated"))                                         # it, when this service carries it
-            stalled = {"since": row.get("updated"), "hours": hours,
-                       "resumes": (since + datetime.timedelta(hours=hours)).isoformat() if since else None}
+            limit = since + datetime.timedelta(hours=hours) if since else None
+            beat = queue.takeover_at(row, films.progress_record(store, slug))              # a run that beats: minutes
+            resumes = min(t for t in (beat, limit) if t is not None) if (beat or limit) else None
+            stalled = {"since": row.get("updated"), "hours": hours, "resumes": resumes.isoformat() if resumes else None}
         return page("film.html", request, email, f=d, stages=films.STAGES, runner=panel, log_lines=log_lines,
                     latest=latest, last_log_at=last_log_at, runner_running=bool(running), youtube=youtube_status(),
                     doings=doings, dupes=duplicates(panel["executions"], doings), stalled=stalled)
@@ -742,7 +744,8 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                 row["gates"] = gates
             if publish in ("none", "private", "unlisted", "public"):
                 row["publish"] = publish
-            row["updated"] = queue.now()
+            if row["state"] != "producing":                   # a producing row's time names the run's claim: kept
+                row["updated"] = queue.now()
         edit_row(store, slug, change)
         return back(f"/film/{slug}", "saved; the next tick writes it into the project")
 

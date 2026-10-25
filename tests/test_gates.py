@@ -2,6 +2,7 @@
 (cost, faces, publish) leave the same pending marker a pipeline gate does, so an approval from the control room
 or the queue sheet reaches the next run."""
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -172,11 +173,16 @@ def test_publishing_uploads_each_cut_once_and_records_it(tmp_path, monkeypatch):
     monkeypatch.setattr(youtube, "token_available", lambda token: True)
     monkeypatch.setattr(youtube, "credentials", lambda secrets, token, interactive=True: "creds")
     monkeypatch.setattr(youtube, "build_metadata", lambda bible, outline, privacy: {"snippet": {"title": "t"}})
-    sent = []
+    sent, kept = [], []
     monkeypatch.setattr(youtube, "upload", lambda video, meta, creds, captions=None, thumbnail=None:
                         sent.append(video.name) or f"id-{len(sent)}")
-    out = produce.publish_youtube(root, "private")
+    from nraiorbit.ops import backup                   # each upload is in the bucket's record before the next one
+    monkeypatch.setattr(backup, "put_report", lambda root_, bucket, name, log=print: kept.append(
+        (bucket, name, sorted(json.loads((root_ / "reports" / name).read_text())), list(sent))) or True)
+    out = produce.publish_youtube(root, "private", bucket="bkt")
     assert sent == ["movie.mp4", "trailer.mp4"] and out["film"]["id"] == "id-1" and out["trailer"]["id"] == "id-2"
+    assert kept == [("bkt", "youtube.json", ["film"], ["movie.mp4"]),
+                    ("bkt", "youtube.json", ["film", "trailer"], ["movie.mp4", "trailer.mp4"])]
     assert (root / "reports" / "youtube.json").exists()
     assert produce.publish_youtube(root, "private") == out and sent == ["movie.mp4", "trailer.mp4"]
     (root / "11_master" / "trailer.mp4").write_bytes(b"the trailer, re-cut")
@@ -585,8 +591,9 @@ def _fake_film(tmp_path, monkeypatch, gates):
         for g in plan_gates + ([] if until == "shots" else render_gates):
             if not (paths.reviews / f"{g}.approved").exists():
                 raise GatePending(g, tmp_path)
+    from nraiorbit.costing import SpendLedger
     pipeline = SimpleNamespace(p=paths, run=run, log=lambda *_: None, _voiceless=lambda: [],
-                               shots_showing_children=lambda: {},
+                               shots_showing_children=lambda: {}, ledger=SpendLedger(paths.reports / "cost.jsonl", None),
                                cfg={"policy": {"gates": gates, "publish": "private"}, "providers": {}})
     estimate = {"total_usd": 12.5, "video_usd": 10.0, "tts_usd": 2.5}
     monkeypatch.setattr(produce, "cost_gate", lambda p: (None, dict(estimate)))
@@ -594,7 +601,8 @@ def _fake_film(tmp_path, monkeypatch, gates):
     monkeypatch.setattr(film, "check", lambda root, log=None: {"ok": True})
     monkeypatch.setattr(deliver, "deliver", lambda *a, **k: [])
     uploads = []
-    monkeypatch.setattr(produce, "publish_youtube", lambda root, privacy: uploads.append(privacy) or {"film": {"id": "v"}})
+    monkeypatch.setattr(produce, "publish_youtube",
+                        lambda root, privacy, bucket=None: uploads.append(privacy) or {"film": {"id": "v"}})
     return pipeline, paths, uploads, _json
 
 

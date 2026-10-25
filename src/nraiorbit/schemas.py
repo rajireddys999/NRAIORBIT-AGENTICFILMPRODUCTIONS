@@ -195,8 +195,11 @@ class ShotList(BaseModel):
 
 
 class ReworkedShot(BaseModel):
-    """A shot the owner sent back with notes, planned again: who is in frame and the words of the shot."""
+    """A shot the owner sent back with notes, planned again: who is in frame, its framing and the words of the shot."""
+    model_config = ConfigDict(json_schema_extra=_every_field_asked)
 
+    size: ShotSize | None = Field(default=None, description="The shot size: as it was unless the notes ask for "
+                                                            "another framing (a speaker's line needs MCU or closer)")
     characters_in_frame: list[str]
     costume_ids: list[str] = Field(description="Costume per character in frame, same order")
     image_prompt: str = Field(description="Keyframe description in English; no character names, use ids")

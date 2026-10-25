@@ -47,6 +47,7 @@ ROUTE_LABELS = {"reshoot_shots": "Remake shots", "trailer": "Cut the trailer aga
                 "cast": "Cast again", "outline": "Outline again", "story": "Story bible again"}
 RUNNING = {"new", "approved", "retry", "producing"}       # row states in which the runner is, or is about to be, on it
 SETTLED = {"done", "skipped", "held"}                     # statuses that let the next step count
+REMADE = ("render", "assemble", "qa")                   # what a run makes again after the step it is on
 ADVISORY = {"qa"}                                         # steps that never stop the run: no later step waits on them
 PLANNED = "planned (the template's choices; the first tick writes the film's own config)"
 
@@ -548,7 +549,9 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
     put("render", render_status, "; ".join(render_bits))
     cut = ", ".join(x for x, ok in (("film", has_film), ("trailer", has_trailer)) if ok)
     put("assemble", "awaiting" if any(g in gates for g in ("pacing", "final_cut", "trailer")) else
-        ("done" if has_film else "todo"), cut + (" (animatic)" if mock and has_film else ""))
+        ("done" if has_film else "todo"),
+        (cut + (" (animatic)" if mock and has_film else "")
+         + ("; the trailer is next" if has_film and not has_trailer else "")))
     qa_bits = []
     if qa_film is not None and qa_film.get("skipped"):
         qa_bits.append(f"skipped: {qa_film['skipped']}"[:120])
@@ -609,6 +612,14 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         stage[live["stage_key"]] = {"status": "executing", "text": text}
         gate_for.pop(live["stage_key"], None)
         next_stage = live["stage_key"]
+        keys = [k for k, _ in STAGES]
+        at = keys.index(live["stage_key"]) if live["stage_key"] in keys else None
+        for k in keys[:at] if at is not None else []:
+            if stage[k]["status"] in ("blocked", "todo", "partial", "stale"):     # the last run's word: this run
+                stage[k] = {"status": "done", "text": "passed in this run"}        # is past it
+        for k in keys[at + 1:] if at is not None else []:
+            if k in REMADE and stage[k]["status"] == "done":                       # an earlier cut: this run
+                stage[k] = {"status": "stale", "text": f"from an earlier run; remade after {live['stage_label'].lower()}"}
     if live and live.get("stage_key") in stage_tools:          # the tools of the phase under way (music plan, trailer)
         live["tools_line"] = tools.line(tools.phase_tools(stage_tools[live["stage_key"]], live["phase"]))
 

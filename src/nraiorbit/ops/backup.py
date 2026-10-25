@@ -26,6 +26,8 @@ FOLDERS = {                    # set name -> folder under the project; synced bo
     "post": "post",
     "reviews": "reviews",      # the gates' .pending / .approved marks: state, not media
 }
+RUN_WRITES = {"reports": ("progress.json", "progress.json.part")}   # the run sends these itself (service/progress),
+#                     every two minutes: a backup sending its own copy too would race the heartbeat for the object
 # Never 10_edit, 07_video or 05_dialogue: the timeline there points at clips and takes a fresh container re-makes
 # from the caches for free, and a restored timeline without them would make the render step skip and the trailer
 # fail. Assembly masters again when its intermediates are gone (pipeline._assemble).
@@ -156,7 +158,8 @@ def backup(project_root: Path, bucket: str | None = None, sets=None, log=print, 
         log(f"  {local.relative_to(Path(project_root))} -> {remote}")
         try:
             if kind == "folder":
-                gcs.sync_up(client, local, remote, workers, delete=mirror_reviews and name == "reviews")
+                gcs.sync_up(client, local, remote, workers, delete=mirror_reviews and name == "reviews",
+                            exclude=RUN_WRITES.get(name, ()))
             else:
                 b, key = remote[5:].split("/", 1)
                 gcs.upload_file(local, client.bucket(b), key)
@@ -180,7 +183,8 @@ def _backup_gcloud(project_root, bucket, sets, log, mirror_reviews, timings) -> 
         t0 = time.monotonic()
         log(f"  {local.relative_to(Path(project_root))} -> {remote}")
         if kind == "folder":
-            gcs.rsync(local, remote, **({"delete": True} if mirror_reviews and name == "reviews" else {}))
+            gcs.rsync(local, remote, **({"delete": True} if mirror_reviews and name == "reviews" else {}),
+                      **({"exclude": RUN_WRITES[name]} if name in RUN_WRITES else {}))
         else:
             gcs.copy(local, remote)
         done += 1

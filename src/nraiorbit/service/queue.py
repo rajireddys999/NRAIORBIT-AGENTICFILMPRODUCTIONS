@@ -178,11 +178,39 @@ def _write_row(uri: str, row: dict, columns: list[str], key: str, owned: tuple) 
     update_text(uri, change)
 
 
-def write_story(uri: str, row: dict) -> None:
+def write_story(uri: str, row: dict, claim: str | None = None) -> bool:
     """Write one film's state into the sheet as it is now, not as it was when this tick began: in the hours a run
     takes the owner may have lowered this film's cap or changed its visibility, and another tick or the owner may
-    have changed other rows; all of that survives. Only the columns a tick owns are written, under a precondition."""
-    _write_row(uri, row, STORY_COLUMNS, "slug", TICK_COLUMNS)
+    have changed other rows; all of that survives. Only the columns a tick owns are written, under a precondition.
+    With `claim` (the `updated` this run claimed the film under), only while the row still holds it: a run another
+    tick took over leaves the row to that run. Returns whether it was written."""
+    if claim is None:
+        _write_row(uri, row, STORY_COLUMNS, "slug", TICK_COLUMNS)
+        return True
+    wrote = [False]
+
+    def change(text: str) -> str | None:
+        wrote[0] = False
+        rows = rows_of(text, STORY_COLUMNS)
+        mine = next((r for r in rows if r["slug"] == row["slug"]), None)
+        if mine is None or not holds(mine, claim):
+            return None
+        mine.update({c: row.get(c, "") for c in TICK_COLUMNS})
+        wrote[0] = True
+        return csv_of(rows, STORY_COLUMNS)
+    update_text(uri, change)
+    return wrote[0]
+
+
+def holds(row: dict, claim: str) -> bool:
+    """Whether the row is still the claim a run took it under."""
+    return row.get("state") == "producing" and row.get("updated") == claim
+
+
+def still_claimed(uri: str, slug: str, claim: str) -> bool:
+    """Whether the sheet still gives the film to the run that claimed it under `claim`."""
+    row = next((r for r in load(uri, STORY_COLUMNS) if r["slug"] == slug), None)
+    return row is not None and holds(row, claim)
 
 
 def claim_story(uri: str, row: dict) -> bool:
@@ -309,12 +337,41 @@ def claimed(row: dict, hours: float | None = None, state: str = "producing") -> 
     return datetime.datetime.now(datetime.timezone.utc) - since < datetime.timedelta(hours=limit)
 
 
-def ready_story(rows: list[dict]) -> dict | None:
+def _when(text) -> datetime.datetime | None:
+    try:
+        t = datetime.datetime.fromisoformat(str(text))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)
+
+
+def takeover_at(row: dict, record) -> datetime.datetime | None:
+    """When the run holding this `producing` row counts as gone, from the film's progress record: its run beats every
+    progress.HEARTBEAT_S until the row is written, so STALL_S after its last beat it was killed (preempted) or hung.
+    Only a record of this very claim counts (it names the claim: the row's `updated` when it was taken) and only one
+    that beats (an older runner's does neither): otherwise None, and the claim's own time limit (claimed) holds."""
+    from .progress import STALL_S
+    if row.get("state") != "producing" or not row.get("updated") or not isinstance(record, dict):
+        return None
+    beat = _when(record.get("beat"))
+    if beat is None or record.get("claim") != row["updated"]:
+        return None                                       # an earlier run's record: it says nothing of this claim
+    return beat + datetime.timedelta(seconds=STALL_S)
+
+
+def claim_dead(row: dict, record, now: datetime.datetime | None = None) -> bool:
+    """Whether the run that claimed this `producing` row is gone (takeover_at has passed): the film is taken over at
+    once instead of when the claim expires, hours later."""
+    at = takeover_at(row, record)
+    return at is not None and (now or datetime.datetime.now(datetime.timezone.utc)) > at
+
+
+def ready_story(rows: list[dict], dead=None) -> dict | None:
     """The first row the runner may act on: new, retry, approved, or a run that was interrupted (producing, once
-    its claim has expired)."""
+    its claim has expired, or at once when `dead(row)` says its run is gone: claim_dead)."""
     for state in ("approved", "retry", "producing", "new"):
         for r in rows:
-            if r["state"] == state and not claimed(r):
+            if r["state"] == state and (not claimed(r) or (state == "producing" and dead is not None and dead(r))):
                 return r
     return None
 
@@ -470,6 +527,14 @@ def _backup_project(root: Path, bucket: str, mirror_reviews: bool, log) -> None:
     log(_timing_line("backup", timings, time.monotonic() - t0))
 
 
+def _record(fetch_story, bucket: str, slug: str):
+    """The film's progress record as the bucket holds it; None when there is none or it cannot be read."""
+    try:
+        return json.loads(fetch_story(f"gs://{bucket}/{slug}/reports/progress.json") or "null")
+    except Exception:                                     # unreadable: whatever asks falls back to the safe answer
+        return None
+
+
 def _takes_progress(fn) -> bool:
     """Whether a produce_fn can hear the film's progress; a two-argument one (the tests' fakes) cannot."""
     try:
@@ -497,7 +562,17 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
     summary = {"reference": None, "story": None}
     # the sheets first: a tick with nothing to do (most of them) never touches the library
     refs = load(references_uri, REFERENCE_COLUMNS)
-    r, peek = ready_reference(refs), ready_story(load(stories_uri, STORY_COLUMNS))
+    told = set()
+
+    def dead(row: dict) -> bool:                          # a run the platform killed: taken over now, not in hours
+        if not bucket:
+            return False
+        gone = claim_dead(row, _record(fetch_story, bucket, row["slug"]))
+        if gone and row["slug"] not in told:
+            told.add(row["slug"])
+            log(f"  story {row['slug']}: its run stopped beating (killed or preempted); taking it over")
+        return gone
+    r, peek = ready_reference(refs), ready_story(load(stories_uri, STORY_COLUMNS), dead=dead)
     if not r and not peek:
         _doing(tracker, "idle")                           # nothing to do: said so until the tick exits
         return summary
@@ -526,18 +601,20 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
         log(f"  reference {r['url']}: {r['state']}")
     # one story step, from the sheet as it is now: a reference profile takes minutes, and the owner may edit meanwhile
     rows = load(stories_uri, STORY_COLUMNS)
-    s = ready_story(rows)
+    s = ready_story(rows, dead=dead)
     prior, was_approved = (s["state"], s["state"] == "approved") if s else (None, False)
     if s and not claim_story(stories_uri, s):            # the claim, before the slow restore: one tick per film
         log(f"  story {s['slug']}: {CHANGED_SINCE_READ}")
         s = None
     if s:
+        claimed_at = s["updated"]                         # the claim's own time: the sheet says whose film it is
         root = projects_dir / s["slug"]
         _doing(tracker, "story", slug=s["slug"])
         mirror_reviews, film, restored = False, None, False
         if tracker is not None and _takes_progress(produce_fn):
-            film = tracker.film(s["slug"], root)          # from the claim on: a failure before produce (the restore,
-        try:                                              # the template, the cap) overwrites the last run's record
+            film = tracker.film(s["slug"], root, claim=claimed_at)   # from the claim on: a failure before
+            film.start_beat()                             # produce (the restore, the template, the cap) overwrites
+        try:                                              # the last run's record; it beats however quiet the step
             if bucket and not (root / "pipeline.yaml").exists():
                 from ..ops import backup
                 if film is not None:
@@ -574,6 +651,14 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
                 gate = pending_gate(root)
                 if gate:
                     approve_gate(root, gate)
+                    if bucket:                            # in the bucket at once: a run killed before its own
+                        from ..ops import backup          # backup must not lose the owner's approval
+                        try:
+                            backup.backup(root, bucket, sets=["reviews"], log=lambda *_: None,
+                                          mirror_reviews=mirror_reviews)
+                        except Exception as exc:          # the run goes on; its own backup tries again at the end
+                            log(f"  the {gate} approval is not in the bucket yet: {type(exc).__name__}: "
+                                f"{str(exc)[:120]}")
             if film is not None:
                 report = produce_fn(root, bucket, progress=film)
             else:
@@ -584,7 +669,7 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
                 s.update(state=report["state"], note=(report.get("steps", {}).get("publish") or "")
                          if isinstance(report.get("steps", {}).get("publish"), str) else
                          str(report.get("steps", {}).get("publish", "")), updated=now())
-            if bucket:
+            if bucket and still_claimed(stories_uri, s["slug"], claimed_at):   # never over a run that took over
                 _backup_project(root, bucket, mirror_reviews, log)
         except RestoreFailed as exc:                      # not the film's fault: the row goes back as it was, with a
             if film is not None:
@@ -601,12 +686,19 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
                 s.update(**after_quota(s), updated=now())
             else:
                 s.update(state=f"blocked:{type(exc).__name__}", note=str(exc)[:200], updated=now())
-            if bucket and restored:                       # what the run paid for and saved before it failed (a later
+            if bucket and restored and still_claimed(stories_uri, s["slug"], claimed_at):   # what the run paid for
+                                                          # and saved before it failed (a later
                 try:                                      # scene's shot list, clips) outlives the container
                     _backup_project(root, bucket, mirror_reviews, log)
                 except Exception as e:                    # the row keeps the run's own error
                     log(f"  backup after the failure failed: {type(e).__name__}: {str(e)[:120]}")
-        write_story(stories_uri, s)
+        try:
+            if not write_story(stories_uri, s, claim=claimed_at):
+                log(f"  story {s['slug']}: another run has the film now (this one was out of touch); its row is "
+                    f"that run's to write (this run ended {s['state']})")
+        finally:
+            if film is not None:
+                film.stop_beat()                          # the row says where the film is: no claim left to show
         summary["story"] = {"slug": s["slug"], "state": s["state"]}
         log(f"  story {s['slug']}: {s['state']}")
     elif not r:

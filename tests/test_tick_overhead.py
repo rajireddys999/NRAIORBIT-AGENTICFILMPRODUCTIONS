@@ -215,7 +215,7 @@ def test_sets_move_one_at_a_time_in_set_order_each_with_every_transfer(tmp_path,
         calls.append(("down", remote.rsplit("/", 1)[1], workers, threading.current_thread() is me))
         return real_down(storage, remote, local, workers)
 
-    def up(storage, local, remote, workers=8, delete=False):
+    def up(storage, local, remote, workers=8, delete=False, exclude=()):
         calls.append(("up", remote.rsplit("/", 1)[1], workers, threading.current_thread() is me))
         return real_up(storage, local, remote, workers, delete=delete)
     monkeypatch.setattr(gcs, "sync_down", down)
@@ -550,7 +550,7 @@ def test_a_run_that_fails_after_the_restore_still_backs_up_what_it_saved(tmp_pat
                      log=lines.append)
     row = queue.load(st, queue.STORY_COLUMNS)[0]
     assert out["story"]["state"] == row["state"] == "blocked:LLMError" and row["note"] == "sc002: 429 rate limited"
-    assert seen == [True] and cloud.objects["film/04_shots/sc003.json"] == b'{"scene_id": "sc003"}'
+    assert seen == [True, True] and cloud.objects["film/04_shots/sc003.json"] == b'{"scene_id": "sc003"}'
     assert "film/reviews/story.approved" in cloud.objects and "film/reviews/story.pending" not in cloud.objects
     assert len([x for x in lines if x.startswith("  backup: ")]) == 1
 
@@ -585,3 +585,21 @@ def test_no_backup_after_a_failed_restore_and_a_failed_backup_never_hides_the_ru
     row = queue.load(st, queue.STORY_COLUMNS)[0]
     assert row["state"] == "blocked:LLMError" and row["note"] == "sc002: 429 rate limited"
     assert "  backup after the failure failed: BucketError: 503 backend error" in lines
+
+
+def test_the_backup_never_sends_the_runs_own_progress_record(tmp_path, monkeypatch):
+    """The run writes <slug>/reports/progress.json itself every two minutes; a backup sending its copy too would race
+    the heartbeat for the object (Cloud Storage refuses a second write in the same second) or put an older one back."""
+    from types import SimpleNamespace as N
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    for name in ("progress.json", "cost.jsonl"):
+        (reports / name).write_text("{}")
+    blob = N(crc32c="")
+    monkeypatch.setattr(gcs, "_listing", lambda storage, uri: ("bkt", "film/reports", {"progress.json": blob,
+                                                                                      "old.json": blob}))
+    moved = []
+    monkeypatch.setattr(gcs, "upload_file", lambda local, bucket, name: moved.append(("put", name)))
+    blob.delete = lambda: moved.append(("del", "old.json"))
+    gcs.sync_up(None, reports, "gs://bkt/film/reports", workers=1, delete=True, exclude=backup.RUN_WRITES["reports"])
+    assert sorted(moved) == [("del", "old.json"), ("put", "film/reports/cost.jsonl")]

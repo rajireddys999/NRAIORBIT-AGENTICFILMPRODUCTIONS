@@ -319,7 +319,8 @@ def cmd_keyframes(args) -> None:
     print(f"Keyframes: {len(todo)} image(s) -> ${len(todo) * price:.2f}. No video is generated.")
     if not _confirm("Generate them?", args.yes):
         return
-    ledger = SpendLedger(paths.reports / "cost.jsonl", cfg.get("budget", {}).get("max_usd"))
+    ledger = getattr(args, "ledger", None) or SpendLedger(paths.reports / "cost.jsonl",   # the runner's: fenced
+                                                          cfg.get("budget", {}).get("max_usd"))
     video = VeoVideo(root, AssetRegistry.load(REPO_ROOT / "library"), cfg, pricing, ledger, load_navarasa())
     video.safer = safer_shot_fn(root, lambda: Director(_claude(root, cfg), cfg))
     made = 0

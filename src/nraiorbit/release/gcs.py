@@ -13,6 +13,7 @@ import base64
 import datetime
 import mimetypes
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -57,14 +58,16 @@ def signed_url(bucket: str, name: str, days: int = 7, filename: str | None = Non
     return blob.generate_signed_url(version="v4", expiration=datetime.timedelta(days=days), method="GET", **kw)
 
 
-def rsync(src: str | Path, dst: str | Path, delete: bool = False, no_clobber: bool = False) -> None:
+def rsync(src: str | Path, dst: str | Path, delete: bool = False, no_clobber: bool = False, exclude=()) -> None:
     """Mirror a folder to (or from) the bucket with gcloud. `src`/`dst` are a local path or a gs:// URI. With
-    `no_clobber`, only what the destination lacks is copied; nothing there is replaced."""
+    `no_clobber`, only what the destination lacks is copied; nothing there is replaced. `exclude`: paths under the
+    folder left alone both ways."""
     if shutil.which("gcloud") is None:
         raise BucketError("gcloud is not installed; the Google Cloud CLI does the folder sync")
     env = {k: v for k, v in os.environ.items() if k != "CLOUDSDK_AUTH_ACCESS_TOKEN"}   # a preset token hides the SA
     cmd = ["gcloud", "storage", "rsync", "-r", *(["--delete-unmatched-destination-objects"] if delete else []),
-           *(["--no-clobber"] if no_clobber else []), str(src), str(dst)]
+           *(["--no-clobber"] if no_clobber else []),
+           *(["--exclude", "^(" + "|".join(re.escape(x) for x in exclude) + ")$"] if exclude else []), str(src), str(dst)]
     proc = RUN(cmd, capture_output=True, text=True, env=env)
     if proc.returncode != 0:
         raise BucketError(f"gcloud storage rsync failed: {proc.stderr[-800:]}")
@@ -192,17 +195,19 @@ def sync_down(storage, remote_prefix_uri: str, local_dir: str | Path, workers: i
 
 
 def sync_up(storage, local_dir: str | Path, remote_prefix_uri: str, workers: int = 8, delete: bool = False,
-            only_missing: bool = False) -> int:
+            only_missing: bool = False, exclude=()) -> int:
     """Send up every local file that is missing under the prefix or differs; with `delete`, also remove the objects
     that have no local file (gcloud's --delete-unmatched-destination-objects). With `only_missing`, an object that
-    exists is never replaced, whatever it holds (gcloud's --no-clobber). Returns how many objects changed."""
+    exists is never replaced, whatever it holds (gcloud's --no-clobber). `exclude`: paths under the folder neither
+    sent nor deleted (another writer owns them). Returns how many objects changed."""
     local_dir = Path(local_dir)
     try:
         bucket, key, remote = _listing(storage, remote_prefix_uri)
     except Exception as e:
         raise BucketError(f"listing {remote_prefix_uri} failed: {type(e).__name__}: {e}"[-800:]) from e
     local = {p.relative_to(local_dir).as_posix(): p for p in sorted(local_dir.rglob("*"))
-             if p.is_file() and not _partial(p)}
+             if p.is_file() and not _partial(p) and p.relative_to(local_dir).as_posix() not in exclude}
+    remote = {rel: blob for rel, blob in remote.items() if rel not in exclude}
 
     def put(rel, path):
         def run():

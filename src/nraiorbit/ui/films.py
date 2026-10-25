@@ -42,6 +42,89 @@ REWORK_DEFAULT = {"story": "story", "outline": "outline", "scenes": "scenes", "c
 # where Reject is offered (the film-cut and trailer reviews, the upload, and a finished film): the AI editor in the
 # runner (service/triage) decides what to redo from the owner's note
 REJECT_GATES = ("pacing", "final_cut", "trailer", "publish")
+# each gate as the owner reads it at the top of the film page: what to approve, what it is for, where to look
+GATE_HELP = {
+    "story": ("Approve the story", "The characters, their world and the plot: everything after this is built on it.",
+              "#story", "Read the story bible"),
+    "outline": ("Approve the outline", "The scenes in order, and how long each one runs.", "#outline",
+                "Read the outline"),
+    "scenes": ("Approve the scenes and dialogue", "What every character says, scene by scene.", "#scenes",
+               "Read the scenes"),
+    "cast": ("Approve the cast", "Who plays each character: their look and their voice.", "#cast", "See the cast"),
+    "shots": ("Approve the shot lists", "How every scene is filmed, shot by shot.", "#shots", "See the shot lists"),
+    "cost": ("Approve the cost", "What the paid work (picture, voices, music, lip-sync) will cost, against your cap. "
+             "Nothing is paid for before you approve.", "#money", "See the estimate"),
+    "faces": ("Approve the first frames", "One still per shot, showing who is in it. The video is made from these, so "
+              "check the faces and the framing.", "#faces", "See the first frames"),
+    "render": ("Approve the picture and sound", "Every shot filmed and voiced, with music and lip-sync, before the "
+               "film is cut.", "#render", "See what was made"),
+    "pacing": ("Approve the film cut", "Watch the whole film: the cut, the sound, the title and end cards.",
+               "#assemble", "Watch the film"),
+    "final_cut": ("Approve the film cut", "Watch the whole film: the cut, the sound, the title and end cards.",
+                  "#assemble", "Watch the film"),
+    "trailer": ("Approve the trailer", "Watch the trailer. After this come the reels, the checks and the downloads.",
+                "#assemble", "Watch the trailer"),
+    "publish": ("Approve the YouTube upload", "Uploads the film and the trailer to your channel. Watch them first.",
+                "#assemble", "Watch the film and trailer"),
+}
+# what each runner phase is, in the owner's words: (while it runs, once it is done)
+PHASE_WORDS = {
+    "restore": ("Getting the film's saved work from storage", "Got the film's saved work from storage"),
+    "setup": ("Getting the run ready", "Got the run ready"),
+    "story_bible": ("Writing the story bible", "Wrote the story bible"),
+    "outline": ("Writing the outline", "Wrote the outline"),
+    "scenes": ("Writing the scenes and dialogue", "Wrote the scenes and dialogue"),
+    "cast": ("Casting the characters", "Cast the characters"),
+    "shots": ("Planning the shots", "Planned the shots"),
+    "voices": ("Checking that everyone who speaks has a voice", "Checked the voices"),
+    "cost": ("Working out the cost", "Worked out the cost"),
+    "faces": ("Drawing the first frames", "Drew the first frames"),
+    "music_plan": ("Planning the music", "Planned the music"),
+    "render": ("Making the picture, voices, music and lip-sync (anything already paid for is reused free)",
+               "Made the picture, voices, music and lip-sync"),
+    "assemble": ("Cutting the film", "Cut the film"),
+    "trailer": ("Cutting the trailer", "Cut the trailer"),
+    "reels": ("Cutting the 5-second reels", "Cut the reels"),
+    "qa": ("Checking the finished film", "Checked the finished film"),
+    "deliver": ("Preparing the downloads", "Prepared the downloads"),
+    "publish": ("At the YouTube step", "Passed the YouTube step"),
+    "backup": ("Saving everything to storage", "Saved everything to storage"),
+}
+RUN_ENDED = {"done": "The last run finished", "awaiting": "The last run stopped to wait for you",
+             "blocked": "The last run stopped on a problem", "failed": "The last run failed",
+             "running": "The last run stopped without finishing"}
+
+
+def step_of(key: str | None) -> tuple[int, str] | None:
+    """(step number, label) of a stage key, as the pipeline below numbers them."""
+    keys = [k for k, _ in STAGES]
+    return (keys.index(key) + 1, dict(STAGES)[key]) if key in keys else None
+
+
+def gate_help(gate: str) -> dict:
+    title, why, href, look = GATE_HELP.get(gate) or (f"Approve {gate.replace('_', ' ')}", "", "#flow", "See the step")
+    step = step_of(GATES.get(gate))
+    return {"gate": gate, "title": title, "why": why, "href": href, "look": look,
+            "step": f"Step {step[0]} · {step[1]}" if step else ""}
+
+
+def activity(record, live, tz=None) -> dict | None:
+    """The run in words for the top of the page: what it is doing now (only while its execution runs) and the steps
+    it finished, newest first (the record's history; an older runner's record has none), or how the last run ended."""
+    if not isinstance(record, dict):
+        return None
+    history = record.get("history") if isinstance(record.get("history"), list) else []
+    done = [{"text": PHASE_WORDS.get(h["phase"], ("", h["phase"].replace("_", " ").capitalize()))[1],
+             "at": clock(h.get("done"), tz)}
+            for h in reversed(history) if isinstance(h, dict) and isinstance(h.get("phase"), str) and h["phase"]][:6]
+    now = None
+    if live:
+        phase = str(live.get("phase") or "")
+        now = {"text": PHASE_WORDS.get(phase, (phase.replace("_", " ").capitalize() or "Starting", ""))[0],
+               "since": live.get("since")}
+    ended = None if live else {"text": RUN_ENDED.get(str(record.get("state")), "The last run ended"),
+                               "at": record.get("updated") if when(record.get("updated")) else None}
+    return {"now": now, "done": done, "ended": ended}
 REJECTS_PER_DAY = 6
 ROUTE_LABELS = {"reshoot_shots": "Remake shots", "trailer": "Cut the trailer again", "mix": "Mix the sound again",
                 "music": "Plan the score again", "shots": "Shot lists again", "scenes": "Scenes & dialogue again",
@@ -733,6 +816,8 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         "rework_steps": REWORK_STEPS, "rework_default": REWORK_DEFAULT.get(
             (gates[0] if gates else (issue or {}).get("stage")) or "", "render"),
         "gate_for": gate_for, "next_stage": next_stage, "live": live, "animatic": mock, "issue": issue,
+        "needs": [gate_help(g) for g in gates], "activity": activity(progress, live, tz),
+        "issue_step": (lambda s: f"Step {s[0]} · {s[1]}" if s else "")(step_of((issue or {}).get("stage"))),
         "cost_lines": cost_lines(cash["estimate"], cfg, [sh for sh in shots if sh.get("shot_id") not in clips],
                                  [sh for sh in with_leads if sh.get("shot_id") not in keyframes], scenes, cues)
         if not mock else [],

@@ -181,8 +181,8 @@ def test_film_page_shows_every_stage_and_the_craft(client, root):
     assert "First frames" in html and "/file/demo/06_keyframes/" in html         # the keyframe gallery
     assert "/file/library/characters/" in html                                   # the identity image on the cast card
     assert "1 of" in html and "filmed" in html                                   # render progress from inbox/video
-    assert "Approve faces and continue" in html
-    assert "Waiting at the <b>faces</b> gate" in html
+    assert "Approve the first frames" in html and "Approve and continue" in html     # plain words, and its step
+    assert "Step 7 · First frames" in html and 'class="stage ' not in html             # no tile strip up top
     assert "10:00:01" in html                                                    # the runner log
     # the first frame is served from the local store
     shot = next((root / "demo" / "06_keyframes").iterdir()).name
@@ -680,7 +680,7 @@ def test_the_runners_progress_record_marks_the_stage_under_way(client, root, mon
     assert "execution <span class=\"mono\">nraiorbit-runner-mfkkm</span>" in html
     assert 'class="node executing"' in html and 'class="badge executing live">running</span>' in html
     assert 'Scenes &amp; dialogue<span class="badge executing live"' in card(html, "scenes")
-    assert 'class="stage executing"' in html and "running now · scenes" in html
+    assert "Now: <b>Writing the scenes and dialogue</b>" in html             # what runs, in plain words
     assert '<noscript><meta http-equiv="refresh" content="20"></noscript>' in html and "sessionStorage" in html
     assert "location.reload()" in html and "pagehide" not in html             # only its own refresh keeps the place
     assert 'name="gate"' not in html                                           # a run under way offers no button
@@ -840,8 +840,7 @@ def test_each_stage_names_the_service_or_model_behind_it(client, root):
     render = node(html, "Picture, voices, music, lips")
     assert "Veo 3.1 Fast 720p" in render and "sync.so sync-3" in render and "ElevenLabs eleven_v4" in render
     assert "Renders on mocks" not in html and "Gemini image gemini-2.5-flash-image" in node(html, "First frames")
-    assert any(f"Picture, voices, music, lips: {s} · Claude Opus 5.5 (cue sheet) · Veo 3.1 Fast 720p" in html
-               for s in ("todo", "partial"))                                              # the compact strip
+    assert "Claude Opus 5.5 (cue sheet)" in render and "Veo 3.1 Fast 720p" in render   # in the pipeline below
     board = client.get("/").text
     assert "Render: Veo 3.1 Fast 720p · inbox recordings" in board and ">mock</span>" not in board
 
@@ -1506,3 +1505,26 @@ def test_shorts_go_up_only_when_the_owner_asks_and_never_twice(client, root):
     html = client.get("/film/demo").text
     assert "youtube.com/shorts/S1" in html and "OldCutShort" not in html and "Upload the 2 reels" in html
     assert "quotaExceeded" in html
+
+
+def test_the_top_of_the_page_says_what_needs_you_and_what_the_run_did_in_plain_words(client, root, monkeypatch):
+    """Only what needs the owner, each with its step, what it is for and its button; then what the run is doing
+    and the steps it finished. The step tiles are in the pipeline below, not here."""
+    html = client.get("/film/demo").text
+    top = html[html.index("What needs you"):html.index('id="ahead"') if 'id="ahead"' in html else html.index('id="flow"')]
+    assert "Step 7 · First frames" in top and "The video is made from these" in top and "See the first frames" in top
+    assert 'class="stage ' not in top
+    (root / "demo" / "reviews" / "faces.pending").unlink()
+    rs = rows(root)
+    rs[0].update(state="done")
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    (root / "demo" / "reports" / "progress.json").write_text(json.dumps({**PROGRESS, "state": "done",
+        "updated": "2026-10-19T07:30:00+00:00", "history": [{"phase": "render", "done": "2026-10-19T07:00:00+00:00"},
+                                                           {"phase": "reels", "done": "2026-10-19T07:10:00+00:00"}]}))
+    html = client.get("/film/demo").text
+    assert "Nothing needs you right now." in html and "The last run finished on 2026-10-19 03:30 EDT" in html
+    assert html.index("Cut the reels") < html.index("Made the picture, voices, music and lip-sync")   # newest first
+    assert "Send back for rework" in html and "choose the step to redo yourself" in html
+    for odd in (7, True, [{"phase": ["render"]}, {"phase": {"x": 1}}, "text"]):    # never a crash on an odd record
+        (root / "demo" / "reports" / "progress.json").write_text(json.dumps({**PROGRESS, "state": "done", "history": odd}))
+        assert client.get("/film/demo").status_code == 200

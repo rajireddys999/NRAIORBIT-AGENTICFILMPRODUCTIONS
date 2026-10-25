@@ -74,7 +74,7 @@ def test_both_records_have_the_shared_shape_and_paths(tmp_path):
     assert rec == {"slug": "rain", "execution": "ex1", "state": "running", "phase": "scenes",
                    "phase_started": progress.stamp(T0 + 60), "started": progress.stamp(T0 + 60),
                    "updated": progress.stamp(T0 + 60), "last_line": "", "lines": 0, "beat": progress.stamp(T0 + 60),
-                   "claim": None}
+                   "claim": None, "history": []}
     assert json.loads((tmp_path / "rain" / "reports" / "progress.json").read_text()) == rec   # the backup carries it
     run = bucket.record(RUN)
     assert run["doing"] == "story" and run["slug"] == "rain" and run["phase"] == "scenes"
@@ -756,3 +756,37 @@ def test_a_run_that_was_taken_over_leaves_the_row_to_the_run_that_took_it(tmp_pa
     assert (row["state"], row["updated"]) == ("producing", "2999-01-01T00:00:00+00:00")   # that run's claim stands
     assert any("another run has the film now" in str(x) for x in heard)
     assert backed == []                                                         # nor its files and markers
+
+
+def test_the_film_record_keeps_the_steps_it_finished_for_the_page(tmp_path):
+    """The top of the film page says what the run did, in order: each phase that ended goes onto a short history;
+    a run that stops at a gate has not finished the phase it stopped in, one that is done has."""
+    bucket, clock = Bucket(), Clock()
+    film = _tracker(bucket, clock).film("rain", tmp_path / "rain")
+    for n, name in enumerate(["restore", "setup", "render", "assemble", "trailer"]):
+        clock.t = T0 + 60 * n
+        film.phase(name)
+    film.finish("awaiting:trailer")
+    rec = bucket.record(FILM)
+    assert [h["phase"] for h in rec["history"]] == ["restore", "setup", "render", "assemble"]
+    assert rec["history"][-1]["done"] == progress.stamp(T0 + 240)
+    clock.t += 60
+    film.phase("qa")
+    clock.t += 60
+    film.finish("done")
+    assert [h["phase"] for h in bucket.record(FILM)["history"]][-2:] == ["trailer", "qa"]
+    for name in ["story_bible", "outline", "scenes", "cast", "shots", "music_plan"]:   # on disk: a moment each
+        clock.t += 0.2
+        film.phase(name)
+    clock.t += 0.2
+    film.phase("render")
+    assert [h["phase"] for h in bucket.record(FILM)["history"]] == ["restore", "setup", "render", "assemble",
+                                                                    "trailer", "qa"]   # reused steps are no news
+    clock.t += 300
+    film.phase("assemble")                                                  # done again: one entry, moved last
+    assert [h["phase"] for h in bucket.record(FILM)["history"]][-1] == "render"
+    assert sum(h["phase"] == "render" for h in bucket.record(FILM)["history"]) == 1
+    for n in range(20):
+        clock.t += 10
+        film.phase(f"step{n}")
+    assert len(bucket.record(FILM)["history"]) == progress.HISTORY

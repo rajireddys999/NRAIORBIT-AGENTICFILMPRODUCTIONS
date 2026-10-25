@@ -1658,3 +1658,56 @@ def test_music_is_built_from_a_learned_reference_only_at_the_price_shown_and_the
     assert "learned from kalki_CEvTjeXOC3U" in page_ and 'href="/feed"' in page_
     only_sad = client.get("/feed?mood=sad").text
     assert "sad_bgm_20261025-210600.m4a" in only_sad and "action_bgm_20261025-210512.m4a" not in only_sad
+
+
+
+def test_the_sound_effects_starter_pack_is_offered_at_its_price_and_listed_once_made(client, root):
+    from urllib.parse import unquote
+
+    from nraiorbit.service import feed as feed_mod
+    n = len(feed_mod.STARTER_SFX)
+    price = round(n * 0.03, 2)
+    html = client.get("/feed").text
+    assert f"Make the starter pack: {n} sound effects · about ${price:.2f}" in html
+    r = client.post("/feed/sfx-build", data={"usd": "0.01"}, follow_redirects=False)
+    assert f"the price is now ${price:.2f}" in unquote(r.headers["location"]) and client.started == []
+    client.post("/feed/sfx-build", data={"usd": f"{price:.2f}"}, follow_redirects=False)
+    ask = json.loads((root / "queue" / "feed" / "starter.sfx.json").read_text())
+    assert ask["count"] == n and ask["price"] == price and client.started == ["nraiorbit-runner"]
+    html = client.get("/feed").text
+    assert f"Making {n} sound effects" in html and "Make the starter pack" not in html
+    sfx = root / "custom_model_feed" / "sfx"
+    sfx.mkdir(parents=True)
+    (sfx / "punch_sfx_20261025-220000.mp3").write_bytes(b"x")
+    (sfx / "punch_sfx_20261025-220000.json").write_text(json.dumps({"name": "punch_sfx_20261025-220000.mp3",
+                                                                    "mood": "punch", "seconds": 1.5,
+                                                                    "prompt": "a heavy cinematic punch"}))
+    (root / "queue" / "feed" / "starter.sfx.json").unlink()
+    html = client.get("/feed").text
+    assert "punch_sfx_20261025-220000.mp3" in html and "a heavy cinematic punch" in html
+    assert "Make the starter pack" not in html                               # made: not offered again
+
+
+
+def test_the_starter_pack_is_never_asked_for_twice_and_a_partial_one_offers_only_whats_missing(client, root):
+    from urllib.parse import unquote
+
+    from nraiorbit.service import feed as feed_mod
+    n = len(feed_mod.STARTER_SFX)
+    builds = root / "custom_model_feed" / "builds"
+    builds.mkdir(parents=True)
+    (builds / "starter.sfx.json").write_text(json.dumps({"kind": "sfx", "started": queue.now()}))   # under way
+    html = client.get("/feed").text
+    assert "being made" in html and "Make the starter pack" not in html
+    r = client.post("/feed/sfx-build", data={"usd": f"{n * 0.03:.2f}"}, follow_redirects=False)
+    assert "already being made" in unquote(r.headers["location"]) and client.started == []
+    (builds / "starter.sfx.json").write_text(json.dumps({"kind": "sfx", "started": queue.now(), "finished": queue.now(),
+                                                         "made": ["punch_sfx_1.mp3"], "spent_usd": 0.03}))
+    sfx = root / "custom_model_feed" / "sfx"
+    sfx.mkdir(parents=True)
+    (sfx / "punch_sfx_1.mp3").write_bytes(b"x")
+    (sfx / "punch_sfx_1.json").write_text(json.dumps({"name": "punch_sfx_1.mp3", "mood": "punch"}))
+    html = client.get("/feed").text
+    left = round((n - 1) * 0.03, 2)
+    assert f"Make the {n - 1} missing starter sound effects · about ${left:.2f}" in html
+    assert "The starter pack: 1 sound effects for $0.03" in html

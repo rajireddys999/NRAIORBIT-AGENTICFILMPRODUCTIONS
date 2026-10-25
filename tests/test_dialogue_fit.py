@@ -188,7 +188,7 @@ def test_lines_that_fit_are_left_alone(film):
     assert produce.fit_dialogue(film, log=lambda *_: None, measured={}) == [] and asked == []
 
 
-def test_a_render_stopped_for_long_lines_shortens_them_and_asks_the_cost_again(film, monkeypatch):
+def test_a_render_stopped_for_long_lines_shortens_them_and_asks_the_cost_again_when_it_grew(film, monkeypatch):
     from nraiorbit.pipeline import LinesTooLong
     from nraiorbit.service import produce
     over = [{"block_id": "sc001_b002", "scene_id": "sc001", "seconds": 6.0, "start_s": 4.2, "room_s": 4.3,
@@ -207,10 +207,153 @@ def test_a_render_stopped_for_long_lines_shortens_them_and_asks_the_cost_again(f
     monkeypatch.setattr("nraiorbit.service.rehearse.save", lambda pipeline, log=print: None)
     (film.p.reviews).mkdir(parents=True, exist_ok=True)
     (film.p.reviews / "cost.approved").write_text('{"total_usd": 1.5}\n')
+    calls = [0]
+
+    def priced(p):                                     # what the owner approved before the run, then the new voices
+        calls[0] += 1
+        return None, {"total_usd": 1.5 if calls[0] == 1 else 4.0, "lipsync_usd": 1.0}
+    monkeypatch.setattr(produce, "cost_gate", priced)
     report = produce.produce(film, log=lambda *_: None)
     assert report["state"] == "awaiting:cost" and report["steps"]["dialogue"].endswith("sc001_b002")
+    assert report["steps"]["cost"] == "awaiting:cost (lines shortened to fit their shots)"
     assert runs == ["shots", None]                                          # stopped in the video step, not before
     assert not (film.p.reviews / "cost.approved").exists() and (film.p.reviews / "cost.pending").exists()
+
+
+def test_lines_shortened_within_what_the_owner_approved_go_straight_on(film, monkeypatch):
+    """The owner approved the cost once: new voices for a few shortened lines (cents) never ask it again, and the
+    render review is not re-opened for them either."""
+    from nraiorbit.pipeline import LinesTooLong
+    from nraiorbit.service import produce
+    runs = []
+
+    def run(until=None, force=()):
+        runs.append(until)
+        if until is None and len(runs) == 2:
+            raise LinesTooLong([{"block_id": "sc001_b002", "scene_id": "sc001", "seconds": 6.0, "start_s": 4.2,
+                                 "room_s": 4.3, "over_s": 1.7}], {"sc001_b002": 6.0})
+    film.run = run
+    film.cfg = {**film.cfg, "providers": {**film.cfg["providers"], "video": "mock"}}
+    monkeypatch.setattr(produce, "fit_dialogue", lambda p, log, measured=None: ["sc001_b002"] if measured else [])
+    monkeypatch.setattr(produce, "cost_gate", lambda p: (None, {"total_usd": 1.6, "lipsync_usd": 1.0}))
+    monkeypatch.setattr(produce, "_faces_needed", lambda p: False)
+    monkeypatch.setattr("nraiorbit.service.rehearse.save", lambda pipeline, log=print: None)
+    monkeypatch.setattr("nraiorbit.qa.film.check", lambda root, log=None: {"ok": True})
+    film.p.reviews.mkdir(parents=True, exist_ok=True)
+    (film.p.reviews / "cost.approved").write_text('{"total_usd": 1.5, "spent_usd": 0}\n')
+    (film.p.reviews / "render.approved").write_text("ok\n")
+    report = produce.produce(film, log=lambda *_: None)
+    assert runs == ["shots", None, None] and report["state"] != "awaiting:cost"
+    assert (film.p.reviews / "cost.approved").exists() and not (film.p.reviews / "cost.pending").exists()
+    assert (film.p.reviews / "render.approved").exists()
+
+
+def _faceless(*timing):
+    from nraiorbit.pipeline import CutDoesNotMatch
+    face = "sc001_b002: meera is on screen in sc001_s002 but not lip-synced (no speaker face found)"
+    return CutDoesNotMatch([face, *timing], ["sc001_s002"], list(timing))
+
+
+def _cut_stops(film, monkeypatch, off):
+    from nraiorbit.service import produce
+    runs, reworked = [], []
+
+    def run(until=None, force=()):
+        runs.append(until)
+        if until is None:
+            raise off
+    film.run = run
+    film.rework_shots = lambda ids, notes, reason="": reworked.append((list(ids), notes, reason)) or list(ids)
+    film.cfg = {**film.cfg, "providers": {**film.cfg["providers"], "video": "mock"}}
+    monkeypatch.setattr(produce, "cost_gate", lambda p: (None, {}))
+    monkeypatch.setattr(produce, "_faces_needed", lambda p: False)
+    monkeypatch.setattr("nraiorbit.service.rehearse.save", lambda pipeline, log=print: None)
+    return runs, reworked
+
+
+def test_a_speaker_lip_sync_could_not_find_is_planned_again_closer_once(film, monkeypatch):
+    """A group shot where the speaker's face is too small to sync: the director plans that shot again as a close-up
+    of whoever speaks (a new take, so new first frames and, under "ask", the faces check) and the render goes on.
+    Each shot gets that once; a second miss stops the cut with the list, as before."""
+    from nraiorbit.service import produce
+    runs, reworked = _cut_stops(film, monkeypatch, _faceless())
+    report = produce.produce(film, log=lambda *_: None)
+    assert reworked == [(["sc001_s002"], produce.CLOSE_UP_NOTE, "lip-sync found no speaker's face in it.")]
+    assert report["steps"]["close_ups"] == "planned again as close-ups: sc001_s002"
+    assert runs == ["shots", None, None] and report["state"].startswith("blocked:the cut does not match")
+    assert "sc001_s002" in json.loads((film.p.reports / produce.FACE_REPLANS).read_text())
+    runs.clear()
+    assert produce.produce(film, log=lambda *_: None)["state"].startswith("blocked:")
+    assert len(reworked) == 1 and runs == ["shots", None]                  # never planned again a second time
+
+
+def test_a_cut_off_in_its_timing_is_stopped_and_nothing_is_planned_again(film, monkeypatch):
+    from nraiorbit.service import produce
+    runs, reworked = _cut_stops(film, monkeypatch, _faceless("sc001_b003: heard at 0:09.0-0:12.5, its shots run "
+                                                             "0:08.0-0:12.0"))
+    report = produce.produce(film, log=lambda *_: None)
+    assert reworked == [] and runs == ["shots", None] and report["state"].startswith("blocked:")
+
+
+def test_the_sync_check_names_the_shots_where_lip_sync_found_no_face(film):
+    from nraiorbit.pipeline import CutDoesNotMatch
+    film.cfg = {**film.cfg, "providers": {**film.cfg["providers"], "lipsync": "sync_so"}}
+    (film.p.edit / "timeline.json").write_text(json.dumps({"film_seconds": 12, "render_id": "r1", "shots": [
+        {"shot_id": f"sc001_s00{i}", "start_s": 4.0 * (i - 1), "duration_s": 4.0} for i in (1, 2, 3)], "dialogue": [
+        {"ref_id": f"sc001_b00{i}", "start_s": 4.0 * (i - 1) + 0.2, "duration_s": 3.5} for i in (1, 2, 3)]}))
+    (film.p.reports / "lipsync.jsonl").write_text(json.dumps({"shot_id": "sc001_s002", "render": "r1",
+                                                              "mode": "not synced", "why": "no speaker face found"}) + "\n")
+    with pytest.raises(CutDoesNotMatch) as off:
+        film._check_sync()
+    assert off.value.faceless == ["sc001_s002"] and off.value.timing == []
+
+
+def test_a_line_spoken_only_in_wide_shots_is_planned_again_closer():
+    blocks = [line("b1", "arjun", "అ" * 10)]
+    wide = [N(shot_id="s1", duration_s=4.0, block_ids=["b1"], characters_in_frame=["arjun"], size="WS")]
+    assert any("wide shot only (s1)" in x for x in fit.shot_problems(blocks, wide, 0.0))
+    assert not fit.shot_problems(blocks, [N(**{**vars(wide[0]), "size": "MCU"})], 0.0)
+    closer = wide + [N(shot_id="s2", duration_s=4.0, block_ids=["b1"], characters_in_frame=["arjun"], size="CU")]
+    assert not any("wide" in x for x in fit.shot_problems(blocks, closer, 0.0))   # one shot shows the face
+    assert not fit.shot_problems(blocks, wide, 0.0, voiced_off={"arjun"})        # heard off screen by design
+
+
+def test_lip_sync_paid_in_an_earlier_container_is_not_estimated_again(film):
+    """A fresh container has no synced clips on disk; the run records say what was paid. A shot synced on its current
+    take, with the cast's voices as they are and no line of the film rewritten since, is free; anything else is
+    counted (a new take, a new voice or a moved line is a new sync.so job)."""
+    import yaml
+    from nraiorbit.costing import lipsynced_before, voice_mark
+    root = film.p.root
+    at, assets = "2026-10-25T03:00:00+00:00", {"arjun": "voices/arjun@v1", "meera": "voices/meera@v1"}
+    lock = {c: {"character_asset": f"{c}_x", "voice_asset": v, "costumes": {}} for c, v in assets.items()}
+    (root / "cast.lock.yaml").write_text(yaml.safe_dump({"lock_version": 1, "characters": lock}))
+    cfg = {"voice": {"cast": {"arjun": "el-voice-1"}}, "providers": {"tts": "elevenlabs"}}
+    voices = json.loads(json.dumps(voice_mark(cfg, lock)))                     # as the record keeps it
+    recs = [{"shot_id": f"sc001_s00{i}", "mode": "crop", "clip": f"/work/retake_2/07_video/sc001_s00{i}/take_1.mp4",
+             "at": at, "voices": voices} for i in (1, 2, 3)]
+    (root / "reports" / "lipsync.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+    (root / "takes.yaml").write_text("sc001_s003: 2\n")                    # a new take since: a new clip to sync
+    (root / "reports" / "dialogue_fit.json").write_text(json.dumps({
+        "sc001_b001": {"now_te": "అ", "at": "2026-10-25T02:00:00+00:00"}}))     # rewritten before it was synced
+    shots = {f"sc001_s00{i}": 4.0 for i in (1, 2, 3)}
+    assert lipsynced_before(root, shots, cfg) == {"sc001_s001", "sc001_s002"}  # the folder's "retake_2" is no take
+    (root / "cast.lock.yaml").write_text((root / "cast.lock.yaml").read_text().replace("meera@v1", "meera@v2"))
+    assert lipsynced_before(root, shots, cfg) == set()                        # a new voice for someone in the cast
+    (root / "cast.lock.yaml").write_text((root / "cast.lock.yaml").read_text().replace("meera@v2", "meera@v1"))
+    picked = {**cfg, "voice": {"cast": {"arjun": "el-voice-2"}}}               # the owner picked another voice
+    assert lipsynced_before(root, shots, picked) == set()
+    (root / "reports" / "dialogue_fit.json").write_text(json.dumps({
+        "sc001_b003": {"now_te": "అ", "at": "2026-10-25T03:30:00+00:00"}}))     # any line rewritten after: lines move
+    assert lipsynced_before(root, shots, cfg) == set()
+    (root / "reports" / "dialogue_fit.json").unlink()
+    with open(root / "reports" / "lipsync.jsonl", "a") as f:
+        f.write(json.dumps({"shot_id": "sc001_s001", "mode": "not synced", "clip": "take_1.mp4", "at": at,
+                            "voices": voices}) + "\n")
+    assert lipsynced_before(root, shots, cfg) == {"sc001_s002"}                    # its latest record is the one that counts
+    old = [{k: v for k, v in r.items() if k != "voices"} for r in recs]       # an older runner's records say no voices
+    (root / "reports" / "lipsync.jsonl").write_text("".join(json.dumps(r) + "\n" for r in old))
+    assert lipsynced_before(root, shots, cfg) == set()
 
 
 def test_the_cut_that_does_not_match_is_never_shown(film):
@@ -323,3 +466,20 @@ def test_a_line_given_no_length_is_not_placed():
     blocks = [line("b1", "hero"), line("b2", "hero"), line("b3", "hero")]
     lines = fit.plan_lines([("sc", 0.0, shots, blocks)], {"b1": 1.5, "b2": 0.0, "b3": 1.5}, film_end=4.0)
     assert [ln.block_id for ln in lines] == ["b1", "b3"] and lines[1].start_s == pytest.approx(1.95)
+
+
+def test_shots_planned_again_after_most_of_the_film_was_paid_for_ask_the_cost_again(film, monkeypatch):
+    """The estimate counts only what is left to make: $2 of an approved $40 once $38 is spent. Close-ups planned
+    again add $20; spent since the approval plus what is left ($58) is past the $40 approved, so the owner is asked,
+    although $20 alone is under it."""
+    from nraiorbit.service import produce
+    runs, reworked = _cut_stops(film, monkeypatch, _faceless())
+    left = iter([2.0, 20.0])
+    monkeypatch.setattr(produce, "cost_gate", lambda p: (None, {"total_usd": next(left)}))
+    film.p.reviews.mkdir(parents=True, exist_ok=True)
+    (film.p.reviews / "cost.approved").write_text('{"total_usd": 40, "spent_usd": 0}\n')
+    (film.p.reports / "cost.jsonl").write_text(json.dumps({"provider": "veo", "item": "clips", "usd": 38.0}) + "\n")
+    report = produce.produce(film, log=lambda *_: None)
+    assert reworked and report["state"] == "awaiting:cost" and not (film.p.reviews / "cost.approved").exists()
+    marker = json.loads((film.p.reviews / "cost.pending").read_text())
+    assert marker["total_usd"] == 20.0 and marker["spent_usd"] == 38.0      # the next approval knows where it began

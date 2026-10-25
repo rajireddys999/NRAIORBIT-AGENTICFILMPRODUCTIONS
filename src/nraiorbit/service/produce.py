@@ -32,7 +32,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from ..costing import BudgetExceeded, SpendLedger
-from ..pipeline import GatePending, LinesTooLong, Pipeline, PipelineBlocked
+from ..pipeline import CutDoesNotMatch, GatePending, LinesTooLong, Pipeline, PipelineBlocked
 from .queue import GATES as GATE_ORDER
 
 RUNNER_GATES = ("cost", "faces", "publish")          # raised here, between pipeline runs, not inside a stage
@@ -353,7 +353,8 @@ def fit_dialogue(pipeline: Pipeline, log=print, measured: dict[str, float] | Non
             shutil.rmtree(p.dialogue / bid, ignore_errors=True)   # voiced again with the new words
             was = record.get(bid) if isinstance(record.get(bid), dict) else {}
             record[bid] = {"was_te": was.get("was_te", blocks[bid][1].text_te), "now_te": te,
-                           "keep_to_s": round(shrink[bid], 2), "tries": int(was.get("tries") or 0) + 1}
+                           "keep_to_s": round(shrink[bid], 2), "tries": int(was.get("tries") or 0) + 1,
+                           "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
             done.append(bid)
     for bid in shrink:                                       # asked but not rewritten: that counts as a try too
         if bid not in done:
@@ -366,13 +367,94 @@ def fit_dialogue(pipeline: Pipeline, log=print, measured: dict[str, float] | Non
         return []
     (p.edit / "timeline.json").unlink(missing_ok=True)     # the cut is made again with the new voices
     pipeline.invalidate("assemble")
-    for suffix in ("approved", "pending"):                 # the new voices are reviewed again where that is asked
-        (p.reviews / f"render.{suffix}").unlink(missing_ok=True)
     kept = [b for b in done if record[b]["now_te"]]
     dropped = [b for b in done if not record[b]["now_te"]]
     log("  to fit their shots: " + "; ".join(x for x in (f"shortened {', '.join(kept)}" if kept else "",
                                                          f"dropped {', '.join(dropped)}" if dropped else "") if x))
     return done
+
+
+FACE_REPLANS = "face_replans.json"          # reports/: shots planned again as close-ups because no face was found
+CLOSE_UP_NOTE = ("Lip-sync could not find the speaker's face in this shot. Plan it again as a medium close-up of "
+                 "whoever speaks here (both speakers in a tight two-shot if two of them talk): size MCU or CU, their "
+                 "faces large in frame, turned toward the camera at a slight angle, clearly lit, mouths visible. Keep "
+                 "the story moment and the place; the other characters may be out of frame or soft behind them.")
+
+
+def replan_faceless(pipeline: Pipeline, shots: list[str], log=print) -> list[str]:
+    """Shots whose speaker lip-sync could not find (too small, turned away) planned again by the director as close-ups,
+    once each (reports/face_replans.json): a fresh take, so new first frames are drawn and, under "ask", the faces
+    check shows them. Returns the shots planned again ([] when each was tried before: the cut stays stopped)."""
+    path = pipeline.p.reports / FACE_REPLANS
+    try:
+        done = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        done = {}
+    done = done if isinstance(done, dict) else {}
+    todo = [sid for sid in shots if sid not in done]
+    if not todo:
+        return []
+    found = pipeline.rework_shots(todo, CLOSE_UP_NOTE, reason="lip-sync found no speaker's face in it.")
+    done.update({sid: datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds") for sid in found})
+    pipeline.p.reports.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(done, indent=1), encoding="utf-8")
+    if found:
+        log(f"  planned again as close-ups (lip-sync found no speaker's face): {', '.join(found)}")
+    return found
+
+
+def spent_usd(pipeline: Pipeline) -> float:
+    return round(SpendLedger(pipeline.p.reports / "cost.jsonl", None).spent(), 2)
+
+
+def approved_spent(pipeline: Pipeline, gate: str) -> float | None:
+    """What had been spent when the estimate the owner approved was made (its marker's spent_usd); None for an
+    approval from before that was written down."""
+    try:
+        for line in (pipeline.p.reviews / f"{gate}.approved").read_text(encoding="utf-8").splitlines():
+            if line.startswith("{"):
+                at = json.loads(line).get("spent_usd")
+                return None if at is None else float(at)
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
+
+
+def within_approval(pipeline: Pipeline, total: float) -> bool | None:
+    """Whether what was spent since the owner approved the cost, plus `total` still to pay, stays within the approved
+    figure (COST_GROWTH): an estimate counts only what is left to make, so re-planned shots added after most of the
+    film was paid for would otherwise pass under an approval for the whole film. None when the approval does not say
+    what had been spent (an older one)."""
+    was, at = approved_figure(pipeline, "cost"), approved_spent(pipeline, "cost")
+    if was is None or at is None:
+        return None
+    return (spent_usd(pipeline) - at) + total <= was * (1 + COST_GROWTH) + 0.5
+
+
+def cost_marker(pipeline: Pipeline, estimate: dict) -> str:
+    """The cost gate's marker: the estimate, and what had been spent when it was made."""
+    return json.dumps({**estimate, "spent_usd": spent_usd(pipeline)}) + "\n"
+
+
+def _cost_again(pipeline: Pipeline, report: dict, why: str) -> str | None:
+    """After the plan changed mid-run (lines shortened, shots planned again): None when it costs nothing more, or
+    when what was spent since the owner's approval plus the new estimate stays within it (within_approval), so the
+    run goes straight on; else the state to stop in (over the cap, or the cost asked again with the new figure). An
+    approval that does not say what had been spent is asked again for any cost."""
+    block, preview = cost_gate(pipeline)
+    estimate = {k: preview[k] for k in ("total_usd", "video_usd", "keyframe_usd", "tts_usd", "music_usd",
+                                        "lipsync_usd") if k in preview} if preview else {}
+    report["steps"]["estimate"] = estimate
+    if block:
+        report["steps"]["render"] = block["why"]
+        return block["state"]
+    total = float(estimate.get("total_usd") or 0)
+    if not total or (approved(pipeline, "cost") and within_approval(pipeline, total)):
+        return None
+    clear(pipeline, "cost", "approved")
+    hold(pipeline, "cost", cost_marker(pipeline, estimate))
+    report["steps"]["cost"] = f"awaiting:cost ({why})"
+    return "awaiting:cost"
 
 
 def approve(pipeline: Pipeline, gate: str, text: str = "approved by policy\n") -> None:
@@ -440,6 +522,8 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
     root = pipeline.p.root
     if progress is not None:
         pipeline.on_stage = progress.phase
+        if hasattr(progress, "fence"):                   # a run that lost touch with the bucket pays for nothing more
+            pipeline.ledger.fence = progress.fence
         pipeline.log, log = _teed(pipeline.log, progress), _teed(log, progress)
     step = progress.phase if progress is not None else (lambda name: None)
     pol = policy_of(pipeline.cfg, gates=gates, publish=publish)
@@ -497,9 +581,8 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
 
     # lines that would run past their shots are written shorter now, before anything is paid for them
     shortened = fit_dialogue(pipeline, log)
-    if shortened:
-        report["steps"]["dialogue"] = f"shortened to fit their shots: {', '.join(shortened)}"
-        clear(pipeline, "cost", "approved")              # their new voices (and lip-sync) are asked for again
+    if shortened:                                        # their new voices: the cost check below asks again only
+        report["steps"]["dialogue"] = f"shortened to fit their shots: {', '.join(shortened)}"   # if the bill grew
 
     # a film that cannot be voiced is never offered a cost to approve: speech runs after each scene's clips
     step("voices")                                       # its stop belongs on the voices step, not the shot lists
@@ -524,13 +607,14 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
     total = float(preview.get("total_usd") or 0) if preview else 0.0
     if total > 0:
         was = approved_figure(pipeline, "cost") if approved(pipeline, "cost") else None
-        grown = was is not None and total > was * (1 + COST_GROWTH) + 0.5     # the plan changed since the approval
+        fits = within_approval(pipeline, total) if was is not None else None
+        grown = was is not None and (not fits if fits is not None else      # spent since, plus what is left
+                                     total > was * (1 + COST_GROWTH) + 0.5)  # an older approval: the estimate alone
         if not approved(pipeline, "cost") or grown:
-            marker = json.dumps(report["steps"]["estimate"]) + "\n"
             clear(pipeline, "cost", "approved")
-            hold(pipeline, "cost", marker)
-            report["steps"]["cost"] = "awaiting:cost" + (f" (the estimate grew from {was:.2f} to {total:.2f})"
-                                                         if grown else "")
+            hold(pipeline, "cost", cost_marker(pipeline, report["steps"]["estimate"]))
+            report["steps"]["cost"] = "awaiting:cost" + (f" (the cost grew past the ${was:.2f} approved)" if grown
+                                                         else "")
             return finish("awaiting:cost")
     clear(pipeline, "cost")                                   # passed: never shown as waiting
     report["steps"]["cost"] = "approved" if approved(pipeline, "cost") else "not needed"
@@ -540,7 +624,7 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
     if _faces_needed(pipeline) and pol["gates"] == "ask":
         if keyframes is not None:
             try:
-                keyframes(SimpleNamespace(slug=root.name, only=None, max_spend=None, yes=True))
+                keyframes(SimpleNamespace(slug=root.name, only=None, max_spend=None, yes=True, ledger=pipeline.ledger))
             except SystemExit as e:                      # the command reports its own reason
                 report["steps"]["faces"] = f"blocked: {e}"
                 return finish(f"blocked:{str(e)[:120]}")
@@ -563,22 +647,26 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
                 continue
             report["steps"]["render"] = f"awaiting:{g.gate}"
             return finish(f"awaiting:{g.gate}")
+        except CutDoesNotMatch as off:                     # no face for lip-sync: those shots planned closer, once
+            again = replan_faceless(pipeline, off.faceless, log) if off.faceless and not off.timing else []
+            if not again:
+                report["steps"]["render"] = f"blocked: {off}"
+                return finish(f"blocked:{str(off)[:120]}")
+            report["steps"]["close_ups"] = f"planned again as close-ups: {', '.join(again)}"
+            stop = _cost_again(pipeline, report, "shots planned again as close-ups")
+            if stop is None:
+                continue                                  # new first frames: the faces check stops it under "ask"
+            return finish(stop)
         except LinesTooLong as long_lines:                # voiced lines past their shots: shortened, cost asked
             shortened = fit_dialogue(pipeline, log, measured=long_lines.measured)
             if not shortened:
                 report["steps"]["render"] = f"blocked: {long_lines}"
                 return finish(f"blocked:{str(long_lines)[:120]}")
             report["steps"]["dialogue"] = f"shortened to fit their shots: {', '.join(shortened)}"
-            _, preview = cost_gate(pipeline)
-            estimate = {k: preview[k] for k in ("total_usd", "video_usd", "keyframe_usd", "tts_usd", "music_usd",
-                                                "lipsync_usd") if k in preview} if preview else {}
-            if not float(estimate.get("total_usd") or 0):    # nothing to pay for them: straight on
-                continue
-            clear(pipeline, "cost", "approved")
-            report["steps"]["estimate"] = estimate
-            hold(pipeline, "cost", json.dumps(estimate) + "\n")
-            report["steps"]["cost"] = "awaiting:cost (lines shortened to fit their shots)"
-            return finish("awaiting:cost")
+            stop = _cost_again(pipeline, report, "lines shortened to fit their shots")
+            if stop is None:
+                continue                                  # within what the owner approved: straight on
+            return finish(stop)
         except (PipelineBlocked, BudgetExceeded) as b:
             from ..providers.google_ai import quota_used_up
             if not isinstance(b, BudgetExceeded) and quota_used_up(b):   # what was made is kept: the next tick
@@ -639,8 +727,10 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
         report["steps"]["publish"] = "awaiting:publish"
         return finish("awaiting:publish")
     else:
+        if pipeline.ledger.fence is not None:            # out of touch: another run may be uploading it now
+            pipeline.ledger.fence()
         try:
-            report["steps"]["publish"] = publish_youtube(root, pol["publish"])
+            report["steps"]["publish"] = publish_youtube(root, pol["publish"], bucket=bucket)
             clear(pipeline, "publish", "pending", "approved")     # one approval, one upload: a new cut asks again
         except Exception as exc:
             report["steps"]["publish"] = f"skipped: {type(exc).__name__}: {str(exc)[:160]}"
@@ -684,7 +774,7 @@ def cost_gate(pipeline: Pipeline) -> tuple[dict | None, dict | None]:
     return None, preview
 
 
-def publish_youtube(root: Path, privacy: str) -> dict:
+def publish_youtube(root: Path, privacy: str, bucket: str | None = None) -> dict:
     """Upload the film (and the trailer when there is one) with the metadata the outline gives. The OAuth client
     secrets come from YOUTUBE_CLIENT_SECRETS (default client_secret.json next to the project) and the token, made
     once on a laptop, from YOUTUBE_TOKEN (default <project>/.youtube_token.json)."""
@@ -708,6 +798,9 @@ def publish_youtube(root: Path, privacy: str) -> dict:
     def record():
         done_path.parent.mkdir(parents=True, exist_ok=True)
         done_path.write_text(json.dumps(out, indent=1, default=str), encoding="utf-8")
+        if bucket:                                        # in the bucket at once: a run killed now never uploads it again
+            from ..ops import backup
+            backup.put_report(root, bucket, done_path.name)
 
     meta = youtube.build_metadata(bible, outline, privacy=privacy)
     captions = {lang: master / f"subs_{lang}.srt" for lang in ("te", "en") if (master / f"subs_{lang}.srt").exists()}

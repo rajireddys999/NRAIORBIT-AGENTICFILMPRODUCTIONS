@@ -73,7 +73,8 @@ def test_both_records_have_the_shared_shape_and_paths(tmp_path):
     rec = bucket.record(FILM)
     assert rec == {"slug": "rain", "execution": "ex1", "state": "running", "phase": "scenes",
                    "phase_started": progress.stamp(T0 + 60), "started": progress.stamp(T0 + 60),
-                   "updated": progress.stamp(T0 + 60), "last_line": "", "lines": 0}
+                   "updated": progress.stamp(T0 + 60), "last_line": "", "lines": 0, "beat": progress.stamp(T0 + 60),
+                   "claim": None}
     assert json.loads((tmp_path / "rain" / "reports" / "progress.json").read_text()) == rec   # the backup carries it
     run = bucket.record(RUN)
     assert run["doing"] == "story" and run["slug"] == "rain" and run["phase"] == "scenes"
@@ -568,3 +569,190 @@ def test_the_gap_runs_from_when_a_change_landed_not_when_it_was_sent(tmp_path):
     t.start("idle")
     t.close()
     assert began[RUN][1] - landed[RUN][0] >= progress.MIN_GAP_S - 0.05     # waited from the end of the upload
+
+
+# ---------------------------------------------------------------------------------------------- the heartbeat
+
+def _until(cond, seconds=5.0):
+    import time
+    end = time.monotonic() + seconds
+    while time.monotonic() < end and not cond():
+        time.sleep(0.01)
+    return cond()
+
+
+class FlakyClock(Clock):
+    fail = False
+
+    def __call__(self):
+        if self.fail:
+            raise OSError("a beat that cannot be sent")
+        return self.t
+
+
+def test_a_film_beats_until_its_row_is_written_and_a_failed_beat_is_only_missed(tmp_path, monkeypatch):
+    """While its run lives, a film's record is touched every HEARTBEAT_S, however quiet the step (lip-sync polls for
+    half an hour without a line); it beats on after finish(), through the backup, until the tick writes the row.
+    A killed run stops beating: that is how a later tick knows to take the film over."""
+    import time
+    monkeypatch.setattr(progress, "BEAT_RETRY_S", 0.01)
+    bucket, clock = Bucket(), FlakyClock()
+    heard = []
+    film = _tracker(bucket, clock, log=heard.append).film("rain", tmp_path)
+    film.start_beat(interval=0.01)
+    assert bucket.record(FILM)["beat"] == progress.stamp(T0)                    # in the bucket from the start
+    clock.fail = True
+    assert _until(lambda: heard)                                                # a beat failed: logged, not fatal
+    clock.fail, clock.t = False, T0 + 120
+    assert _until(lambda: bucket.record(FILM)["beat"] == progress.stamp(T0 + 120))
+    film.finish("awaiting:trailer")
+    clock.t = T0 + 240
+    assert _until(lambda: bucket.record(FILM)["beat"] == progress.stamp(T0 + 240))
+    assert bucket.record(FILM)["state"] == "awaiting"                           # the beat keeps what finish said
+    film.stop_beat()
+    time.sleep(0.05)
+    sent = bucket.puts(FILM)
+    time.sleep(0.05)
+    assert bucket.puts(FILM) == sent
+
+
+def test_only_a_claims_own_beating_record_frees_it_early():
+    import datetime as dt
+    utc = dt.timezone.utc
+    now = dt.datetime(2026, 10, 25, 5, 0, tzinfo=utc)
+    row = {"slug": "rain", "state": "producing", "updated": "2026-10-25T04:16:04+00:00"}
+    rec = {"state": "running", "started": "2026-10-25T04:16:05+00:00", "beat": "2026-10-25T04:21:00+00:00",
+           "claim": "2026-10-25T04:16:04+00:00", "execution": "ex-kpw7p"}
+    assert queue.takeover_at(row, rec) == dt.datetime(2026, 10, 25, 4, 36, tzinfo=utc)
+    assert queue.claim_dead(row, rec, now)                                       # preempted at 04:21: silent since
+    assert not queue.claim_dead(row, {**rec, "beat": "2026-10-25T04:50:00+00:00"}, now)          # still beating
+    assert queue.claim_dead(row, {**rec, "state": "awaiting"}, now)              # it ended; the row was never written
+    assert not queue.claim_dead(row, {**rec, "state": "awaiting", "beat": "2026-10-25T04:58:00+00:00"}, now)  # backup
+    assert not queue.claim_dead(row, {**rec, "claim": "2026-10-25T03:00:00+00:00"}, now)         # an earlier run's
+    assert not queue.claim_dead(row, {k: v for k, v in rec.items() if k != "claim"}, now)         # names no claim
+    assert not queue.claim_dead(row, {k: v for k, v in rec.items() if k != "beat"}, now)          # an older runner
+    assert not queue.claim_dead({**row, "state": "awaiting:cost"}, rec, now)
+    assert not queue.claim_dead(row, None, now) and not queue.claim_dead(row, ["not", "a", "record"], now)
+
+
+def _claimed_by_a_run(st, beat_minutes_ago, claimed_minutes_before=0):
+    import datetime as dt
+    now = dt.datetime.now(dt.timezone.utc)
+    claim = now - dt.timedelta(minutes=40)
+    rows = queue.load(st, queue.STORY_COLUMNS)
+    rows[0].update(state="producing", updated=claim.isoformat(timespec="seconds"))
+    queue.save(st, rows, queue.STORY_COLUMNS)
+    under = (claim - dt.timedelta(minutes=claimed_minutes_before)).isoformat(timespec="seconds")
+    return {"slug": "rain", "execution": "nraiorbit-runner-gone", "state": "running", "phase": "render",
+            "started": under, "claim": under,
+            "beat": (now - dt.timedelta(minutes=beat_minutes_ago)).isoformat(timespec="seconds")}
+
+
+@pytest.mark.parametrize("beat_ago, before, taken", [(20, 0, True), (2, 0, False), (20, 30, False)])
+def test_a_film_whose_run_stopped_beating_is_taken_over_by_the_next_tick(tmp_path, fake_bucket, beat_ago, before,
+                                                                          taken):
+    """Cloud Run preempted the run 5 minutes in; the row still said producing, so the film waited out the 6-hour
+    claim. Now the next tick takes it over once its run has been silent STALL_S, never a run still beating, and
+    never on the strength of an earlier run's record."""
+    st, rf, template = _queues(tmp_path)
+    record = _claimed_by_a_run(st, beat_ago, before)
+    rows = queue.load(rf, queue.REFERENCE_COLUMNS)
+    rows[0]["state"] = "done"
+    queue.save(rf, rows, queue.REFERENCE_COLUMNS)
+    made, heard = [], []
+
+    def produce_fn(root, bucket, progress=None):
+        made.append(progress)
+        return {"state": "awaiting:trailer", "steps": {}}
+
+    def fetch(uri):
+        return json.dumps(record) if uri == "gs://b/rain/reports/progress.json" else queue._fetch(uri)
+    out = queue.tick(st, rf, tmp_path / "projects", bucket="b", produce_fn=produce_fn, learn_fn=None,
+                     template=template, fetch_story=fetch, log=heard.append)
+    assert bool(made) is taken, heard
+    assert (out["story"] == {"slug": "rain", "state": "awaiting:trailer"}) is taken
+    assert sum("stopped beating" in str(x) for x in heard) == int(taken)        # said once, not per look
+    if taken:
+        assert made[0]._stop.is_set()                                           # the row is written: beat stopped
+        assert queue.load(st, queue.STORY_COLUMNS)[0]["state"] == "awaiting:trailer"
+
+
+def test_an_approval_reaches_the_bucket_before_the_run_that_takes_it_does_any_work(tmp_path, fake_bucket,
+                                                                                    monkeypatch):
+    """The owner approved the film cut; the run that took the approval was killed (preempted) before its end-of-run
+    backup, and the run after it asked for the same approval again. The approval is backed up as soon as it is
+    taken."""
+    from nraiorbit.ops import backup
+    st, rf, template = _queues(tmp_path)
+    rows = queue.load(st, queue.STORY_COLUMNS)
+    rows[0]["state"] = "approved"
+    queue.save(st, rows, queue.STORY_COLUMNS)
+    reviews = tmp_path / "projects" / "rain" / "reviews"
+    reviews.mkdir(parents=True)
+    (reviews / "final_cut.pending").write_text("look at the cut\n")
+    sent = []
+    monkeypatch.setattr(backup, "backup", lambda root, b, log=None, mirror_reviews=False, sets=None, **k:
+                        sent.append((sets, sorted(p.name for p in (root / "reviews").glob("*")))) or 1)
+
+    def produce_fn(root, bucket, progress=None):
+        assert sent == [(["reviews"], ["final_cut.approved"])]              # before anything is made or paid for
+        raise SystemExit("preempted")
+    with pytest.raises(SystemExit):
+        queue.tick(st, rf, tmp_path / "projects", bucket="b", produce_fn=produce_fn, learn_fn=None,
+                   template=template, log=lambda *_: None)
+    assert sent == [(["reviews"], ["final_cut.approved"])]
+
+
+def test_a_run_whose_beats_stop_landing_pays_for_nothing_more(tmp_path):
+    """A later tick takes a film over once its run has been silent STALL_S. A run that is alive but cannot reach the
+    bucket stops paying before then (FENCE_S), so two runs never pay for the same clips."""
+    from nraiorbit.costing import SpendLedger
+    bucket, clock = Bucket(), Clock()
+    film = _tracker(bucket, clock).film("rain", tmp_path, claim="2026-10-25T04:16:04+00:00")
+    film.start_beat(interval=3600)
+    assert bucket.record(FILM)["claim"] == "2026-10-25T04:16:04+00:00"           # the record names its claim
+    ledger = SpendLedger(tmp_path / "cost.jsonl", 100.0)
+    ledger.fence = film.fence
+    ledger.check(1.0, "Veo sc001_s001")
+    bucket.fail = True
+    clock.t = T0 + progress.FENCE_S - 1
+    film.phase("render")                                                        # does not land
+    ledger.check(1.0, "Veo sc001_s002")                                         # not silent long enough yet
+    clock.t = T0 + progress.FENCE_S + 1
+    with pytest.raises(progress.LostContact, match="stops before paying"):
+        ledger.check(1.0, "Veo sc001_s003")
+    bucket.fail = False
+    sent = bucket.puts(FILM)
+    film.phase("assemble")                                                      # the bucket answers again, but a
+    assert bucket.puts(FILM) == sent                                            # later tick may own the film now:
+    with pytest.raises(progress.LostContact):                                   # out of touch for good
+        ledger.check(1.0, "Veo sc001_s003")
+    film.stop_beat()
+
+
+def test_a_run_that_was_taken_over_leaves_the_row_to_the_run_that_took_it(tmp_path, fake_bucket):
+    st, rf, template = _queues(tmp_path)
+    rows = queue.load(rf, queue.REFERENCE_COLUMNS)
+    rows[0]["state"] = "done"
+    queue.save(rf, rows, queue.REFERENCE_COLUMNS)
+    backed = []
+    from nraiorbit.ops import backup
+    import pytest as _pt
+    mp = _pt.MonkeyPatch()
+    mp.setattr(backup, "backup", lambda root, b, log=None, mirror_reviews=False, sets=None, **k: backed.append(sets))
+
+    def produce_fn(root, bucket, progress=None):              # meanwhile a tick took the film over
+        rows = queue.load(st, queue.STORY_COLUMNS)
+        rows[0].update(state="producing", updated="2999-01-01T00:00:00+00:00")
+        queue.save(st, rows, queue.STORY_COLUMNS)
+        return {"state": "awaiting:trailer", "steps": {}}
+    heard = []
+    try:
+        queue.tick(st, rf, tmp_path / "projects", bucket="b", produce_fn=produce_fn, learn_fn=None,
+                   template=template, log=heard.append)
+    finally:
+        mp.undo()
+    row = queue.load(st, queue.STORY_COLUMNS)[0]
+    assert (row["state"], row["updated"]) == ("producing", "2999-01-01T00:00:00+00:00")   # that run's claim stands
+    assert any("another run has the film now" in str(x) for x in heard)
+    assert backed == []                                                         # nor its files and markers

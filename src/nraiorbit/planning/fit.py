@@ -26,6 +26,7 @@ SPEECH_BASE_S = 0.3           # measured on ElevenLabs Telugu: about 0.09 s a ch
 SPEECH_S_PER_CHAR = 0.095     # tenth; the estimate errs a little long
 SCENE_SPEECH_SHARE = 0.75     # a scene's lines (with lead-ins and breaths) fill at most this share of it
 MAX_RUNTIME_FACTOR = 5 / 3    # without film.max_runtime_minutes: a 3-minute film may grow to 5 to fit its dialogue
+TOO_WIDE = ("EWS", "WS", "aerial")   # a speaker this far away is too small for lip-sync to find
 
 
 def text_sha(text: str) -> str:
@@ -164,6 +165,13 @@ def shot_problems(blocks, shots, scene_start: float, off_screen=(), voiced_off=(
         carriers = [s for s in shots if b.block_id in s.block_ids]
         if carriers and not any(b.character_id in s.characters_in_frame for s in carriers):
             problems.append(f"line {b.block_id} ({b.character_id}) is heard over shots that do not show its speaker")
+    for b in blocks:                                # lip-sync cannot find a face that small
+        if b.kind != "dialogue" or b.character_id in off_screen or b.character_id in voiced_off:
+            continue
+        showing = [s for s in shots if b.block_id in s.block_ids and b.character_id in s.characters_in_frame]
+        if showing and all(getattr(s, "size", None) in TOO_WIDE for s in showing):
+            problems.append(f"line {b.block_id} is spoken in a wide shot only ({', '.join(s.shot_id for s in showing)}): "
+                            "frame its speaker MCU or closer, or the mouth cannot be synced")
     for line in plan_lines([("scene", scene_start, shots, list(by_id.values()))], {}, film_end=float("inf")):
         if line.overrun_s(float("inf")) > 0:
             problems.append(f"line {line.block_id} needs about {line.dur_s:.1f} s but its shots leave "

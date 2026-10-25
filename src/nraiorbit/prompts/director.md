@@ -15,6 +15,9 @@ For each shot decide:
   Emotional scenes: close-ups, slow push-ins, longer holds.
 - `characters_in_frame` and `costume_ids` (same order): only ids from the cast lock, and
   costume ids from that character's costumes.
+- A shot that carries a spoken line shows its speaker's face large and clear: MCU, CU, OTS
+  or a tight two-shot, never EWS, WS or aerial. Lip-sync redraws the speaker's mouth and
+  cannot find a small or turned-away face; wide shots are for action and reactions.
 - `action_template_id`: a library action template when one fits (fights, chases, entries,
   dances); otherwise null.
 - `image_prompt`: the keyframe, written for an image model in English: composition, the

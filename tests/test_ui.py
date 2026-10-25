@@ -1393,3 +1393,61 @@ def test_the_page_shows_what_the_editor_decided(client, root):
     later = {"id": "s1", "stage": "shots", "notes": "fewer close-ups"}                # a Send back takes its place
     (root / "demo" / "reports" / "owner_notes.jsonl").write_text(json.dumps(record) + "\n" + json.dumps(later) + "\n")
     assert "The AI editor's decision" not in client.get("/film/demo").text
+
+
+def test_a_stopped_run_that_beat_is_resumed_within_minutes_not_hours(client, root, monkeypatch):
+    """Cloud Run stopped the run (preempted) five minutes in. Its record beat until then, so the next check after
+    STALL_S takes the film over, and the page says when, instead of six hours after the claim."""
+    import datetime
+    from zoneinfo import ZoneInfo
+    from nraiorbit.service.progress import STALL_S
+    claim = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0) - datetime.timedelta(minutes=40)
+    beat = claim + datetime.timedelta(minutes=5)
+    rs = rows(root)
+    rs[0].update(state="producing", updated=claim.isoformat())
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    (root / "demo" / "reports" / "progress.json").write_text(json.dumps(
+        {**PROGRESS, "execution": "nraiorbit-runner-old", "phase": "render", "started": claim.isoformat(),
+         "claim": claim.isoformat(), "beat": beat.isoformat()}))
+    monkeypatch.setattr(runner_mod, "executions", lambda *a, **k: [running_exec("nraiorbit-runner-old", state="failed")])
+    html = client.get("/film/demo").text
+    resumes = (beat + datetime.timedelta(seconds=STALL_S)).astimezone(ZoneInfo(Settings().timezone))
+    assert "stopped without finishing" in html and "Re-run it now" in html
+    assert f"at its first check after {resumes:%Y-%m-%d %H:%M}" in html and "every 15 minutes" in html
+
+
+def test_the_steps_a_live_run_is_past_are_never_shown_failed_and_an_old_cut_is_never_shown_done(root):
+    """The row still carries the last run's stop (render blocked) while a new run is cutting the film: the steps
+    before the one under way passed in this run. While it renders, the cut from an earlier run is not "done"."""
+    (root / "demo" / "reviews" / "faces.pending").unlink()
+    (root / "demo" / "11_master").mkdir()
+    (root / "demo" / "11_master" / "movie.mp4").write_bytes(b"film")
+    (root / "demo" / "reports" / "progress.json").write_text(json.dumps(
+        {**PROGRESS, "execution": "nraiorbit-runner-live", "phase": "trailer"}))
+    store = Store(str(root))
+    row = {**rows(root)[0], "state": "producing"}
+    live = films.detail(store, "demo", row, running={"nraiorbit-runner-live"})["stages"]
+    assert live["assemble"]["status"] == "executing"
+    assert live["render"] == {"status": "done", "text": "passed in this run"}
+    (root / "demo" / "reports" / "progress.json").write_text(json.dumps(
+        {**PROGRESS, "execution": "nraiorbit-runner-live", "phase": "render"}))
+    earlier = films.detail(store, "demo", row, running={"nraiorbit-runner-live"})["stages"]
+    assert earlier["render"]["status"] == "executing" and earlier["assemble"]["status"] == "stale"   # remade next
+
+
+def test_a_message_is_shown_once_and_dropped_from_the_address(client):
+    """A reload (or the page's own refresh) of /film/demo?msg=... must not show an old "approved" again."""
+    html = client.get("/film/demo?msg=cost%20approved").text
+    assert "cost approved" in html and 'searchParams.delete("msg")' in html
+    assert 'searchParams.delete("msg")' not in client.get("/film/demo").text
+
+
+def test_saving_a_producing_films_settings_keeps_the_runs_claim(client, root):
+    """A producing row's time names the run that claimed it (the runner takes a silent run over by it); a save of the
+    cap or visibility while it runs changes those, never the claim."""
+    rs = rows(root)
+    rs[0].update(state="producing", updated="2026-10-25T04:16:04+00:00")
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    client.post("/film/demo/row", data={"budget": "75", "publish": "unlisted"}, follow_redirects=False)
+    row = rows(root)[0]
+    assert row["budget_usd"] == "75" and row["publish"] == "unlisted" and row["updated"] == "2026-10-25T04:16:04+00:00"

@@ -129,7 +129,8 @@ def test_every_gate_listed_stops_at_each_step_the_cost_and_the_upload(tmp_path, 
     p = Pipeline(root, demo_llm(), cfg=load_pipeline_config(root), log=lambda *_: None)
     monkeypatch.setattr(produce, "cost_gate", lambda pipeline: (None, {"total_usd": 12.5, "video_usd": 10.0, "tts_usd": 2.5}))
     uploads = []
-    monkeypatch.setattr(produce, "publish_youtube", lambda root, privacy: uploads.append(privacy) or {"film": {"id": "vid1"}})
+    monkeypatch.setattr(produce, "publish_youtube", lambda root, privacy, bucket=None: uploads.append(privacy)
+                        or {"film": {"id": "vid1"}})
     seen = []
     for _ in range(14):
         report = produce.produce(p, log=lambda *_: None)

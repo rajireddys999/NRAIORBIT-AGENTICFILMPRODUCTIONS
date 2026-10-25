@@ -211,7 +211,9 @@ footer .line { display:flex; align-items:center; justify-content:space-between; 
   </span>
 </header>
 <main>
-{% if msg %}<div class="msg">{{ msg }}</div>{% endif %}
+{% if msg %}<div class="msg">{{ msg }}</div>
+<script>/* shown once: a reload or the page's own refresh never shows an old "approved" again */
+try { const u = new URL(location.href); u.searchParams.delete("msg"); history.replaceState(null, "", u.pathname + u.search + u.hash); } catch (e) {}</script>{% endif %}
 {% block body %}{% endblock %}
 </main>
 <footer>

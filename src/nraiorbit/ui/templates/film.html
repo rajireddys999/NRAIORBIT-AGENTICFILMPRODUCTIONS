@@ -118,7 +118,7 @@
       {% elif f.state == 'done' %}<p>Done. The deliverables are under <a href="#deliver">Delivery</a>.</p>
       {% elif f.state == 'approved' %}<p><span class="live-dot" style="margin-right:8px"></span>Approved. The runner takes it up on its next tick{% if runner_running %} (one is running now){% endif %}; this page refreshes by itself.</p>
       {% elif stalled %}
-        <p>The last run stopped without finishing (claimed {{ stalled.since|local }}, nothing running now). The runner resumes it on its own{% if stalled.resumes %} after {{ stalled.resumes|local }}{% else %} after {{ stalled.hours }} h{% endif %}.</p>
+        <p>The last run stopped without finishing (claimed {{ stalled.since|local }}, nothing running now). The runner resumes it on its own at its first check after {% if stalled.resumes %}{{ stalled.resumes|local }}{% else %}{{ stalled.hours }} h{% endif %} (it checks every 15 minutes).</p>
         {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/retry"><button>Re-run it now</button></form>{% endif %}
       {% elif f.state in ['new','retry','producing'] %}<p><span class="live-dot" style="margin-right:8px"></span>The runner is on it (state <b>{{ f.state }}</b>). This page refreshes by itself.</p>
       {% else %}<p class="muted">Nothing is waiting on you.</p>{% endif %}

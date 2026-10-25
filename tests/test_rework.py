@@ -127,7 +127,7 @@ def test_send_back_with_shots_replans_them_from_the_notes_and_remakes_only_them(
     def rework_shot(bible_, lock, shot, notes, off_screen=None):
         asked.append((shot.shot_id, notes, off_screen))
         return ReworkedShot(characters_in_frame=[bible.characters[0].id, "nobody_by_that_id"], costume_ids=["c1"],
-                            image_prompt="the hero alone at the river", motion_prompt="he turns at a voice")
+                            image_prompt="the hero alone at the river", motion_prompt="he turns at a voice", size="MCU")
     p.director = SimpleNamespace(rework_shot=rework_shot)
     (root / produce.REWORK_FILE).write_text(json.dumps({"id": "r1", "stage": "render", "shots": [first, "bad id"],
                                                         "notes": "keep the kid out of frame", "by": "red@x"}))
@@ -137,7 +137,7 @@ def test_send_back_with_shots_replans_them_from_the_notes_and_remakes_only_them(
     plan = ShotList.model_validate_json((root / "04_shots" / "sc001.json").read_text(encoding="utf-8"))
     redone = next(s for s in plan.shots if s.shot_id == first)
     assert redone.characters_in_frame == [bible.characters[0].id] and redone.costume_ids == ["c1"]
-    assert redone.image_prompt == "the hero alone at the river"
+    assert redone.image_prompt == "the hero alone at the river" and redone.size == "MCU"   # framed as asked
     # nothing is deleted (the next restore would bring it back): the shot moves on to a take it never had, which
     # the bucket keeps in takes.yaml, so a new first frame and a new clip are made and the old ones stay as history
     assert sorted(x.name for x in inbox.glob("*.mp4")) == sorted([f"{first}.mp4", f"{first}_2.mp4", f"{second}.mp4"])

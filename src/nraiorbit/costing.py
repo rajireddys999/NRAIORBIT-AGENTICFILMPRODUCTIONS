@@ -8,6 +8,7 @@ usage log and from the Veo clips you drop into the project's inbox/video folder.
 from __future__ import annotations
 
 import json
+import re
 import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -38,6 +39,7 @@ class SpendLedger:
     def __init__(self, path: Path, max_usd: float | None):
         self.path = path
         self.max_usd = max_usd
+        self.fence = None             # set by the runner: raises before a paid call when the run lost its claim
 
     def records(self) -> list[dict]:
         if not self.path.exists():
@@ -48,6 +50,8 @@ class SpendLedger:
         return sum(r["usd"] for r in self.records())
 
     def check(self, projected_usd: float, what: str) -> None:
+        if self.fence is not None:
+            self.fence()
         if self.max_usd is None:
             return
         spent = self.spent()
@@ -485,10 +489,68 @@ def preview_run(root: Path, cfg: dict, pricing: dict) -> dict:
         rate = float(((pricing.get("sync_so") or {}).get("per_second") or {}).get(ls.get("model", "sync-3"), 0.133))
         speaking = speaking_shots(root, only)
         done = {sid for sid in speaking if any((root / "07_video" / sid).glob("*_lipsync.mp4"))}   # synced already
+        done |= lipsynced_before(root, speaking, cfg)     # a fresh container has no such file: the run records say
         out["cached_lipsync_shots"] = len(done)
         out["lipsync_seconds"] = round(sum(sec for sid, sec in speaking.items() if sid not in done), 1)
         out["lipsync_usd"] = round(out["lipsync_seconds"] * rate, 2)
     out["total_usd"] = out["video_usd"] + out["keyframe_usd"] + out["tts_usd"] + out["music_usd"] + out["lipsync_usd"]
+    return out
+
+
+def voice_mark(cfg: dict, lock_characters) -> dict:
+    """The voices a lip-sync job is made with (pipeline._lip_meaning): each character's voice asset, the owner's
+    voice picks (voice.cast) and the speech provider. Any change is a new, paid job."""
+    return {"lock": {c: (x.get("voice_asset") if isinstance(x, dict) else getattr(x, "voice_asset", None))
+                     for c, x in (lock_characters or {}).items()},
+            "cast": dict((cfg.get("voice") or {}).get("cast") or {}),
+            "tts": (cfg.get("providers") or {}).get("tts")}
+
+
+def lipsynced_before(root: Path, shots, cfg: dict | None = None) -> set[str]:
+    """Shots whose lip-sync is already paid for and would be found again: the latest record of each in
+    reports/lipsync.jsonl synced it, on the take the shot is on now (a new take is a new clip), with the cast's
+    voices as they are now (a new voice is a new job), and no line of the film was rewritten after it
+    (reports/dialogue_fit.json: a shorter line can move the ones after it, which is a new job too). The provider
+    reuses those results (cached under what each job is), so the estimate must not count them again. Anything it
+    cannot tell (an older record) is counted."""
+    import yaml as _yaml
+    path = root / "reports" / "lipsync.jsonl"
+    latest: dict[str, dict] = {}
+    for line in path.read_text(encoding="utf-8").splitlines() if path.exists() else []:
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and rec.get("shot_id") in shots:
+            latest[rec["shot_id"]] = rec
+    try:
+        takes = _yaml.safe_load((root / "takes.yaml").read_text(encoding="utf-8")) or {}
+    except (OSError, ValueError):
+        takes = {}
+    try:
+        changed = json.loads((root / "reports" / "dialogue_fit.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        changed = {}
+    changed = changed if isinstance(changed, dict) else {}
+    rewrites = [str(r.get("at") or "9") for r in changed.values() if isinstance(r, dict)]   # no time: any time
+    try:
+        lock = _yaml.safe_load((root / "cast.lock.yaml").read_text(encoding="utf-8")) or {}
+        voices = voice_mark(cfg or {}, lock.get("characters") or {})
+    except (OSError, ValueError, AttributeError):
+        voices = None
+    out = set()
+    for sid, rec in latest.items():
+        if rec.get("mode") in (None, "not synced"):
+            continue
+        take = re.search(r"take_(\d+)$", Path(str(rec.get("clip") or "")).stem)
+        if not take or int(take.group(1)) != int(takes.get(sid, 1)):
+            continue
+        at = str(rec.get("at") or "")
+        if not at or any(r > at for r in rewrites):
+            continue                                       # a line rewritten after it was synced: paid again
+        if voices is None or rec.get("voices") != voices:
+            continue                                       # a voice changed since (or the record cannot say)
+        out.add(sid)
     return out
 
 

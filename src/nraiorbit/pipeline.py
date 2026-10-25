@@ -79,6 +79,17 @@ class PipelineBlocked(Exception):
     pass
 
 
+class CutDoesNotMatch(PipelineBlocked):
+    """The sync check found lines that do not match the picture (reports/sync.json). `faceless`: shots where a
+    speaker is on screen but lip-sync found no face to sync (too small, turned away), which a closer framing fixes;
+    `timing`: anything else."""
+
+    def __init__(self, problems: list[str], faceless: list[str], timing: list[str]):
+        self.problems, self.faceless, self.timing = problems, faceless, timing
+        super().__init__(f"the cut does not match its pictures, so it is not shown: {len(problems)} problem(s), "
+                         f"first {problems[0]} (all in reports/sync.json)")
+
+
 class LinesTooLong(PipelineBlocked):
     """Voiced lines that run past the shots that carry them (planning/fit): stopped before lip-sync is paid, so the
     screenwriter can shorten them (service/produce.fit_dialogue). `measured`: {block_id: seconds} of every line."""
@@ -293,7 +304,7 @@ class Pipeline:
                     cast = [c for c in new.characters_in_frame if c in known]
                     costumes = (list(new.costume_ids) + [""] * len(cast))[:len(cast)]
                     plan.shots[i] = shot.model_copy(update={
-                        "characters_in_frame": cast, "costume_ids": costumes,
+                        "characters_in_frame": cast, "costume_ids": costumes, "size": new.size or shot.size,
                         "image_prompt": new.image_prompt, "motion_prompt": new.motion_prompt})
                     changed = True
             if changed:
@@ -445,7 +456,14 @@ class Pipeline:
 
     def _report(self, name: str, record: dict) -> None:
         if name == "lipsync" and getattr(self, "_render_id", None):   # the sync check reads this render's records
-            record = {**record, "render": self._render_id}
+            import datetime as _dt                                      # and the estimate what was paid, when,
+            from .costing import voice_mark                              # with which voices (a new one is a new job)
+            try:
+                voices = voice_mark(self.cfg, self._lock().characters)
+            except Exception:
+                voices = None
+            record = {**record, "render": self._render_id,
+                      "at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"), "voices": voices}
         self.p.reports.mkdir(parents=True, exist_ok=True)
         with open(self.p.reports / f"{name}.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
@@ -837,7 +855,7 @@ class Pipeline:
             fitted = self._fit_shots(plan.model_copy(update={"scene_id": p.sc.scene_id}), p.sc)
             return shot_problems(p.script.blocks, fitted.shots, 0.0, off_screen=off_screen or {})
         def timing(problems: list[str]) -> list[str]:   # asked again for these; a voice-over is not one
-            return [x for x in problems if "is in no shot" in x or "needs about" in x]
+            return [x for x in problems if "is in no shot" in x or "needs about" in x or "wide shot only" in x]
         unfit = {i: probs for i, plan in plans.items() if (probs := timing(problems_of(i, plan)))}
 
         def refit(i):
@@ -1563,8 +1581,11 @@ class Pipeline:
         (self.p.reports / "sync.json").write_text(json.dumps({"ok": not problems, "problems": problems}, indent=1,
                                                              ensure_ascii=False), encoding="utf-8")
         if problems:
-            raise PipelineBlocked(f"the cut does not match its pictures, so it is not shown: {len(problems)} "
-                                  f"problem(s), first {problems[0]} (all in reports/sync.json)")
+            import re as _re
+            faceless = sorted({m.group(1) for x in problems
+                               if (m := _re.search(r"on screen in (\S+) but not lip-synced \(no speaker face found\)", x))})
+            timing = [x for x in problems if "not lip-synced" not in x]
+            raise CutDoesNotMatch(problems, faceless, timing)
         self.log(f"  sync check: every one of {len(tl['dialogue'])} lines plays over its own shots")
 
     def _write_edl(self) -> None:

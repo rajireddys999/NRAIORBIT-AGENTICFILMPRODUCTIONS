@@ -102,27 +102,69 @@
   <div class="info">
     <div class="needs">
       <p class="eyebrow" style="margin-bottom:8px">What needs you</p>
-      {% if f.hint %}<p class="bad" style="margin-bottom:10px">{{ f.hint }}</p>{% endif %}
-      {% if f.gates %}
-        {% for g in f.gates %}
-          <p>Waiting at the <b>{{ g }}</b> gate.
-          {% if g == 'faces' %}Look at the <a href="#faces">first frames</a>; video is bought only after this.{% elif g == 'story' %}Read the <a href="#story">story bible</a>.{% elif g == 'outline' %}Read the <a href="#outline">outline</a>.{% elif g == 'scenes' %}Read the <a href="#scenes">scenes and dialogue</a>.{% elif g == 'cast' %}Check the <a href="#cast">cast</a>.{% elif g == 'shots' %}Check the <a href="#shots">shot lists</a>.{% elif g == 'cost' %}Approve the <a href="#money">estimate</a> in the pipeline below; picture, voices, music and lip-sync are paid only after that (the cast's reference pictures, a few cents each, are made at the cast step).{% elif g == 'render' %}Look at what was <a href="#render">rendered</a> before it is cut.{% elif g == 'publish' %}Watch the <a href="#assemble">film and trailer</a>, then approve the YouTube upload in the pipeline below.{% else %}See <a href="#assemble">film &amp; trailer</a>.{% endif %}</p>
-          {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/approve"><input type="hidden" name="gate" value="{{ g }}"><button>Approve {{ g }} and continue</button></form>
-          {% else %}<p class="small muted">This film is not in the queue; approve it from Claude Code (<span class="mono">nraiorbit approve {{ f.slug }} {{ g }}</span>).</p>{% endif %}
-        {% endfor %}
-      {% elif f.live %}
-        <p><span class="live-dot" style="margin-right:8px"></span>Running{% if f.live.stage_label %} <b>{{ f.live.stage_label }}</b>{% endif %}{% if f.live.tools_line %} · {{ f.live.tools_line }}{% endif %}{% if f.live.since %}{% if f.live.tools_line %} ·{% endif %} since {{ f.live.since }}{% endif %}{% if f.live.last_line %} · last: {{ f.live.last_line }}{% if f.live.ago %} ({{ f.live.ago }}){% endif %}{% endif %} · execution <span class="mono">{{ f.live.execution }}</span>. This page refreshes by itself.</p>
-      {% elif f.state.startswith('blocked') %}
-        <p>Blocked: <b class="bad">{{ f.state[8:] }}</b>. {{ f.hint or (f.row.note if f.row else '') }}</p>
-        {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/retry"><button>{{ 'Re-run after the change' if f.issue and f.issue.outside else 'Fix is in place, retry' }}</button></form>{% endif %}
-      {% elif f.state == 'done' %}<p>Done. The deliverables are under <a href="#deliver">Delivery</a>.</p>
-      {% elif f.state == 'approved' %}<p><span class="live-dot" style="margin-right:8px"></span>Approved. The runner takes it up on its next tick{% if runner_running %} (one is running now){% endif %}; this page refreshes by itself.</p>
+      {% for n in f.needs %}
+      <div class="need" style="border:1px solid var(--line2);border-radius:14px;padding:12px 14px;margin-bottom:10px">
+        {% if n.step %}<p class="tiny dim" style="margin:0 0 4px">{{ n.step }}</p>{% endif %}
+        <p style="margin:0 0 4px"><b>{{ n.title }}</b>{% if n.gate == 'publish' %} <span class="small muted">({{ f.row.publish if f.row and f.row.publish else f.policy.publish or 'private' }})</span>{% endif %}</p>
+        <p class="small" style="margin:0 0 8px">{{ n.why }} <a href="{{ n.href }}">{{ n.look }}</a></p>
+        {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/approve"><input type="hidden" name="gate" value="{{ n.gate }}"><button class="sm">Approve and continue</button></form>
+        {% else %}<p class="small muted">This film is not in the queue; approve it from Claude Code (<span class="mono">nraiorbit approve {{ f.slug }} {{ n.gate }}</span>).</p>{% endif %}
+      </div>
+      {% endfor %}
+      {% if state0 == 'blocked' %}
+      <div class="need" style="border:1px solid var(--line2);border-radius:14px;padding:12px 14px;margin-bottom:10px">
+        {% if f.issue_step %}<p class="tiny dim" style="margin:0 0 4px">{{ f.issue_step }}</p>{% endif %}
+        <p style="margin:0 0 4px"><b>The run stopped here</b>: <span class="bad">{{ f.state[8:] }}</span></p>
+        <p class="small" style="margin:0 0 8px">{{ f.hint or (f.row.note if f.row else '') }}</p>
+        {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/retry"><button class="sm">{{ 'Re-run after the change' if f.issue and f.issue.outside else 'Fix is in place, retry' }}</button></form>{% endif %}
+      </div>
       {% elif stalled %}
-        <p>The last run stopped without finishing (claimed {{ stalled.since|local }}, nothing running now). The runner resumes it on its own at its first check after {% if stalled.resumes %}{{ stalled.resumes|local }}{% else %}{{ stalled.hours }} h{% endif %} (it checks every 15 minutes).</p>
-        {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/retry"><button>Re-run it now</button></form>{% endif %}
-      {% elif f.state in ['new','retry','producing'] %}<p><span class="live-dot" style="margin-right:8px"></span>The runner is on it (state <b>{{ f.state }}</b>). This page refreshes by itself.</p>
-      {% else %}<p class="muted">Nothing is waiting on you.</p>{% endif %}
-      {% set t = f.triage %}
+      <div class="need" style="border:1px solid var(--line2);border-radius:14px;padding:12px 14px;margin-bottom:10px">
+        <p style="margin:0 0 4px"><b>The last run stopped without finishing</b></p>
+        <p class="small" style="margin:0 0 8px">Claimed {{ stalled.since|local }}; nothing is running now. The runner resumes it on its own at its first check after {% if stalled.resumes %}{{ stalled.resumes|local }}{% else %}{{ stalled.hours }} h{% endif %} (it checks every 15 minutes). Nothing paid for is lost.</p>
+        {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/retry"><button class="sm">Re-run it now</button></form>{% endif %}
+      </div>
+      {% elif not f.needs %}
+      <p class="muted" style="margin-bottom:6px">Nothing needs you right now.{% if f.state == 'done' %} The film is finished: the downloads are under <a href="#deliver">Delivery</a>.{% endif %}</p>
+      {% endif %}
+      {% if f.reject_gate and f.row and not f.live and state0 not in ['new','approved','retry','producing','blocked'] %}
+      <details class="reject" style="margin-top:12px">
+        <summary class="small"><b>Reject…</b> · not happy with the film or trailer? Say what is wrong, and the AI editor picks the smallest fix (the sound mix, the trailer cut, a few shots made again, or an earlier step)</summary>
+        <form method="post" action="/film/{{ f.slug }}/reject" style="display:grid;gap:8px;margin-top:10px">
+          <input type="hidden" name="gate" value="{{ f.reject_gate }}">
+          <label class="small">What is wrong, and what should change
+            <textarea name="notes" rows="4" required maxlength="2000" placeholder="Say what's wrong; times like 12:40 or shot ids like sc002_s001 help. For example: the music drowns the dialogue around 3:10; open the trailer on the boat chase, not the kitchen"></textarea></label>
+          <div><button class="sm">Reject and redo</button></div>
+        </form>
+        <p class="tiny dim" style="margin-top:6px">The editor picks the narrowest fix: the sound mix (free), the trailer cut (cents), remaking the shots it names (about a dollar each; the cost check and the first frames ask first) or an earlier step. At most {{ f.rejects_per_day }} a day.</p>
+      </details>
+      {% endif %}
+      {% if f.row and not f.live and state0 not in ['new','approved','retry','producing'] %}
+      <details class="rework" style="margin-top:12px">
+        <summary class="small"><b>Send back for rework</b> · choose the step to redo yourself and say what to fix; that step and everything after it are made again</summary>
+        <form method="post" action="/film/{{ f.slug }}/rework" style="display:grid;gap:8px;margin-top:10px">
+          <label class="small">Step to redo
+            <select name="stage">{% for key, label in f.rework_steps %}<option value="{{ key }}"{% if key == f.rework_default %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+          <label class="small">Shots to redo (needed with Picture, voices, music, lips; leave empty for the other steps)
+            <input name="shots" placeholder="sc002_s001, sc010_s002"></label>
+          <label class="small">What needs fixing
+            <textarea name="notes" rows="3" required placeholder="For example: keep Lakshmi out of frame; show Narasimha and Chintu reacting to her voice"></textarea></label>
+          <div><button class="sm">Send back</button></div>
+        </form>
+        <p class="tiny dim" style="margin-top:6px">Shots you name are planned again from your notes and made anew; a step you name is redone with everything after it. Paid clips that are kept are not paid again, and the gates ask again.</p>
+      </details>
+      {% endif %}
+    </div>
+    <div class="activity" style="margin-top:14px">
+      <p class="eyebrow" style="margin-bottom:8px">What is happening</p>
+      {% set a = f.activity %}{% set t = f.triage %}
+      {% if f.live %}
+        <p style="margin:0 0 4px"><span class="live-dot" style="margin-right:8px"></span>Now: <b>{{ a.now.text if a and a.now else f.live.stage_label }}</b></p>
+        <p class="tiny dim" style="margin:0 0 8px">Running{% if f.live.stage_label %} <b>{{ f.live.stage_label }}</b>{% endif %}{% if f.live.tools_line %} · {{ f.live.tools_line }}{% endif %}{% if f.live.since %}{% if f.live.tools_line %} ·{% endif %} since {{ f.live.since }}{% endif %}{% if f.live.last_line %} · last: {{ f.live.last_line }}{% if f.live.ago %} ({{ f.live.ago }}){% endif %}{% endif %} · execution <span class="mono">{{ f.live.execution }}</span>. This page refreshes by itself.</p>
+      {% elif f.state == 'approved' %}<p style="margin:0 0 8px"><span class="live-dot" style="margin-right:8px"></span>Approved. The runner takes it up on its next tick{% if runner_running %} (one is running now){% endif %}; this page refreshes by itself.</p>
+      {% elif state0 in ['new','retry','producing'] and not stalled %}<p style="margin:0 0 8px"><span class="live-dot" style="margin-right:8px"></span>The runner is on it (state <b>{{ f.state }}</b>). This page refreshes by itself.</p>
+      {% elif a and a.ended %}<p style="margin:0 0 8px">{{ a.ended.text }}{% if a.ended.at %} on {{ a.ended.at|local }}{% endif %}.</p>
+      {% endif %}
       {% if t and t.pending %}
       <div class="decision" style="margin-top:12px">
         {% if state0 == 'blocked' %}<p>You rejected it at the <b>{{ t.gate|replace('_', ' ') }}</b> review, and the run stopped before the AI editor could decide; nothing was undone. Retry runs your rejection again.</p>
@@ -130,7 +172,15 @@
         {% else %}<p>Your rejection at the <b>{{ t.gate|replace('_', ' ') }}</b> review was not applied (the runner had not taken it); reject again if it still stands.</p>{% endif %}
         <p class="small muted">Your note: {{ t.owner_notes }}</p>
       </div>
-      {% elif t %}
+      {% endif %}
+      {% if a and a.done %}
+      <ul class="small" style="list-style:none;margin:0;padding:0;display:grid;gap:4px">
+        {% for d in a.done %}<li><span style="color:var(--ok)">✓</span> {{ d.text }}{% if d.at %} <span class="tiny dim">{{ d.at }}</span>{% endif %}</li>{% endfor %}
+      </ul>
+      {% endif %}
+      {% if f.hint and state0 != 'blocked' %}<p class="small bad" style="margin-top:8px">{{ f.hint }}</p>{% endif %}
+      {% set t = f.triage %}
+      {% if t and not t.pending %}
       <details class="decision" style="margin-top:12px"{% if state0 != 'done' or not t.actions %} open{% endif %}>
         <summary class="small"><b>The AI editor's decision</b> · rejected at the {{ t.gate|replace('_', ' ') }} review{% if t.applied %} · {{ t.applied|local }}{% endif %}</summary>
         <div style="display:grid;gap:6px;margin-top:8px">
@@ -150,42 +200,10 @@
         </div>
       </details>
       {% endif %}
-      {% if f.reject_gate and f.row and not f.live and state0 not in ['new','approved','retry','producing','blocked'] %}
-      <details class="reject" style="margin-top:12px">
-        <summary class="small"><b>Reject…</b> · not right? Say what is wrong; the AI editor decides what to redo</summary>
-        <form method="post" action="/film/{{ f.slug }}/reject" style="display:grid;gap:8px;margin-top:10px">
-          <input type="hidden" name="gate" value="{{ f.reject_gate }}">
-          <label class="small">What is wrong, and what should change
-            <textarea name="notes" rows="4" required maxlength="2000" placeholder="Say what's wrong; times like 12:40 or shot ids like sc002_s001 help. For example: the music drowns the dialogue around 3:10; open the trailer on the boat chase, not the kitchen"></textarea></label>
-          <div><button class="sm">Reject and redo</button></div>
-        </form>
-        <p class="tiny dim" style="margin-top:6px">The editor picks the narrowest fix: the sound mix (free), the trailer cut (cents), remaking the shots it names (about a dollar each; the cost check and the first frames ask first) or an earlier step. At most {{ f.rejects_per_day }} a day.</p>
-      </details>
-      {% endif %}
-      {% if f.row and not f.live and state0 not in ['new','approved','retry','producing'] %}
-      <details class="rework" style="margin-top:12px">
-        <summary class="small"><b>Send back for rework</b> · not right? Say what to fix and the step to redo</summary>
-        <form method="post" action="/film/{{ f.slug }}/rework" style="display:grid;gap:8px;margin-top:10px">
-          <label class="small">Step to redo
-            <select name="stage">{% for key, label in f.rework_steps %}<option value="{{ key }}"{% if key == f.rework_default %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
-          <label class="small">Shots to redo (needed with Picture, voices, music, lips; leave empty for the other steps)
-            <input name="shots" placeholder="sc002_s001, sc010_s002"></label>
-          <label class="small">What needs fixing
-            <textarea name="notes" rows="3" required placeholder="For example: keep Lakshmi out of frame; show Narasimha and Chintu reacting to her voice"></textarea></label>
-          <div><button class="sm">Send back</button></div>
-        </form>
-        <p class="tiny dim" style="margin-top:6px">Shots you name are planned again from your notes and made anew; a step you name is redone with everything after it. Paid clips that are kept are not paid again, and the gates ask again.</p>
-      </details>
-      {% endif %}
       {% if f.render_note %}<p class="small" style="color:var(--warn);margin-top:10px">{{ f.render_note }}{% if f.animatic and not f.tools_planned and not f.cfg.providers %} This film's project names no providers, so it runs on the mock ones. {% if f.row %}Queue it again to start from the project template, or add{% else %}Add{% endif %} the providers to its pipeline.yaml.{% endif %}</p>{% endif %}
       {% if f.tools_planned %}<p class="small muted" style="margin-top:10px"><i>Tools shown are planned: the template's choices until the first tick writes this film's own config.</i></p>{% endif %}
     </div>
-    {% if f.bible.logline %}<p class="muted">{{ f.bible.logline }}</p>{% endif %}
-    <div class="stages" style="grid-template-columns:repeat(auto-fit,minmax(84px,1fr));gap:6px;margin-top:auto">
-      {% for key, label in stages %}{% set s = f.stages[key] %}
-      <a class="stage {{ s.status }}{% if key == f.next_stage and s.status != 'executing' %} producing{% endif %}" href="#{{ 'money' if key == 'cost' else key }}" title="{{ label }}: {{ s.status }}{% if f.tools_line[key] %} · {{ f.tools_line[key] }}{% endif %}" style="padding:10px 10px;border-radius:12px;gap:6px"><b style="font-size:9px">{{ label|truncate(12, True, '…') }}</b><div class="bar"><span></span></div></a>
-      {% endfor %}
-    </div>
+    {% if f.bible.logline %}<p class="muted" style="margin-top:14px">{{ f.bible.logline }}</p>{% endif %}
   </div>
 </section>
 

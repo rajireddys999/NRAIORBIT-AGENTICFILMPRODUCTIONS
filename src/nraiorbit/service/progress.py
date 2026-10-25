@@ -36,6 +36,8 @@ class LostContact(RuntimeError):
     """The bucket has not taken this run's heartbeat for FENCE_S: a later tick may judge the run dead and take the
     film over, so this run stops before its next paid call rather than pay alongside the new one."""
 MIN_GAP_S = 1.1              # Cloud Storage takes one write a second to the same object; a faster one is refused
+HISTORY = 8                  # the film record keeps its last few finished phases, for the page's "what happened"
+WORKED_S = 5.0               # a phase shorter than this found its work done already (a stage on disk): not news
 STALE_HOURS = 7.0            # longer than the job's time limit: a running record this old was left behind
 TIMEOUT_S = 10               # a slow bucket must not hold the film up for the client's default minute
 
@@ -183,7 +185,7 @@ class FilmProgress:
         now = tracker.clock()
         self.record = {"slug": slug, "execution": tracker.execution, "state": "running", "phase": None,
                        "phase_started": None, "started": stamp(now), "updated": stamp(now), "last_line": "",
-                       "lines": 0, "beat": stamp(now), "claim": claim}
+                       "lines": 0, "beat": stamp(now), "claim": claim, "history": []}
         self._sent = now
         import threading
         self._lock, self._stop = threading.Lock(), threading.Event()
@@ -243,8 +245,18 @@ class FilmProgress:
 
     def phase(self, name: str) -> None:
         now = self.tracker.clock()
-        self.record.update(phase=name, phase_started=stamp(now), updated=stamp(now))
+        self.record.update(history=self._ended(now), phase=name, phase_started=stamp(now), updated=stamp(now))
         self.flush(now)
+
+    def _ended(self, now: float) -> list:
+        """The record's short history (newest last) with the phase under way over: a phase that did work (WORKED_S
+        or longer: a stage already on disk passes in a moment) replaces its own earlier entry, for the page."""
+        history, phase = list(self.record.get("history") or []), self.record.get("phase")
+        started = datetime.datetime.fromisoformat(self.record["phase_started"]).timestamp() \
+            if self.record.get("phase_started") else now
+        if not phase or now - started < WORKED_S:
+            return history
+        return [*(h for h in history if h.get("phase") != phase), {"phase": phase, "done": stamp(now)}][-HISTORY:]
 
     def line(self, text: str) -> None:
         text = str(text).strip()
@@ -257,7 +269,9 @@ class FilmProgress:
 
     def finish(self, state: str) -> None:
         now = self.tracker.clock()
-        self.record.update(state=state_head(state), updated=stamp(now), beat=stamp(now))
+        history = self._ended(now) if state_head(state) == "done" else self.record.get("history", [])
+        self.record.update(state=state_head(state), updated=stamp(now), beat=stamp(now), history=history)
+        # (a run that stopped at a gate or on a problem did not finish its last phase; one that is done did)
         self.flush(now)
 
     def flush(self, now: float) -> bool:

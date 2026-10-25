@@ -1599,3 +1599,27 @@ def test_references_are_priced_from_their_length_and_a_costly_one_waits_for_the_
     rows_[0].update(note="watching this video (length not known, priced as 150 min) costs about $2.21")
     queue.save(str(root / "queue" / "references.csv"), rows_, queue.REFERENCE_COLUMNS)
     assert "priced as a 150 min film" in client.get("/references").text     # a guess never reads as measured
+
+
+
+def test_a_learned_reference_shows_its_kinds_and_the_owner_can_correct_them(client, root):
+    from urllib.parse import unquote
+    folder = root / "library" / "references" / "kalki_CEvTjeXOC3U"
+    folder.mkdir(parents=True)
+    (folder / "profile.json").write_text(json.dumps({"title": "Kalki", "categories": ["action", "mythological"],
+                                                     "lessons": ["hold the beat before the hit", "x", "y", "z"]}))
+    queue.save(str(root / "queue" / "references.csv"), [{
+        "url": "https://www.youtube.com/watch?v=CEvTjeXOC3U", "learn": "all", "state": "done",
+        "profile_uri": "/app/library/references/kalki_CEvTjeXOC3U/profile.json"}], queue.REFERENCE_COLUMNS)
+    html = client.get("/references").text
+    assert 'Used by films that are: <span class="learn" style="margin-right:4px">action</span>' in html
+    assert "mythological" in html and "hold the beat before the hit" in html and "<li>z</li>" not in html
+    r = client.post("/references/categories", data={"profile_id": "kalki_CEvTjeXOC3U",
+                                                     "category": ["action", "mass", "not-a-kind"]},
+                    follow_redirects=False)
+    assert "categories saved: action, mass" in unquote(r.headers["location"])
+    assert json.loads((folder / "tags.json").read_text()) == ["action", "mass"]
+    assert "(your choice)" in client.get("/references").text
+    r = client.post("/references/categories", data={"profile_id": "../../queue", "category": ["action"]},
+                    follow_redirects=False)
+    assert "no such learned reference" in unquote(r.headers["location"])

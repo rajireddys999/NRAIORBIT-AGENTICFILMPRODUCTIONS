@@ -603,3 +603,21 @@ def test_the_backup_never_sends_the_runs_own_progress_record(tmp_path, monkeypat
     blob.delete = lambda: moved.append(("del", "old.json"))
     gcs.sync_up(None, reports, "gs://bkt/film/reports", workers=1, delete=True, exclude=backup.RUN_WRITES["reports"])
     assert sorted(moved) == [("del", "old.json"), ("put", "film/reports/cost.jsonl")]
+
+
+
+def test_the_library_backup_never_sends_the_owners_category_corrections_back(tmp_path, monkeypatch):
+    """The control room writes library/references/<id>/tags.json; a run restores it with the library and would
+    otherwise send its copy back at the end, over a correction the owner made meanwhile."""
+    from nraiorbit import config
+    lib = tmp_path / "library" / "references" / "kalki"
+    lib.mkdir(parents=True)
+    (lib / "profile.json").write_text("{}")
+    (lib / "tags.json").write_text("[]")
+    monkeypatch.setattr(config, "REPO_ROOT", tmp_path)
+    seen = []
+    monkeypatch.setattr(backup, "storage_client", lambda: object())
+    monkeypatch.setattr(gcs, "sync_up", lambda client, local, remote, workers, only_missing=False, exclude=():
+                        seen.append(tuple(exclude)) or 0)
+    backup.sync_library("bkt", "backup", sets=("references",), log=lambda *_: None)
+    assert seen == [("kalki/tags.json",)]

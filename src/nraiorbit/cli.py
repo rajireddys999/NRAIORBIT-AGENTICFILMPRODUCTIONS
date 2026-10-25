@@ -322,7 +322,7 @@ def cmd_keyframes(args) -> None:
     ledger = getattr(args, "ledger", None) or SpendLedger(paths.reports / "cost.jsonl",   # the runner's: fenced
                                                           cfg.get("budget", {}).get("max_usd"))
     video = VeoVideo(root, AssetRegistry.load(REPO_ROOT / "library"), cfg, pricing, ledger, load_navarasa())
-    video.safer = safer_shot_fn(root, lambda: Director(_claude(root, cfg), cfg))
+    video.safer = safer_shot_fn(root, lambda: getattr(args, "director", None) or Director(_claude(root, cfg), cfg))
     made = 0
     for scene_id, shot, attempt in todo:
         try:

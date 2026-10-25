@@ -59,6 +59,8 @@
         {% if r.profile_id %}
         <p class="note">Used by films that are: {% for c in r.categories %}<span class="learn" style="margin-right:4px">{{ c }}</span>{% else %}<i>no category yet: used only when no better match exists</i>{% endfor %}{% if r.corrected %} <span class="tiny dim">(your choice)</span>{% endif %}</p>
         {% if r.lessons %}<ul class="note" style="margin:0 0 0 16px">{% for l in r.lessons %}<li>{{ l }}</li>{% endfor %}</ul>{% endif %}
+        {% if r.building %}<p class="note"><span class="live-dot" style="margin-right:6px"></span>Making music from it for the <a href="/feed">sound library</a>…</p>
+        {% else %}<form class="inline" method="post" action="/feed/build"><input type="hidden" name="profile_id" value="{{ r.profile_id }}"><input type="hidden" name="count" value="{{ build_count }}"><input type="hidden" name="usd" value="{{ '%.2f'|format(r.build_price) }}"><button class="quiet sm">Build {{ build_count }} music tracks from it · about ${{ '%.2f'|format(r.build_price) }}</button></form>{% endif %}
         <details><summary class="tiny">Change its categories</summary>
           <form method="post" action="/references/categories" style="display:flex;flex-wrap:wrap;gap:6px 12px;margin-top:8px">
             <input type="hidden" name="profile_id" value="{{ r.profile_id }}">

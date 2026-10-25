@@ -62,7 +62,7 @@ class Agent:
 
 
 def reference_examples(agent_name: str, cfg: dict, categories=()) -> str:
-    """Craft notes learned from public films (library/references), as examples for this agent: the references that
+    """Craft notes learned from public films (custom_model_feed/notes), as examples for this agent: the references that
     share the most of the film's `categories` first; '' when there are none or references.enabled is false. They
     are patterns to learn from, never material to copy."""
     r = cfg.get("references") or {}

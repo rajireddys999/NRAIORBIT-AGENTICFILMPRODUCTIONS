@@ -36,7 +36,12 @@ FILES = ["pipeline.yaml", "pricing.yaml", "cast.lock.yaml", "takes.yaml", "reuse
          "02_outline.json", "input/story.md"]
 DEFAULT_SETS = ["inbox", "cache", "keyframes", "music", "reports", "master", "scenes", "shots", "post", "reviews",
                 "files"]
-LIBRARY_SETS = ("characters", "references")     # library/<set> <-> gs://bucket/library/<set>, shared by every film
+LIBRARY_SETS = ("characters", "references", "bgm", "sfx")     # shared by every film; where each lives, both on the
+LIBRARY_PLACES = {"characters": "library/characters",           # disk and in the bucket: the agents' learning (notes,
+                  "references": "custom_model_feed/notes",      # music, sound effects) is the custom model feed
+                  "bgm": "custom_model_feed/bgm", "sfx": "custom_model_feed/sfx"}
+LIBRARY_MOVED = {"references": "library/references"}  # where a set used to be: still brought down, into its new place,
+#                                                       so what an older runner wrote there moves with the next backup
 
 
 NEVER_REMOVED = ("inbox", "cache", "06_keyframes", "reports", "reviews")   # paid media, history and approvals
@@ -307,7 +312,8 @@ def sync_library(bucket: str, direction: str = "backup", sets=LIBRARY_SETS, log=
     client = storage_client()
     n = 0
     for name in sets:
-        local, remote = REPO_ROOT / "library" / name, f"gs://{bucket}/library/{name}"
+        place = LIBRARY_PLACES.get(name, f"library/{name}")
+        local, remote = REPO_ROOT / place, f"gs://{bucket}/{place}"
         if direction == "backup":
             if not local.exists() or not any(local.rglob("*")):
                 continue
@@ -319,10 +325,18 @@ def sync_library(bucket: str, direction: str = "backup", sets=LIBRARY_SETS, log=
         else:
             local.mkdir(parents=True, exist_ok=True)
             if client is not None:
+                old = f"gs://{bucket}/{LIBRARY_MOVED[name]}" if name in LIBRARY_MOVED else None
+                if old and present(old, "folder", client):     # an older runner's notes: carried to the new place
+                    gcs.sync_down(client, old, local, sync_workers())
                 if present(remote, "folder", client) is False:   # nothing there yet is not an error
                     continue
                 gcs.sync_down(client, remote, local, sync_workers())
             else:
+                if name in LIBRARY_MOVED:                 # an older runner's notes, carried to the new place
+                    try:
+                        gcs.rsync(f"gs://{bucket}/{LIBRARY_MOVED[name]}", local)
+                    except gcs.BucketError:
+                        pass                              # nothing in the old place: nothing to carry
                 try:
                     gcs.rsync(remote, local)
                 except gcs.BucketError as exc:            # nothing there yet is not an error
@@ -331,5 +345,5 @@ def sync_library(bucket: str, direction: str = "backup", sets=LIBRARY_SETS, log=
                         raise
                     continue
         n += 1
-        log(f"  library/{name} {'->' if direction == 'backup' else '<-'} {remote}")
+        log(f"  {place} {'->' if direction == 'backup' else '<-'} {remote}")
     return n

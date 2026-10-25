@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from ..providers.google_ai import google_client
 
-REFERENCES_DIR = Path(__file__).resolve().parents[3] / "library" / "references"
+REFERENCES_DIR = Path(__file__).resolve().parents[3] / "custom_model_feed" / "notes"   # the custom model feed
 DEFAULT_MODEL = "gemini-2.5-pro"
 SAMPLE_FPS = 0.25               # four frames a second is far more than craft notes need; one every 4 s keeps cost low
 
@@ -178,7 +178,7 @@ def learn(url: str, title: str | None = None, what: str = "all", cfg: dict | Non
           out_dir: Path | None = None, start_s: float | None = None, end_s: float | None = None,
           fps: float = SAMPLE_FPS, minutes: float | None = None, max_usd: float = 1.0, yes: bool = False,
           pricing: dict | None = None) -> Path:
-    """Watch `url` (a public YouTube link) and write library/references/<id>/profile.json (+ manifest.yaml).
+    """Watch `url` (a public YouTube link) and write custom_model_feed/notes/<id>/profile.json (+ manifest.yaml).
     The cost is estimated first from the length (`minutes`, else end-start, else a feature's 150 min) and the call
     is refused above `max_usd` unless `yes`."""
     from google.genai import types
@@ -238,7 +238,7 @@ def learn(url: str, title: str | None = None, what: str = "all", cfg: dict | Non
     return folder / "profile.json"
 
 
-TAGS = "tags.json"           # library/references/<id>/tags.json: the owner's corrected categories (control room)
+TAGS = "tags.json"           # custom_model_feed/notes/<id>/tags.json: the owner's corrected categories
 
 
 def profile_categories(folder: Path, profile: dict) -> list[str]:

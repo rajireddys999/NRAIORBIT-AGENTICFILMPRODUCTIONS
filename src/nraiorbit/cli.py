@@ -577,8 +577,29 @@ def cmd_service(args) -> None:
                                minutes=float(minutes) if minutes else None, pricing=load_pricing(None),
                                max_usd=max_usd)
 
+        def feed_fn(pid, count, approved_usd, log=print):
+            import tempfile
+
+            from .agents.production import MusicDirector
+            from .costing import SpendLedger, load_pricing
+            from .providers.lyria import LyriaMusic
+            from .service import feed
+            cfg = load_pipeline_config(None)
+            stamp = feed.name_for("build", "music").replace("build_music_", "")
+            spend = feed.FEED_DIR / "builds" / f"{pid}-{stamp}.jsonl"   # this build alone, held to what was approved
+            llm = ClaudeClient(model=cfg["llm"]["model"], max_tokens=feed.PLAN_MAX_TOKENS,   # its cost capped too
+                               usage_log=feed.FEED_DIR / "builds" / "llm_usage.jsonl")
+            ledger = SpendLedger(spend, approved_usd)
+            ledger.check(feed.PLAN_USD, "the music director's plan")
+            ledger.record("claude", f"plan {pid}", feed.PLAN_USD, note="at most, as priced")
+            music = LyriaMusic(Path(tempfile.mkdtemp()), cfg, load_pricing(None), ledger)
+            quick = {**cfg, "llm": {**cfg["llm"], "effort": {**(cfg["llm"].get("effort") or {}),
+                                                             "music_director": "low"}}}   # short thinking: fits
+            made = feed.build_music(pid, count, MusicDirector(llm, quick), music, log=log)
+            return {"made": made, "spent_usd": round(ledger.spent(), 2)}
+
         out = queue.tick(args.stories, args.references, PROJECTS, bucket=args.bucket, produce_fn=produce_fn,
-                         learn_fn=learn_fn, template=project_template())
+                         learn_fn=learn_fn, template=project_template(), feed_fn=feed_fn)
         print(out)
         return
     if args.action == "add-story":                       # load and save (gcloud when the client's login is stale)

@@ -203,6 +203,7 @@ footer .line { display:flex; align-items:center; justify-content:space-between; 
     <a href="/" {% if path == '/' or path.startswith('/film') %}class="on"{% endif %}>Films</a>
     <a href="/new" {% if path == '/new' %}class="on"{% endif %}>New film</a>
     <a href="/references" {% if path == '/references' %}class="on"{% endif %}>References</a>
+    <a href="/feed" {% if path == '/feed' %}class="on"{% endif %}>Sound library</a>
   </nav>
   <span class="who">
     {% if email and email != 'local' %}<span class="pill" title="{{ email }}">{{ email }}</span><a href="/logout">sign out</a><span class="avatar" aria-hidden="true">{{ email[:2]|upper }}</span>

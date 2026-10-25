@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Sound library · {{ settings.title }}{% endblock %}
+{% block style %}
+.tracks { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:14px }
+.track { border:1px solid var(--line); border-radius:16px; background:var(--card2); padding:14px 16px; display:flex; flex-direction:column; gap:6px; min-width:0 }
+.track audio { width:100% }
+.mood { font-family:var(--mono); font-size:10.5px; letter-spacing:.08em; color:var(--cyan); text-transform:uppercase }
+.moods a { margin-right:8px }
+{% endblock %}
+{% block body %}
+<section class="wrap" style="max-width:1200px;margin:0 auto">
+  <p class="eyebrow">Custom model feed · {{ tracks|length }} music tracks</p>
+  <h1 class="serif" style="margin:6px 0 12px">The studio's <em class="gold">sound library</em>.</h1>
+  <p class="muted" style="max-width:680px">Our own background music, made by Lyria from what Gemini learned from your reference videos, never their audio. Every film looks here first: a track that fits a scene's mood, intensity and tempo is reused for free, and each new track a film makes (not a character's own theme) joins the library. Stored in the bucket under <span class="mono">custom_model_feed/</span>.</p>
+  {% if pending %}<div class="card" style="margin-top:14px">{% for b in pending %}<p><span class="live-dot" style="margin-right:8px"></span>Building {{ b.count }} tracks from <b>{{ b.reference }}</b> (approved about ${{ '%.2f'|format(b.price) }} by {{ b.by }}). This page refreshes by itself.</p>{% endfor %}</div>{% endif %}
+  {% for b in builds %}{% if b.error %}<p class="small" style="color:var(--warn)">The build from {{ b.reference }}{% if b.made %} made {{ b.made|length }} tracks, then{% endif %} stopped: {{ b.error }}{% if b.spent_usd is not none %} (spent ${{ '%.2f'|format(b.spent_usd) }}){% endif %}</p>{% elif b.made %}<p class="small muted">Built from {{ b.reference }}: {{ b.made|length }} tracks{% if b.spent_usd is not none %} for ${{ '%.2f'|format(b.spent_usd) }}{% endif %}{% if b.finished %} on {{ b.finished|local }}{% endif %}.</p>{% endif %}{% endfor %}
+  <p class="moods small" style="margin:16px 0">Mood: <a href="/feed"{% if not mood %} class="gold"{% endif %}>all</a>{% for m in moods %}<a href="/feed?mood={{ m }}"{% if mood == m %} class="gold"{% endif %}>{{ m }}</a>{% endfor %}</p>
+  {% if not tracks %}<div class="card" style="text-align:center;padding:40px 24px"><p class="serif" style="font-size:24px;margin:0">No tracks yet.</p><p class="muted small" style="margin-top:8px">Build some from a learned reference on the <a href="/references">References</a> page, or make a film: its new cues land here.</p></div>{% endif %}
+  <div class="tracks">
+  {% for t in tracks %}
+    <article class="track">
+      <span class="mood">{{ t.mood }}{% if t.bpm %} · {{ t.bpm }} bpm{% endif %}{% if t.intensity %} · intensity {{ t.intensity }}{% endif %}</span>
+      <b class="mono small" style="word-break:break-all">{{ t.name }}</b>
+      <audio controls preload="none" src="{{ t.url }}"></audio>
+      {% if t.instruments %}<span class="small muted">{{ t.instruments|join(', ') }}{% if t.raga %} · raga {{ t.raga }}{% endif %}</span>{% endif %}
+      <span class="tiny dim">{% if t.made_for and t.made_for.reference %}learned from {{ t.made_for.reference }}{% elif t.made_for and t.made_for.film %}made for {{ t.made_for.film }} ({{ t.made_for.cue }}){% endif %}{% if t.created %} · {{ t.created|local }}{% endif %}</span>
+    </article>
+  {% endfor %}
+  </div>
+</section>
+{% endblock %}

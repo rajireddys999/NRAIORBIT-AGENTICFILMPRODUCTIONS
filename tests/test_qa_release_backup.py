@@ -129,9 +129,9 @@ def test_library_sync_restores_what_exists_and_skips_what_does_not(monkeypatch, 
 
     def run(cmd, capture_output=True, text=True, env=None):
         calls.append(cmd)
-        if "gs://b/library/references" in cmd[-2]:          # restore of a folder nobody wrote yet
+        if "gs://b/custom_model_feed/notes" in cmd[-2]:          # restore of a folder nobody wrote yet
             return SimpleNamespace(returncode=1, stderr="ERROR: (gcloud.storage.rsync) Did not find existing "
-                                                        "container at: gs://b/library/references")
+                                                        "container at: gs://b/custom_model_feed/notes")
         return SimpleNamespace(returncode=0, stderr="")
     monkeypatch.setattr(gcs, "RUN", run)
     monkeypatch.setattr(gcs, "STORAGE_FACTORY", _no_client)

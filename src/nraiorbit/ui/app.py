@@ -16,6 +16,7 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from ..service import feed as feed_mod
 from ..service import queue
 from . import films
 from . import runner as runner_mod
@@ -957,13 +958,77 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
             r.update(reference_price(r))
             pid = reference_id(r)
             if r["state"] == "done" and pid:              # what Gemini learned: its kinds, and the owner's correction
-                profile = films._json(store, f"library/references/{pid}/profile.json") or {}
-                owner = films._json(store, f"library/references/{pid}/{learn_mod.TAGS}")
+                profile = (films._json(store, f"custom_model_feed/notes/{pid}/profile.json")
+                           or films._json(store, f"library/references/{pid}/profile.json") or {})   # (moved by a run)
+                owner = films._json(store, f"custom_model_feed/notes/{pid}/{learn_mod.TAGS}")
+                if owner is None:                                # a correction made before the move
+                    owner = films._json(store, f"library/references/{pid}/{learn_mod.TAGS}")
                 r.update(profile_id=pid, lessons=(profile.get("lessons") or [])[:3],
                          categories=[c for c in (owner if isinstance(owner, list) else profile.get("categories") or [])
                                      if c in learn_mod.CATEGORIES],
                          corrected=isinstance(owner, list))
-        return page("references.html", request, email, refs=refs, categories=learn_mod.CATEGORIES)
+        price = feed_price(feed_mod.DEFAULT_BUILD)
+        pending = {p.rsplit("/", 1)[-1].removesuffix(".bgm.json") for p in store.list(feed_mod.REQUESTS)}
+        for r in refs:
+            if r.get("profile_id"):
+                r.update(build_price=price, building=r["profile_id"] in pending)
+        return page("references.html", request, email, refs=refs, categories=learn_mod.CATEGORIES,
+                    build_count=feed_mod.DEFAULT_BUILD)
+
+    def feed_price(count: int) -> float:
+        """What building `count` music tracks costs, as the runner's ledger will hold it to."""
+        from ..costing import lyria_price, load_pricing
+        from ..providers.lyria import music_model
+        from ..config import load_pipeline_config
+        google = load_pipeline_config(None).get("google") or {}
+        return feed_mod.build_price(count, lyria_price(load_pricing(None), music_model(google)))
+
+    @app.post("/feed/build")
+    def feed_build(email: str = Depends(guard), profile_id: str = Form(""), count: str = Form("10"),
+                   usd: str = Form("")):
+        """The owner approves building music tracks from a learned reference, at the price shown: saved as
+        queue/feed/<id>.bgm.json, which the next tick takes once (service/feed.run_builds)."""
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", profile_id) or not (
+                store.exists(f"custom_model_feed/notes/{profile_id}/profile.json")
+                or store.exists(f"library/references/{profile_id}/profile.json")):
+            return back("/references", "no such learned reference; nothing changed")
+        try:
+            n = int(count)
+        except ValueError:
+            n = 0
+        if not 1 <= n <= feed_mod.MAX_TRACKS:
+            return back("/references", f"Build between 1 and {feed_mod.MAX_TRACKS} tracks; nothing changed.")
+        price = feed_price(n)                              # worked out here, never taken from the form
+        try:
+            shown = float(usd)
+        except ValueError:
+            shown = -1.0
+        if abs(price - shown) > 0.01:
+            return back("/references", f"the price is now ${price:.2f}; look again before approving. Nothing changed.")
+        ask = f"{feed_mod.REQUESTS}{profile_id}.bgm.json"
+        if store.exists(ask):
+            return back("/feed", "that build is already waiting for the runner; nothing changed")
+        store.write_text(ask, json.dumps({"by": email, "at": queue.now(), "count": n, "price": price,
+                                          "approved_usd": round(price * 1.15, 2)}), "application/json")
+        return back("/feed", f"{n} tracks approved at about ${price:.2f}; " + tick_now("the music is being made"))
+
+    @app.get("/feed", response_class=HTMLResponse)
+    def feed_page(request: Request, email: str = Depends(guard), mood: str = ""):
+        tracks = []
+        for rel in store.list("custom_model_feed/bgm/"):
+            if not rel.endswith(".json"):
+                continue
+            rec = films._json(store, rel)
+            if not isinstance(rec, dict) or not rec.get("name") or (mood and rec.get("mood") != mood):
+                continue
+            tracks.append({**rec, "url": store.url(f"custom_model_feed/bgm/{rec['name']}")})
+        tracks.sort(key=lambda t: t.get("created") or "", reverse=True)
+        pending = [{**(films._json(store, rel) or {}), "reference": rel.rsplit("/", 1)[-1].removesuffix(".bgm.json")}
+                   for rel in store.list(feed_mod.REQUESTS) if rel.endswith(".bgm.json")]
+        builds = [b for rel in store.list("custom_model_feed/builds/") if rel.endswith(".json")
+                  and isinstance(b := films._json(store, rel), dict)]
+        return page("feed.html", request, email, tracks=tracks, moods=feed_mod.MOODS, mood=mood, pending=pending,
+                    builds=builds, refresh=30 if pending else 0)
 
     def reference_id(r: dict) -> str:
         """The library folder of a learned reference, from where the runner wrote its profile."""
@@ -974,14 +1039,16 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
     @app.post("/references/categories")
     async def reference_categories(request: Request, email: str = Depends(guard)):
         """The owner corrects what kinds of film a learned reference is an example of: written beside its profile
-        (library/references/<id>/tags.json), which wins over Gemini's and is never sent back by a run."""
+        (custom_model_feed/notes/<id>/tags.json), which wins over Gemini's and is never sent back by a run."""
         from ..service import learn as learn_mod
         form = await request.form()
         pid = str(form.get("profile_id") or "")
-        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", pid) or not store.exists(f"library/references/{pid}/profile.json"):
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", pid) or not (
+                store.exists(f"custom_model_feed/notes/{pid}/profile.json")
+                or store.exists(f"library/references/{pid}/profile.json")):
             return back("/references", "no such learned reference; nothing changed")
         chosen = [c for c in learn_mod.CATEGORIES if c in form.getlist("category")]
-        store.write_text(f"library/references/{pid}/{learn_mod.TAGS}", json.dumps(chosen), "application/json")
+        store.write_text(f"custom_model_feed/notes/{pid}/{learn_mod.TAGS}", json.dumps(chosen), "application/json")
         return back("/references", f"categories saved: {', '.join(chosen) or 'none'}; the next film uses them")
 
     def reference_price(r: dict) -> dict:

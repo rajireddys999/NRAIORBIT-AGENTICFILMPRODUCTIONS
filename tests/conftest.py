@@ -29,6 +29,13 @@ def no_youtube_page_lookups(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def feed_in_a_temporary_folder(monkeypatch, tmp_path):
+    """The custom model feed (service/feed.py) is written by every Lyria render; tests keep it out of the checkout."""
+    from nraiorbit.service import feed
+    monkeypatch.setattr(feed, "FEED_DIR", tmp_path / "custom_model_feed")
+
+
+@pytest.fixture(autouse=True)
 def no_cloud_run_lookup_for_the_footer(monkeypatch):
     """Every control-room page shows the runner's live image (ui/runner.job_image, read from Cloud Run). Off the
     cloud that lookup waits seconds for credentials, so the tests see a fixed image; the footer test sets its own."""

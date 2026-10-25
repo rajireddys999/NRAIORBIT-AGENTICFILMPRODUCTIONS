@@ -750,6 +750,14 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
             clear(pipeline, "publish", "pending", "approved")     # one approval, one upload: a new cut asks again
         except Exception as exc:
             report["steps"]["publish"] = f"skipped: {type(exc).__name__}: {str(exc)[:160]}"
+    if pol["publish"] in ("private", "unlisted", "public") and published_already(root):
+        try:                                             # the reels follow the film as Shorts when that is the setting
+            from . import shorts
+            said = shorts.after_film_upload(root, bucket, pipeline.cfg)
+            if said:
+                report["steps"]["shorts"] = said
+        except Exception as exc:                         # never the film's problem: the button still asks for them
+            report["steps"]["shorts"] = f"not asked for: {type(exc).__name__}: {str(exc)[:120]}"
 
     # 7. backup
     if bucket:
@@ -824,13 +832,13 @@ def publish_youtube(root: Path, privacy: str, bucket: str | None = None) -> dict
     if not uploaded_already(out, "film", master / "movie.mp4"):
         video_id = youtube.upload(master / "movie.mp4", meta, creds, captions=captions,
                                   thumbnail=thumb if thumb.exists() else None)
-        out["film"] = {"id": video_id, "file": fingerprint(master / "movie.mp4")}
+        out["film"] = {"id": video_id, "file": fingerprint(master / "movie.mp4"), "privacy": privacy}
         record()
     if (master / "trailer.mp4").exists() and not uploaded_already(out, "trailer", master / "trailer.mp4"):
         tmeta = youtube.build_metadata(bible, outline, privacy=privacy)
         tmeta["snippet"]["title"] = f"{bible.title_te} ({bible.title_en}) | Official Trailer"[:100]
         out["trailer"] = {"id": youtube.upload(master / "trailer.mp4", tmeta, creds),
-                          "file": fingerprint(master / "trailer.mp4")}
+                          "file": fingerprint(master / "trailer.mp4"), "privacy": privacy}
         record()
     return out
 

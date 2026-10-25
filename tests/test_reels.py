@@ -4,6 +4,7 @@ when the owner asks, once each, apart from the film's own upload."""
 
 import json
 import subprocess
+from types import SimpleNamespace as N
 
 import pytest
 
@@ -311,3 +312,74 @@ def test_one_films_unreadable_record_never_holds_up_the_next_films_shorts(cloud)
     sent = []
     assert shorts.run(cloud, lambda: [], log=lambda *_: None, upload=lambda v, m, c: sent.append(m) or "ID",
                       creds="c") == ["rain"] and len(sent) == 3
+
+
+def test_shorts_are_automatic_unless_the_owner_or_the_config_says_ask(tmp_path, monkeypatch, cloud):
+    from nraiorbit.release import gcs
+    root = tmp_path / "rain"
+    (root / "11_master" / "reels").mkdir(parents=True)
+    (root / "reports").mkdir()
+    assert shorts.mode(root, {}) == "auto" and shorts.mode(root, {"reels": {"shorts": "ask"}}) == "ask"
+    (root / shorts.MODE_FILE).write_text(json.dumps({"mode": "auto"}))
+    assert shorts.mode(root, {"reels": {"shorts": "ask"}}) == "auto"          # the owner's choice for the film wins
+    monkeypatch.setattr(gcs, "client", lambda: N(bucket=lambda name: cloud))
+    assert shorts.after_film_upload(root, "bkt", {}) is None                  # no reels yet: nothing to ask for
+    movie = root / "11_master" / "movie.mp4"
+    movie.write_bytes(b"the film")
+    (root / "11_master" / "reels" / "reels.json").write_text(json.dumps({"film": "old cut", "reels": [{"file": "r"}]}))
+    assert shorts.after_film_upload(root, "bkt", {}).endswith("earlier cut")   # never an older cut's reels
+    mark = reels.film_mark(movie)
+    (root / "11_master" / "reels" / "reels.json").write_text(json.dumps({"film": mark, "reels": [{"file": "r.mp4"}]}))
+    (root / "reports" / "youtube.json").write_text(json.dumps({"film": {"id": "F", "privacy": "unlisted"}}))
+    assert shorts.after_film_upload(root, "bkt", {}).startswith("asked for automatically (unlisted)")
+    ask = json.loads(cloud.objects["stories/rain.shorts.json"])
+    assert ask["privacy"] == "unlisted" and ask["by"].startswith("automatic") and ask["film"] == mark
+    (root / "reports" / "youtube.json").write_text(json.dumps({"film": {"id": "F"}}))   # from before: private
+    assert shorts.after_film_upload(root, "bkt", {}).startswith("asked for automatically (private)")
+    del cloud.objects["stories/rain.shorts.json"]
+    (root / "reports" / shorts.RECORD).write_text(json.dumps({"reel_1": {"id": "S", "film": mark}}))
+    assert shorts.after_film_upload(root, "bkt", {}) == "all up already"
+    (root / shorts.MODE_FILE).write_text(json.dumps({"mode": "ask"}))
+    (root / "reports" / shorts.RECORD).unlink()
+    assert shorts.after_film_upload(root, "bkt", {}) is None and "stories/rain.shorts.json" not in cloud.objects
+
+
+def test_a_request_for_one_cut_never_uploads_another_cuts_reels(cloud):
+    cloud.put("stories/rain.shorts.json", json.dumps({"privacy": "public", "film": "a newer cut"}).encode())
+    sent = []
+    shorts.run(cloud, lambda: [], log=lambda *_: None, upload=lambda v, m, c: sent.append(m) or "ID", creds="c")
+    record = json.loads(cloud.objects["rain/reports/youtube_shorts.json"])
+    assert sent == [] and "another cut" in record["error"]
+
+
+def test_the_tick_carries_the_owners_shorts_choice_and_sends_what_the_run_asked_for_at_once(tmp_path, monkeypatch):
+    st, rf = tmp_path / "stories.csv", tmp_path / "references.csv"
+    (tmp_path / "rain.md").write_text("A ferryman and a flood.", encoding="utf-8")
+    queue.save(str(st), [{"slug": "rain", "story_uri": str(tmp_path / "rain.md"), "budget_usd": "40", "gates": "ask",
+                          "publish": "public", "state": "approved", "note": "", "updated": ""}], queue.STORY_COLUMNS)
+    queue.save(str(rf), [], queue.REFERENCE_COLUMNS)
+    template = tmp_path / "projects" / "_template"
+    template.mkdir(parents=True)
+    (template / "pipeline.yaml").write_text("providers: {video: mock}\n", encoding="utf-8")
+    calls, seen = [], {}
+
+    def shorts_step(bucket, rows, log):                                    # the second look comes after the row
+        calls.append(rows()[0]["state"] if calls else "before")            # is written: the film is done by then
+        return ["rain"] if len(calls) > 1 else []
+    monkeypatch.setattr(queue, "SHORTS", shorts_step)
+    from nraiorbit.ops import backup
+    monkeypatch.setattr(backup, "sync_library", lambda *a, **k: None)
+    monkeypatch.setattr(backup, "restore_report", lambda root, b, log=None, **k: (0, []))
+    monkeypatch.setattr(backup, "backup", lambda *a, **k: 1)
+
+    def fetch(uri):
+        if uri.endswith("rain.shorts-mode.json"):
+            return json.dumps({"mode": "ask"})
+        return queue._fetch(uri) if not uri.startswith("gs://") else ""
+
+    def produce_fn(root, bucket):
+        seen["mode"] = json.loads((root / shorts.MODE_FILE).read_text())["mode"]
+        return {"state": "done", "steps": {}}
+    out = queue.tick(str(st), str(rf), tmp_path / "projects", bucket="bkt", produce_fn=produce_fn, learn_fn=None,
+                     template=template, fetch_story=fetch, log=lambda *_: None)
+    assert seen["mode"] == "ask" and calls == ["before", "done"] and out["shorts"] == ["rain"]

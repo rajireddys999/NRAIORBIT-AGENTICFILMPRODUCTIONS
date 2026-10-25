@@ -227,7 +227,8 @@ def caption(bible: StoryBible, line_te: str = "", line_en: str = "") -> str:
 
 # ---------------------------------------------------------------------------------------------- the film's reels
 
-def _film_mark(movie: Path) -> str:
+def film_mark(movie: Path) -> str:
+    """The cut a set of reels comes from: a hash of movie.mp4."""
     h = hashlib.sha256()
     with open(movie, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -244,7 +245,7 @@ def make_reels(root: Path, count: int = REEL_COUNT, length: float = REEL_S, fps:
     folder = root / "11_master" / FOLDER
     if not movie.exists() or not edl_path.exists():
         return "skipped: no finished film yet"
-    mark = _film_mark(movie)
+    mark = film_mark(movie)
     try:
         before = json.loads((folder / RECORD).read_text(encoding="utf-8"))
     except (OSError, ValueError):

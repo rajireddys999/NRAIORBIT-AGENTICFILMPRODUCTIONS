@@ -95,6 +95,16 @@ RUN_ENDED = {"done": "The last run finished", "awaiting": "The last run stopped 
              "running": "The last run stopped without finishing"}
 
 
+def shorts_mode(store: Store, slug: str, cfg: dict) -> str:
+    """auto or ask: the owner's choice for this film (stories/<slug>.shorts-mode.json), else the film's config."""
+    from ..service.shorts import MODE_SUFFIX, MODES
+    chosen = (_json(store, f"stories/{slug}{MODE_SUFFIX}") or {}).get("mode")
+    if chosen in MODES:
+        return chosen
+    default = ((cfg or {}).get("reels") or {}).get("shorts")
+    return default if default in MODES else "auto"
+
+
 def step_of(key: str | None) -> tuple[int, str] | None:
     """(step number, label) of a stage key, as the pipeline below numbers them."""
     keys = [k for k, _ in STAGES]
@@ -826,6 +836,7 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         "strips": [{"shot_id": n.rsplit("/", 1)[-1].replace("_strip.jpg", ""), "url": img(n)} for n in strips],
         "media": media, "reels": reels, "shorts": shorts, "shorts_up": shorts_up,
         "shorts_asked": store.exists(f"stories/{slug}.shorts.json") or shorts_mod.uploading(shorts),
+        "shorts_mode": shorts_mode(store, slug, resolved),
         "delivery": deliver_links,
         "title": bible.get("title_en") or slug, "title_te": bible.get("title_te"),
         "state": state,

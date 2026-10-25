@@ -22,6 +22,9 @@ SUFFIX = ".shorts.json"
 RECORD = "youtube_shorts.json"           # <slug>/reports/
 PRIVACY = ("private", "unlisted", "public")
 BUSY_S = 30 * 60                         # an upload marked longer ago than this was killed: asking again is allowed
+MODES = ("auto", "ask")                  # auto: right after the film's own YouTube upload; ask: only on the button
+MODE_SUFFIX = ".shorts-mode.json"        # stories/<slug>.shorts-mode.json: the owner's choice for one film
+MODE_FILE = "shorts_mode.json"           # the copy the tick puts in the project for the run
 
 
 def _now() -> str:
@@ -44,6 +47,68 @@ def current(record, mark) -> dict[str, dict]:
     record = record if isinstance(record, dict) else {}
     return {k: v for k, v in record.items() if k.startswith("reel_") and isinstance(v, dict) and v.get("id")
             and mark and v.get("film") == mark}
+
+
+def mode(root: Path, cfg: dict) -> str:
+    """How a film's reels go up as Shorts: the owner's choice for this film (shorts_mode.json, from the control
+    room), else the config's reels.shorts, else automatic."""
+    try:
+        chosen = json.loads((Path(root) / MODE_FILE).read_text(encoding="utf-8")).get("mode")
+    except (OSError, ValueError, AttributeError):
+        chosen = None
+    if chosen in MODES:
+        return chosen
+    default = (cfg.get("reels") or {}).get("shorts")
+    return default if default in MODES else "auto"
+
+
+def request(bucket, slug: str, privacy: str, by: str, film: str | None = None) -> None:
+    """Ask for a film's Shorts, as the control room's button does (stories/<slug>.shorts.json); `film`: the cut the
+    reels must be of (their reels.json mark), or any."""
+    bucket.blob(f"{REQUESTS}{slug}{SUFFIX}").upload_from_string(
+        json.dumps({"id": f"{_now()}-auto", "by": by, "at": _now(), "privacy": privacy, "film": film}),
+        content_type="application/json")
+
+
+def film_privacy(youtube_record) -> str:
+    """The visibility the film itself went up with (reports/youtube.json): its Shorts never go wider. A record from
+    before that was written down says private."""
+    film = (youtube_record or {}).get("film") if isinstance(youtube_record, dict) else None
+    privacy = film.get("privacy") if isinstance(film, dict) else None
+    return privacy if privacy in PRIVACY else "private"
+
+
+def after_film_upload(root: Path, bucket_name: str | None, cfg: dict) -> str | None:
+    """Right after the film's own YouTube upload (under the owner's approval of it), its reels are asked for as
+    Shorts with the visibility the film went up with, when the film's Shorts are automatic, its reels are of this
+    very cut and some are not up yet. Instagram stays the owner's: they download the reels. Returns what happened,
+    for the run report (None: nothing to say)."""
+    from ..post.reels import film_mark
+    if not bucket_name or mode(root, cfg) != "auto":
+        return None
+    try:
+        made = json.loads((Path(root) / "11_master" / "reels" / "reels.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not made.get("reels"):
+        return None
+    movie = Path(root) / "11_master" / "movie.mp4"
+    if not movie.exists() or made.get("film") != film_mark(movie):
+        return "not asked for: the reels are of an earlier cut"
+    try:
+        privacy = film_privacy(json.loads((Path(root) / "reports" / "youtube.json").read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        privacy = "private"
+    try:
+        record = json.loads((Path(root) / "reports" / RECORD).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        record = {}
+    if len(current(record, made.get("film"))) >= len(made["reels"]):
+        return "all up already"
+    from ..release import gcs
+    request(gcs.client().bucket(bucket_name), Path(root).name, privacy, "automatic, after the film's upload",
+            film=made.get("film"))
+    return f"asked for automatically ({privacy}); they go up when this run ends"
 
 
 def requested(bucket) -> list[str]:
@@ -123,6 +188,8 @@ def upload_film_shorts(bucket, slug: str, ask: dict, log: Callable[[str], None] 
     try:
         made = read(f"{slug}/11_master/reels/reels.json") or {}
         reels, mark = made.get("reels") or [], made.get("film")
+        if ask.get("film") and ask["film"] != mark:
+            raise ValueError("the reels in storage are of another cut than the one asked for; ask again")
         if not reels:
             raise FileNotFoundError("this film has no reels yet; they are made after its trailer is approved")
         bible = StoryBible.model_validate(read(f"{slug}/project/01_story_bible.json"))

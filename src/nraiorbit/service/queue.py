@@ -555,6 +555,9 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
             shorts = SHORTS(bucket, lambda: load(stories_uri, STORY_COLUMNS), log)   # the sheet only when asked
         out = _tick(stories_uri, references_uri, projects_dir, bucket=bucket, produce_fn=produce_fn,
                     learn_fn=learn_fn, template=template, fetch_story=fetch_story, log=log, tracker=tracker)
+        if bucket and SHORTS is not None and out.get("story"):   # the film just run may have asked for its own,
+            shorts = [*shorts, *(s for s in SHORTS(bucket, lambda: load(stories_uri, STORY_COLUMNS), log)
+                                 if s not in shorts)]     # right after its upload: they go up now, not next tick
         if shorts:
             out["shorts"] = shorts
         return out
@@ -663,6 +666,12 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
                 chosen = fetch_story(voices_uri(s["story_uri"]))                # the row's story
             if chosen.strip():
                 apply_voices(root, chosen)                # the owner's voices win, every tick
+            from .shorts import MODE_FILE, MODE_SUFFIX
+            picked = fetch_story(f"gs://{bucket}/stories/{s['slug']}{MODE_SUFFIX}") if bucket else ""
+            if picked.strip():                            # the owner's Shorts choice for this film, as last saved
+                (root / MODE_FILE).write_text(picked, encoding="utf-8")
+            else:
+                (root / MODE_FILE).unlink(missing_ok=True)
             ask = fetch_story(f"gs://{bucket}/stories/{s['slug']}.rework.json") if bucket else ""   # Send back, as
             if not ask.strip() and s.get("story_uri"):                          # the control room saved it; produce
                 ask = fetch_story(rework_uri(s["story_uri"]))                   # applies it once, by its id

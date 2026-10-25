@@ -1528,3 +1528,30 @@ def test_the_top_of_the_page_says_what_needs_you_and_what_the_run_did_in_plain_w
     for odd in (7, True, [{"phase": ["render"]}, {"phase": {"x": 1}}, "text"]):    # never a crash on an odd record
         (root / "demo" / "reports" / "progress.json").write_text(json.dumps({**PROGRESS, "state": "done", "history": odd}))
         assert client.get("/film/demo").status_code == 200
+
+
+def test_the_owner_chooses_whether_shorts_follow_the_film_and_the_top_says_where_the_reels_are(client, root):
+    html = client.get("/film/demo").text
+    assert '<option value="auto" selected>Shorts: automatic' in html and "Instagram is yours" in html
+    r = client.post("/film/demo/shorts-mode", data={"mode": "ask"}, follow_redirects=False)
+    assert r.status_code == 303 and json.loads((root / "stories" / "demo.shorts-mode.json").read_text())["mode"] == "ask"
+    assert '<option value="ask" selected>' in client.get("/film/demo").text
+    from urllib.parse import unquote
+    r = client.post("/film/demo/shorts-mode", data={"mode": "sometimes"}, follow_redirects=False)
+    assert "nothing changed" in unquote(r.headers["location"])
+    _reels(root)
+    html = client.get("/film/demo").text
+    assert "Reels: 3 ready for Instagram" in html and "waiting for your button" in html and "Step 12 · YouTube" in html
+
+
+
+def test_switching_a_film_already_on_youtube_to_automatic_sends_its_reels_now_with_the_films_visibility(client, root):
+    _reels(root)
+    (root / "demo" / "reports" / "youtube.json").write_text(json.dumps({"film": {"id": "F", "privacy": "unlisted"}}))
+    client.post("/film/demo/shorts-mode", data={"mode": "auto"}, follow_redirects=False)
+    ask = json.loads((root / "stories" / "demo.shorts.json").read_text())
+    assert ask["privacy"] == "unlisted" and ask["film"] == "x" and client.started == ["nraiorbit-runner"]
+    (root / "stories" / "demo.shorts.json").unlink()
+    (root / "demo" / "reports" / "youtube.json").unlink()                    # not on YouTube: only the setting
+    client.post("/film/demo/shorts-mode", data={"mode": "auto"}, follow_redirects=False)
+    assert not (root / "stories" / "demo.shorts.json").exists()

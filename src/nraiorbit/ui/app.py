@@ -829,6 +829,34 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                                      "privacy": privacy}), "application/json")
         return back(f"/film/{slug}", f"Shorts asked for ({privacy}); " + tick_now("they go up in a minute or two"))
 
+    @app.post("/film/{slug}/shorts-mode")
+    def shorts_mode(slug: str, email: str = Depends(guard), mode: str = Form("")):
+        """Whether this film's reels go up as YouTube Shorts on their own, right after the film's upload (auto), or
+        only when the owner presses the button (ask). Saved as stories/<slug>.shorts-mode.json; the next run uses
+        it. Instagram is always the owner's: they download the reels."""
+        from ..service import shorts as shorts_mod
+        if not SLUG_RE.match(slug):
+            raise HTTPException(404)
+        if mode not in shorts_mod.MODES:
+            return back(f"/film/{slug}", "Pick automatic or only when you ask; nothing changed.")
+        store.write_text(f"{shorts_mod.REQUESTS}{slug}{shorts_mod.MODE_SUFFIX}",
+                         json.dumps({"mode": mode, "by": email, "at": queue.now()}), "application/json")
+        said = ("they go up on their own right after the film's upload" if mode == "auto"
+                else "only when you press the button")
+        uploaded = films._json(store, f"{slug}/reports/youtube.json") or {}
+        made = films._json(store, f"{slug}/11_master/reels/reels.json") or {}
+        record = films._json(store, f"{slug}/reports/{shorts_mod.RECORD}")
+        if (mode == "auto" and isinstance(uploaded.get("film"), dict) and uploaded["film"].get("id")
+                and made.get("reels") and len(shorts_mod.current(record, made.get("film"))) < len(made["reels"])
+                and not shorts_mod.uploading(record) and not store.exists(f"stories/{slug}{shorts_mod.SUFFIX}")):
+            privacy = shorts_mod.film_privacy(uploaded)  # the film is up already: its reels follow it now
+            store.write_text(f"{shorts_mod.REQUESTS}{slug}{shorts_mod.SUFFIX}",
+                             json.dumps({"id": f"{queue.now()}-{os.urandom(3).hex()}", "by": email, "at": queue.now(),
+                                         "privacy": privacy, "film": made.get("film")}), "application/json")
+            return back(f"/film/{slug}", f"YouTube Shorts: {said}. The film is on YouTube already, so its reels "
+                                         f"go up now ({privacy}); " + tick_now("they go up in a minute or two"))
+        return back(f"/film/{slug}", "YouTube Shorts: " + said)
+
     @app.post("/film/{slug}/reject")
     def reject(slug: str, email: str = Depends(guard), gate: str = Form(""), notes: str = Form("")):
         """Reject the cut or the trailer with a note: the runner's AI editor (service/triage) decides what to redo,

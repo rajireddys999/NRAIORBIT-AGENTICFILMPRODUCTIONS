@@ -929,3 +929,32 @@ def test_a_film_already_on_youtube_is_never_asked_for_again(tmp_path):
     assert produce.published_already(root)
     movie.write_bytes(b"the film, re-cut")
     assert not produce.published_already(root)
+
+
+def test_the_reels_follow_the_film_to_youtube_when_its_shorts_are_automatic(tmp_path, monkeypatch):
+    """The owner approves the film's upload; with Shorts on automatic the run asks for its reels right after,
+    with the film's visibility, under that same approval. A failed upload asks for nothing."""
+    from nraiorbit.service import shorts
+    pipeline, paths, uploads, _json = _fake_film(tmp_path, monkeypatch, "auto")
+    asked = []
+    monkeypatch.setattr(shorts, "after_film_upload", lambda root, bucket, cfg: asked.append("asked")
+                        or "asked for automatically (private); they go up when this run ends")
+    for g in ("cost", "publish"):
+        produce.approve(pipeline, g, "approved in the control room\n")
+    monkeypatch.setattr(produce, "published_already", lambda root: False)    # the upload failed: nothing is up
+    monkeypatch.setattr(produce, "publish_youtube", lambda root, privacy, bucket=None: (_ for _ in ()).throw(
+        RuntimeError("quotaExceeded")))
+    report = produce.produce(pipeline, log=lambda *_: None)
+    assert report["steps"]["publish"].startswith("skipped: RuntimeError") and asked == [] and "shorts" not in report["steps"]
+    produce.approve(pipeline, "publish", "approved in the control room\n")
+    def upload(root, privacy, bucket=None):
+        (root / "reports").mkdir(parents=True, exist_ok=True)
+        (root / "reports" / "youtube.json").write_text(json.dumps({"film": {"id": "F", "privacy": privacy}}))
+        return {"film": {"id": "F"}}
+    monkeypatch.setattr(produce, "publish_youtube", upload)
+    monkeypatch.setattr(produce, "published_already", lambda root: True)
+    report = produce.produce(pipeline, log=lambda *_: None)
+    assert asked == ["asked"] and report["steps"]["shorts"].startswith("asked for automatically")
+    assert not (paths.reviews / "publish.approved").exists()                 # spent by the upload
+    report = produce.produce(pipeline, log=lambda *_: None)                  # a later run: the film is up already
+    assert report["state"] == "done" and asked == ["asked", "asked"]         # (the job uploads nothing twice)

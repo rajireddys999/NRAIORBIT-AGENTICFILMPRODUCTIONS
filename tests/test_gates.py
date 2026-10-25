@@ -909,3 +909,23 @@ def test_a_reference_result_goes_to_the_row_its_tick_claimed_among_identical_row
     second.update(state="done", profile_uri="score.json", updated=queue.now())
     queue.write_reference(rf, second)
     assert [r["state"] for r in queue.load(rf, queue.REFERENCE_COLUMNS)] == ["new", "done"]
+
+
+def test_a_film_already_on_youtube_is_never_asked_for_again(tmp_path):
+    """A run over a finished film (to cut its reels) found the publish approval spent by the upload and asked again;
+    the record says this very film and trailer are up, so it is not. A new cut is asked for."""
+    root = tmp_path / "film"
+    (root / "11_master").mkdir(parents=True)
+    (root / "reports").mkdir()
+    movie, trailer = root / "11_master" / "movie.mp4", root / "11_master" / "trailer.mp4"
+    movie.write_bytes(b"the film")
+    assert not produce.published_already(root)
+    (root / "reports" / "youtube.json").write_text(json.dumps({"film": {"id": "F", "file": produce.fingerprint(movie)}}))
+    assert produce.published_already(root)
+    trailer.write_bytes(b"the trailer")                                     # a trailer that never went up
+    assert not produce.published_already(root)
+    (root / "reports" / "youtube.json").write_text(json.dumps({
+        "film": {"id": "F", "file": produce.fingerprint(movie)}, "trailer": {"id": "T", "file": produce.fingerprint(trailer)}}))
+    assert produce.published_already(root)
+    movie.write_bytes(b"the film, re-cut")
+    assert not produce.published_already(root)

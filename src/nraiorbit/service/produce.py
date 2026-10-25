@@ -676,6 +676,19 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
             return finish(f"blocked:{str(b)[:120]}")
     report["steps"]["render"] = "done"
 
+    # 3b. reels: 5-second upright clips cut from the film itself for Instagram and YouTube Shorts; nothing is paid,
+    #     and a reel that cannot be made never stops the film
+    if (pipeline.cfg.get("reels") or {}).get("enabled", True):
+        step("reels")
+        try:
+            from ..post import reels
+            r = pipeline.cfg.get("reels") or {}
+            report["steps"]["reels"] = reels.make_reels(
+                root, count=int(r.get("count", reels.REEL_COUNT)), length=float(r.get("seconds", reels.REEL_S)),
+                fps=int((pipeline.cfg.get("film") or {}).get("fps", 24)), log=log)
+        except Exception as exc:
+            report["steps"]["reels"] = f"skipped: {type(exc).__name__}: {str(exc)[:160]}"
+
     # 4. QA: never stops the run; it writes sheets and a verdict for the owner
     step("qa")
     qa_file, checked = pipeline.p.reports / "qa" / "film.json", False   # what `nraiorbit qa film` writes: the control
@@ -720,6 +733,9 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
     if pol["publish"] not in ("private", "unlisted", "public"):
         clear(pipeline, "publish")
         report["steps"]["publish"] = "none"
+    elif not approved(pipeline, "publish") and published_already(root):
+        report["steps"]["publish"] = json.loads((root / "reports" / "youtube.json").read_text(encoding="utf-8"))
+        clear(pipeline, "publish")                       # this very film and trailer are up: never asked again
     elif not approved(pipeline, "publish"):
         qa = "" if report["steps"].get("qa_film") == "ok" else " The film check did not pass: look at QA first."
         hold(pipeline, "publish", f"Watch the film and the trailer, then approve the {pol['publish']} YouTube "
@@ -827,6 +843,20 @@ def fingerprint(path: Path) -> dict:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return {"bytes": path.stat().st_size, "sha256": h.hexdigest()}
+
+
+def published_already(root: Path) -> bool:
+    """Whether this very film (and its trailer, when there is one) is on YouTube already (reports/youtube.json): a
+    run over a finished film (to make its reels, say) does not ask for the upload again. A new cut is asked for."""
+    master = root / "11_master"
+    try:
+        record = json.loads((root / "reports" / "youtube.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(record, dict) or not (master / "movie.mp4").exists():
+        return False
+    return uploaded_already(record, "film", master / "movie.mp4") and (
+        not (master / "trailer.mp4").exists() or uploaded_already(record, "trailer", master / "trailer.mp4"))
 
 
 def uploaded_already(record: dict, asset: str, path: Path) -> bool:

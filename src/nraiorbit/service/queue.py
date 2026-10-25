@@ -550,11 +550,32 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
     whatever happened."""
     tracker = TRACKER_FACTORY(bucket, log=log) if bucket else None
     try:
-        return _tick(stories_uri, references_uri, projects_dir, bucket=bucket, produce_fn=produce_fn,
-                     learn_fn=learn_fn, template=template, fetch_story=fetch_story, log=log, tracker=tracker)
+        shorts = []                                       # first: a minute's work, never behind an hour's film run
+        if bucket and SHORTS is not None:                 # the owner asked for a film's Shorts: no film run needed
+            shorts = SHORTS(bucket, lambda: load(stories_uri, STORY_COLUMNS), log)   # the sheet only when asked
+        out = _tick(stories_uri, references_uri, projects_dir, bucket=bucket, produce_fn=produce_fn,
+                    learn_fn=learn_fn, template=template, fetch_story=fetch_story, log=log, tracker=tracker)
+        if shorts:
+            out["shorts"] = shorts
+        return out
     finally:
         if tracker is not None:
             tracker.close()
+
+
+def _shorts(bucket: str, rows, log) -> list[str]:
+    """The Shorts the owner asked for (service/shorts.py); a bucket that cannot be read is logged, never the tick's
+    end."""
+    from . import shorts
+    try:
+        from ..release import gcs
+        return shorts.run(gcs.client().bucket(bucket), rows, log=log)
+    except Exception as exc:
+        log(f"  Shorts not looked at: {type(exc).__name__}: {str(exc)[:120]}")
+        return []
+
+
+SHORTS = _shorts                                          # tests replace it
 
 
 def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, learn_fn, template, fetch_story, log,

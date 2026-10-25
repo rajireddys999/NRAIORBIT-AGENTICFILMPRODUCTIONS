@@ -29,7 +29,8 @@ GATES = {"story": "story", "outline": "outline", "scenes": "scenes", "cast": "ca
 # and the library phases have no stage and show in the headers only
 PHASES = {"story_bible": "story", "outline": "outline", "scenes": "scenes", "cast": "cast", "shots": "shots",
           "music_plan": "render", "render": "render", "assemble": "assemble", "trailer": "assemble", "cost": "cost",
-          "faces": "faces", "qa": "qa", "deliver": "deliver", "publish": "publish", "voices": "render"}
+          "faces": "faces", "qa": "qa", "deliver": "deliver", "publish": "publish", "voices": "render",
+          "reels": "assemble"}
 # the steps Send back can name (service.produce.REWORK_STAGES has the same keys), and the step a waiting gate or a
 # stop points at by default
 REWORK_STEPS = [("story", "Story bible"), ("outline", "Outline"), ("scenes", "Scenes & dialogue"), ("cast", "Cast"),
@@ -704,6 +705,15 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         rel = f"{slug}/11_master/{name}"
         if any(n == rel for n in master):
             media[name] = store.url(rel)
+    reels = []                                            # 5-second upright clips (post/reels.py), to download
+    for n, r in enumerate((_json(store, f"{slug}/11_master/reels/reels.json") or {}).get("reels") or [], 1):
+        rel = f"{slug}/11_master/reels/{r.get('file')}"
+        if isinstance(r, dict) and rel in master:
+            reels.append({**r, "n": n, "url": store.url(rel), "download": store.url(rel, filename=f"{slug}_reel_{n}.mp4")})
+    from ..service import shorts as shorts_mod
+    shorts = _json(store, f"{slug}/reports/youtube_shorts.json") or {}
+    mine = shorts_mod.current(shorts, (_json(store, f"{slug}/11_master/reels/reels.json") or {}).get("film"))
+    shorts_up = [{"n": r["n"], "id": mine[f"reel_{r['n']}"]["id"]} for r in reels if f"reel_{r['n']}" in mine]
     deliver_links = []
     if isinstance(delivery, list):
         for rec in delivery:
@@ -729,7 +739,10 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         "money": cash, "produce": produce, "steps": steps,
         "review_queue": review_queue[-30:], "qa_film": qa_film, "qa_md": qa_md,
         "strips": [{"shot_id": n.rsplit("/", 1)[-1].replace("_strip.jpg", ""), "url": img(n)} for n in strips],
-        "media": media, "delivery": deliver_links, "title": bible.get("title_en") or slug, "title_te": bible.get("title_te"),
+        "media": media, "reels": reels, "shorts": shorts, "shorts_up": shorts_up,
+        "shorts_asked": store.exists(f"stories/{slug}.shorts.json") or shorts_mod.uploading(shorts),
+        "delivery": deliver_links,
+        "title": bible.get("title_en") or slug, "title_te": bible.get("title_te"),
         "state": state,
         "hint": explain_note((row or {}).get("note") or (row or {}).get("state")),
         "policy": cfg.get("policy") or {}, "runtime": (cfg.get("film") or {}).get("runtime_minutes"),

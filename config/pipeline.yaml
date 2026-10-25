@@ -29,6 +29,11 @@ cards: auto                        # the film's name over its opening (before th
 #   - {kind: end, at_s: 617.5, length_s: 2.5, text_te: "గోదావరి సింహం", text_en: "GODAVARI SIMHAM"}
 #   # optional per card: image: inbox/title.png   (a designed title image, relative to the project, instead of text)
 
+# Reels: upright 5-second clips cut from the finished film for Instagram Reels and YouTube Shorts (post/reels.py).
+# Nothing is paid: the film's own picture and sound, made after the trailer is approved, again only when the film
+# changes. The owner downloads them from the film page; the YouTube card asks before any go up as Shorts.
+reels: {enabled: true, count: 3, seconds: 5}
+
 llm:
   model: claude-opus-5-5
   max_tokens: 64000

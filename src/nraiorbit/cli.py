@@ -571,10 +571,11 @@ def cmd_service(args) -> None:
             return produce.produce(Pipeline(root, llm, cfg=cfg), bucket=bucket, keyframes=cmd_keyframes,
                                    progress=progress)
 
-        def learn_fn(url, title, what, minutes=None):
+        def learn_fn(url, title, what, minutes=None, max_usd=1.0):
             from .costing import load_pricing
             return learn.learn(url, title=title, what=what, cfg=load_pipeline_config(None),
-                               minutes=float(minutes) if minutes else None, pricing=load_pricing(None))
+                               minutes=float(minutes) if minutes else None, pricing=load_pricing(None),
+                               max_usd=max_usd)
 
         out = queue.tick(args.stories, args.references, PROJECTS, bucket=args.bucket, produce_fn=produce_fn,
                          learn_fn=learn_fn, template=project_template())

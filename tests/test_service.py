@@ -8,6 +8,7 @@ import yaml
 
 from nraiorbit.agents.base import Agent, reference_examples
 from nraiorbit.service import learn, queue
+from nraiorbit.service.learn import video_minutes as REAL_VIDEO_MINUTES  # before conftest stubs it
 
 pytest.importorskip("google.genai")
 
@@ -209,3 +210,36 @@ def test_agents_get_the_reference_block_in_their_context(tmp_path):
         pass
     agent.ask(Empty, context="<story_bible>\n{}\n</story_bible>", task="score it")
     assert llm.context.startswith("<story_bible>") and "<references>" in llm.context
+
+
+
+def test_a_references_length_is_read_from_its_youtube_page():
+    real = REAL_VIDEO_MINUTES                              # conftest keeps the lookup offline; here it reads a page
+    page = 'x"videoDetails":{"videoId":"CEvTjeXOC3U","lengthSeconds":"754","keywords":[]}y'
+    seen = []
+    assert real("https://www.youtube.com/watch?v=CEvTjeXOC3U", fetch=lambda u: seen.append(u) or page) == 12.6
+    assert seen == ["https://www.youtube.com/watch?v=CEvTjeXOC3U"]
+    assert real("https://youtu.be/CEvTjeXOC3U", fetch=lambda u: "no length here") is None
+    assert real("https://youtu.be/CEvTjeXOC3U", fetch=lambda u: (_ for _ in ()).throw(OSError("offline"))) is None
+    assert real("https://example.com/video", fetch=lambda u: page) is None
+
+
+def test_a_watch_is_priced_from_the_videos_real_length_and_an_expensive_one_says_what_it_would_cost(tmp_path,
+                                                                                                   monkeypatch):
+    fake = FakeGemini()
+    monkeypatch.setattr(learn, "video_minutes", lambda url, fetch=None: 12.0)          # a 12-minute climax clip
+    out = learn.learn("https://www.youtube.com/watch?v=abc123xyz", cfg={"google": {}}, client=fake,
+                      out_dir=tmp_path / "refs")
+    assert out.exists() and len(fake.calls) == 1                           # not priced as a 150 min film
+    monkeypatch.setattr(learn, "video_minutes", lambda url, fetch=None: 170.0)
+    with pytest.raises(learn.LearnCostError) as stopped:
+        learn.learn("https://www.youtube.com/watch?v=other12345", cfg={"google": {}}, client=fake,
+                    out_dir=tmp_path / "refs")
+    assert stopped.value.minutes == 170.0 and stopped.value.usd > 1 and "References page" in str(stopped.value)
+    assert "this 170 min video" in str(stopped.value)
+    monkeypatch.setattr(learn, "video_minutes", lambda url, fetch=None: None)          # YouTube would not say
+    with pytest.raises(learn.LearnCostError, match=r"length not known, priced as 150 min"):
+        learn.learn("https://www.youtube.com/watch?v=third12345", cfg={"google": {}}, client=fake,
+                    out_dir=tmp_path / "refs")
+    assert learn.learn("https://www.youtube.com/watch?v=other12345", cfg={"google": {}}, client=fake,
+                       out_dir=tmp_path / "refs", max_usd=stopped.value.usd * 1.1).exists()   # once approved

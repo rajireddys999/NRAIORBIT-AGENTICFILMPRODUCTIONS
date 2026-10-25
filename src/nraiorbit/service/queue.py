@@ -30,6 +30,7 @@ import datetime
 import inspect
 import io
 import json
+import math
 import re
 import os
 import shutil
@@ -41,7 +42,8 @@ import yaml
 from .progress import Tracker
 
 STORY_COLUMNS = ["slug", "story_uri", "budget_usd", "gates", "publish", "state", "note", "updated"]
-REFERENCE_COLUMNS = ["url", "title", "learn", "minutes", "state", "profile_uri", "note", "updated"]
+REFERENCE_COLUMNS = ["url", "title", "learn", "minutes", "state", "profile_uri", "note", "updated", "approved_usd"]
+MAX_APPROVE_USD = 25.0                                # the most one watch may be approved for, whatever the sheet says
 GATES = ["story", "outline", "scenes", "cast", "shots", "cost", "faces", "render", "pacing", "final_cut", "trailer",
          "publish"]                                   # every gate a run can stop at, in order; what approve accepts
 CLAIM_HOURS = 6.0                                     # a producing row is another tick's for this long (the job's limit)
@@ -535,6 +537,14 @@ def _record(fetch_story, bucket: str, slug: str):
         return None
 
 
+def _takes(fn, name: str) -> bool:
+    """Whether `fn` takes a keyword `name` (the tests' fakes take fewer)."""
+    try:
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def _takes_progress(fn) -> bool:
     """Whether a produce_fn can hear the film's progress; a two-argument one (the tests' fakes) cannot."""
     try:
@@ -616,7 +626,14 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
     if r:
         _doing(tracker, "reference", url=r["url"])
         try:
-            profile = learn_fn(r["url"], r.get("title") or None, r.get("learn") or "all", r.get("minutes") or None)
+            try:                                          # what the owner approved for this watch, if more than $1
+                approved = float(r.get("approved_usd") or 0)
+            except ValueError:
+                approved = 0.0
+            approved = min(approved, MAX_APPROVE_USD) if math.isfinite(approved) else 0.0
+            more = {"max_usd": approved} if approved > 0 and _takes(learn_fn, "max_usd") else {}
+            profile = learn_fn(r["url"], r.get("title") or None, r.get("learn") or "all", r.get("minutes") or None,
+                               **more)
             r.update(state="done", profile_uri=str(profile), note="", updated=now())
         except Exception as exc:
             r.update(state=f"blocked:{type(exc).__name__}", note=str(exc)[:200], updated=now())

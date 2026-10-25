@@ -21,6 +21,14 @@ def no_shorts_requests_in_a_real_bucket(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_youtube_page_lookups(monkeypatch):
+    """A reference's length is read from its YouTube page (service/learn.video_minutes); tests never go online. The
+    tests of that lookup pass their own page."""
+    from nraiorbit.service import learn
+    monkeypatch.setattr(learn, "video_minutes", lambda url, fetch=None: None)
+
+
+@pytest.fixture(autouse=True)
 def no_cloud_run_lookup_for_the_footer(monkeypatch):
     """Every control-room page shows the runner's live image (ui/runner.job_image, read from Cloud Run). Off the
     cloud that lookup waits seconds for credentials, so the tests see a fixed image; the footer test sets its own."""

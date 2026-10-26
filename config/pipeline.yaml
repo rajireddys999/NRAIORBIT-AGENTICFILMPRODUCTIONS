@@ -41,6 +41,10 @@ reels: {enabled: true, count: 3, seconds: 5, shorts: auto}
 # for (action_bgm_20261025-210512.m4a). music.library: prefer reuses a stored track that fits a cue (free) before
 # paying for a new one, and keeps each new track that is not a character's theme; off makes every cue new.
 music: {library: prefer}
+# sound.effects: scene ambience (rain, forest, village, night...) and sounds on cuts (a whoosh into an action shot, a
+# boom under slow motion, thunder on lightning) from the feed's sfx/, laid under the dialogue with the music
+# (post/sound.py). Free: only sounds already in the library; none there, none used.
+sound: {effects: true}
 
 llm:
   model: claude-opus-5-5

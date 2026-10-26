@@ -29,3 +29,5 @@ library/**/*.pth
 library/**/*.bvh
 library/**/*.fbx
 library/**/*.mid
+# the custom model feed lives in the bucket (custom_model_feed/), brought down by each run
+custom_model_feed/

@@ -1604,13 +1604,13 @@ def test_references_are_priced_from_their_length_and_a_costly_one_waits_for_the_
 
 def test_a_learned_reference_shows_its_kinds_and_the_owner_can_correct_them(client, root):
     from urllib.parse import unquote
-    folder = root / "library" / "references" / "kalki_CEvTjeXOC3U"
+    folder = root / "custom_model_feed" / "notes" / "kalki_CEvTjeXOC3U"
     folder.mkdir(parents=True)
     (folder / "profile.json").write_text(json.dumps({"title": "Kalki", "categories": ["action", "mythological"],
                                                      "lessons": ["hold the beat before the hit", "x", "y", "z"]}))
     queue.save(str(root / "queue" / "references.csv"), [{
         "url": "https://www.youtube.com/watch?v=CEvTjeXOC3U", "learn": "all", "state": "done",
-        "profile_uri": "/app/library/references/kalki_CEvTjeXOC3U/profile.json"}], queue.REFERENCE_COLUMNS)
+        "profile_uri": "/app/custom_model_feed/notes/kalki_CEvTjeXOC3U/profile.json"}], queue.REFERENCE_COLUMNS)
     html = client.get("/references").text
     assert 'Used by films that are: <span class="learn" style="margin-right:4px">action</span>' in html
     assert "mythological" in html and "hold the beat before the hit" in html and "<li>z</li>" not in html
@@ -1623,3 +1623,38 @@ def test_a_learned_reference_shows_its_kinds_and_the_owner_can_correct_them(clie
     r = client.post("/references/categories", data={"profile_id": "../../queue", "category": ["action"]},
                     follow_redirects=False)
     assert "no such learned reference" in unquote(r.headers["location"])
+
+
+def test_music_is_built_from_a_learned_reference_only_at_the_price_shown_and_the_library_lists_it(client, root):
+    from urllib.parse import unquote
+    folder = root / "custom_model_feed" / "notes" / "kalki_CEvTjeXOC3U"
+    folder.mkdir(parents=True)
+    (folder / "profile.json").write_text(json.dumps({"title": "Kalki", "categories": ["action"], "lessons": []}))
+    queue.save(str(root / "queue" / "references.csv"), [{
+        "url": "https://www.youtube.com/watch?v=CEvTjeXOC3U", "learn": "all", "state": "done",
+        "profile_uri": "/app/custom_model_feed/notes/kalki_CEvTjeXOC3U/profile.json"}], queue.REFERENCE_COLUMNS)
+    html = client.get("/references").text
+    assert "Build 10 music tracks from it · about $1.00" in html                 # 10 x $0.08 + planning
+    r = client.post("/feed/build", data={"profile_id": "kalki_CEvTjeXOC3U", "count": "10", "usd": "0.10"},
+                    follow_redirects=False)
+    assert "the price is now $1.00" in unquote(r.headers["location"]) and client.started == []
+    r = client.post("/feed/build", data={"profile_id": "kalki_CEvTjeXOC3U", "count": "10", "usd": "1.00"},
+                    follow_redirects=False)
+    ask = json.loads((root / "queue" / "feed" / "kalki_CEvTjeXOC3U.bgm.json").read_text())
+    assert ask["count"] == 10 and ask["price"] == 1.0 and ask["approved_usd"] == 1.15
+    assert client.started == ["nraiorbit-runner"] and "Making music from it" in client.get("/references").text
+    assert "Building 10 tracks from <b>kalki_CEvTjeXOC3U</b>" in client.get("/feed").text
+    r = client.post("/feed/build", data={"profile_id": "../queue", "count": "10", "usd": "1.00"}, follow_redirects=False)
+    assert "no such learned reference" in unquote(r.headers["location"])
+    bgm = root / "custom_model_feed" / "bgm"
+    bgm.mkdir(parents=True)
+    for name, mood in (("action_bgm_20261025-210512", "action"), ("sad_bgm_20261025-210600", "sad")):
+        (bgm / f"{name}.m4a").write_bytes(b"x")
+        (bgm / f"{name}.json").write_text(json.dumps({"name": f"{name}.m4a", "mood": mood, "bpm": 140,
+                                                      "made_for": {"reference": "kalki_CEvTjeXOC3U"},
+                                                      "created": "2026-10-25T21:05:12+00:00"}))
+    page_ = client.get("/feed").text
+    assert "action_bgm_20261025-210512.m4a" in page_ and "sad_bgm_20261025-210600.m4a" in page_
+    assert "learned from kalki_CEvTjeXOC3U" in page_ and 'href="/feed"' in page_
+    only_sad = client.get("/feed?mood=sad").text
+    assert "sad_bgm_20261025-210600.m4a" in only_sad and "action_bgm_20261025-210512.m4a" not in only_sad

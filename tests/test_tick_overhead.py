@@ -385,7 +385,7 @@ def test_the_library_restore_fetches_same_size_changes_and_skips_an_empty_set(tm
                                             "library/characters/hero/manifest.yaml"]
     assert (lib / "manifest.yaml").read_bytes() == b"seed: 2\n" and cloud.run == []
     assert lines == ["  library/characters <- gs://bkt/library/characters"]
-    assert (tmp_path / "repo" / "library" / "references").is_dir()
+    assert (tmp_path / "repo" / "custom_model_feed" / "notes").is_dir()
     (lib / "new.png").write_bytes(b"new")
     cloud.calls.clear()
     assert backup.sync_library("bkt", "backup", log=lambda *_: None) == 1
@@ -502,16 +502,16 @@ def test_a_story_tick_restores_the_library_once_then_the_project_logs_timings_an
 
 def test_a_reference_only_tick_restores_the_library_before_learning_and_backs_it_up_after(
         tmp_path, cloud, monkeypatch):
-    """learn() appends to library/references/ledger.jsonl: a tick that skipped the restore would push a one-line
+    """learn() appends to custom_model_feed/notes/ledger.jsonl: a tick that skipped the restore would push a one-line
     ledger over the bucket's whole one."""
     ledger = b'{"item": "a"}\n{"item": "b"}\n'
-    cloud.objects["library/references/ledger.jsonl"] = ledger
+    cloud.objects["custom_model_feed/notes/ledger.jsonl"] = ledger
     st, rf = tmp_path / "stories.csv", tmp_path / "references.csv"
     queue.save(str(st), [{"slug": "film", "state": "awaiting:cast"}], queue.STORY_COLUMNS)    # no story to work on
     queue.save(str(rf), [{"url": "https://youtu.be/abcdefgh", "learn": "all", "state": "new"}], queue.REFERENCE_COLUMNS)
     rec = Doings()
     monkeypatch.setattr(queue, "TRACKER_FACTORY", lambda b, log=print: rec)
-    refs = tmp_path / "repo" / "library" / "references"
+    refs = tmp_path / "repo" / "custom_model_feed" / "notes"
 
     def learn_fn(url, title, what, minutes):
         rec.doings.append("learn")
@@ -525,8 +525,8 @@ def test_a_reference_only_tick_restores_the_library_before_learning_and_backs_it
                      log=lambda *_: None)
     assert out == {"reference": {"url": "https://youtu.be/abcdefgh", "state": "done"}, "story": None}
     assert rec.doings == ["library-restore", "reference", "learn", "library-backup"]
-    assert cloud.objects["library/references/ledger.jsonl"] == ledger + b'{"item": "ref"}\n'
-    assert cloud.objects["library/references/ref/profile.json"] == b"{}"
+    assert cloud.objects["custom_model_feed/notes/ledger.jsonl"] == ledger + b'{"item": "ref"}\n'
+    assert cloud.objects["custom_model_feed/notes/ref/profile.json"] == b"{}"
 
 
 def test_a_run_that_fails_after_the_restore_still_backs_up_what_it_saved(tmp_path, cloud, monkeypatch):
@@ -607,10 +607,10 @@ def test_the_backup_never_sends_the_runs_own_progress_record(tmp_path, monkeypat
 
 
 def test_the_library_backup_never_sends_the_owners_category_corrections_back(tmp_path, monkeypatch):
-    """The control room writes library/references/<id>/tags.json; a run restores it with the library and would
+    """The control room writes custom_model_feed/notes/<id>/tags.json; a run restores it with the library and would
     otherwise send its copy back at the end, over a correction the owner made meanwhile."""
     from nraiorbit import config
-    lib = tmp_path / "library" / "references" / "kalki"
+    lib = tmp_path / "custom_model_feed" / "notes" / "kalki"
     lib.mkdir(parents=True)
     (lib / "profile.json").write_text("{}")
     (lib / "tags.json").write_text("[]")
@@ -621,3 +621,16 @@ def test_the_library_backup_never_sends_the_owners_category_corrections_back(tmp
                         seen.append(tuple(exclude)) or 0)
     backup.sync_library("bkt", "backup", sets=("references",), log=lambda *_: None)
     assert seen == [("kalki/tags.json",)]
+
+
+
+def test_notes_an_older_runner_saved_in_library_references_move_to_the_custom_model_feed(tmp_path, monkeypatch):
+    from nraiorbit import config
+    monkeypatch.setattr(config, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(backup, "storage_client", lambda: object())
+    there = {"gs://bkt/library/references": True, "gs://bkt/custom_model_feed/notes": False}
+    monkeypatch.setattr(backup, "present", lambda remote, kind, client=None: there.get(remote, False))
+    pulled = []
+    monkeypatch.setattr(gcs, "sync_down", lambda client, remote, local, workers: pulled.append((remote, local)) or 0)
+    backup.sync_library("bkt", "restore", sets=("references",), log=lambda *_: None)
+    assert pulled == [("gs://bkt/library/references", tmp_path / "custom_model_feed" / "notes")]

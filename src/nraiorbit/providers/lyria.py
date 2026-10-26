@@ -369,6 +369,7 @@ class LyriaMusic:
         self.chars = characters(project_root)
         self.styles = load_styles(cfg)
         self.offline = bool((cfg.get("music") or {}).get("offline"))   # cached or inbox tracks only, never a call
+        self.library = (cfg.get("music") or {}).get("library", "prefer")  # prefer: the studio's feed before a call
         self._client = client                         # made on the first paid call: cached cues need no sign-in
 
     @property
@@ -385,13 +386,57 @@ class LyriaMusic:
             return self.inbox.render_cue(cue, out)
         prompt = self.prompt(cue)
         raw = cached_raw(self.root, self.model, prompt)
+        if raw is None:                                # the film has no track of its own for this cue yet
+            raw = self._from_feed(cue, prompt)
         if raw is None:
             if self.offline:
                 raise BudgetExceeded(f"offline: Lyria would be paid for {cue.cue_id}; run without --offline to generate "
                                      f"it, or put a track in inbox/music/{cue.cue_id}.wav")
             raw = self._generate(cue, prompt)
+            self._to_feed(raw, cue, prompt)
         seconds = cue_seconds(cue)
         return fit_to_cue(raw, seconds, out, start=alignment(raw, cue, seconds))   # the hit lands on its shot
+
+    # the custom model feed (service/feed.py): a stored track that fits a cue is used free; a new one is kept
+    FEED_CHOICES = "music_feed.json"                # reports/: the feed tracks this film took, by the cue's prompt
+
+    def _from_feed(self, cue: Cue, prompt: str) -> Path | None:
+        """A feed track that fits the cue, copied into the film's own music cache under this cue's prompt: every
+        later render (a fresh container, a feed track since removed) plays the same music, a changed cue asks
+        again, and the cost estimate counts it as made."""
+        if self.library != "prefer":
+            return None
+        import shutil
+
+        from ..service import feed
+        path = self.root / "reports" / self.FEED_CHOICES
+        try:
+            chosen = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            chosen = {}
+        chosen = chosen if isinstance(chosen, dict) else {}
+        rec = feed.choose(cue, used=set(chosen.values()), film=self.root.name)
+        if rec is None:
+            return None
+        key = cache_key(self.model, prompt)
+        dest = cache_dir(self.root) / f"{key}{rec['path'].suffix}"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(rec["path"], dest)
+        chosen[key] = rec["name"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(chosen, indent=1), encoding="utf-8")
+        self.ledger.record("lyria", cue.cue_id, 0.0, model=self.model, note=f"from the feed: {rec['name']}")
+        return dest
+
+    def _to_feed(self, raw: Path, cue: Cue, prompt: str) -> None:
+        from ..service import feed
+        if self.library == "off" or not feed.reusable(cue):   # a theme, the trailer, its own direction: the film's
+            return
+        try:
+            feed.add(raw, feed.BGM, feed.mood_of(cue),
+                     feed.cue_tags(cue, prompt, self.model, {"film": self.root.name, "cue": cue.cue_id}))
+        except Exception:                               # the feed is a bonus: never the film's problem
+            pass
 
     def _generate(self, cue: Cue, prompt: str) -> Path:
         what = f"Lyria {cue.cue_id}"

@@ -36,6 +36,12 @@ cards: auto                        # the film's name over its opening (before th
 # button in the YouTube card. The control room can set either per film.
 reels: {enabled: true, count: 3, seconds: 5, shorts: auto}
 
+# The custom model feed (service/feed.py), in the bucket under custom_model_feed/: the notes Gemini wrote from
+# reference videos, and the studio's own background music (bgm/) and sound effects (sfx/), named by what they are
+# for (action_bgm_20261025-210512.m4a). music.library: prefer reuses a stored track that fits a cue (free) before
+# paying for a new one, and keeps each new track that is not a character's theme; off makes every cue new.
+music: {library: prefer}
+
 llm:
   model: claude-opus-5-5
   max_tokens: 64000

@@ -129,16 +129,16 @@ def test_library_sync_restores_what_exists_and_skips_what_does_not(monkeypatch, 
 
     def run(cmd, capture_output=True, text=True, env=None):
         calls.append(cmd)
-        if "gs://b/library/references" in cmd[-2]:          # restore of a folder nobody wrote yet
-            return SimpleNamespace(returncode=1, stderr="ERROR: (gcloud.storage.rsync) Did not find existing "
-                                                        "container at: gs://b/library/references")
+        if "gs://b/custom_model_feed/" in cmd[-2] or "gs://b/library/references" in cmd[-2]:   # folders nobody
+            return SimpleNamespace(returncode=1, stderr="ERROR: (gcloud.storage.rsync) Did not find existing "   # wrote yet
+                                                        f"container at: {cmd[-2]}")
         return SimpleNamespace(returncode=0, stderr="")
     monkeypatch.setattr(gcs, "RUN", run)
     monkeypatch.setattr(gcs, "STORAGE_FACTORY", _no_client)
     monkeypatch.setattr(gcs, "which", lambda *_: "/usr/bin/gcloud", raising=False)
     import shutil
     monkeypatch.setattr(shutil, "which", lambda *_: "/usr/bin/gcloud")
-    assert backup.sync_library("b", "restore", log=lambda *_: None) == 1       # characters came, references skipped
+    assert backup.sync_library("b", "restore", log=lambda *_: None) == 1       # characters came, the feed skipped
     assert (tmp_path / "library" / "characters").is_dir()
     (tmp_path / "library" / "characters" / "x.png").write_bytes(b"x")
     assert backup.sync_library("b", "backup", log=lambda *_: None) == 1       # only folders with content go up

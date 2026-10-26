@@ -554,7 +554,7 @@ def _takes_progress(fn) -> bool:
 
 
 def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: str | None, produce_fn, learn_fn,
-         template: Path | None = None, fetch_story=_fetch, log=print) -> dict:
+         template: Path | None = None, fetch_story=_fetch, log=print, feed_fn=None) -> dict:
     """One pass: one reference profile, then one story step. Returns what happened. With a bucket, the execution
     says what it is doing in queue/running/ while it works (service/progress.py), and the record goes when it exits,
     whatever happened."""
@@ -563,6 +563,7 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
         shorts = []                                       # first: a minute's work, never behind an hour's film run
         if bucket and SHORTS is not None:                 # the owner asked for a film's Shorts: no film run needed
             shorts = SHORTS(bucket, lambda: load(stories_uri, STORY_COLUMNS), log)   # the sheet only when asked
+        built = FEED(bucket, feed_fn, log) if bucket and feed_fn is not None and FEED is not None else []
         out = _tick(stories_uri, references_uri, projects_dir, bucket=bucket, produce_fn=produce_fn,
                     learn_fn=learn_fn, template=template, fetch_story=fetch_story, log=log, tracker=tracker)
         if bucket and SHORTS is not None and out.get("story"):   # the film just run may have asked for its own,
@@ -570,6 +571,8 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
                                  if s not in shorts)]     # right after its upload: they go up now, not next tick
         if shorts:
             out["shorts"] = shorts
+        if built:
+            out["feed"] = built
         return out
     finally:
         if tracker is not None:
@@ -589,6 +592,19 @@ def _shorts(bucket: str, rows, log) -> list[str]:
 
 
 SHORTS = _shorts                                          # tests replace it
+
+
+def _feed(bucket: str, build_fn, log) -> list[str]:
+    """The custom model feed builds the owner approved (service/feed.py); a bucket that cannot be read is logged."""
+    from . import feed
+    try:
+        return feed.run_builds(bucket, build_fn, log=log)
+    except Exception as exc:
+        log(f"  feed builds not looked at: {type(exc).__name__}: {str(exc)[:120]}")
+        return []
+
+
+FEED = _feed                                              # tests replace it
 
 
 def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, learn_fn, template, fetch_story, log,

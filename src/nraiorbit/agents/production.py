@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from ..library.registry import AssetRegistry
 from ..schemas import (
     CastEntry, CastLock, CharacterSpec, CueRevisions, CueSheet, IdentityPackBrief,
@@ -149,6 +151,23 @@ def off_screen_rule(off_screen: dict[str, str]) -> str:
 
 class MusicDirector(Agent):
     name = "music_director"
+
+    def library_cues(self, profile: dict, count: int) -> CueSheet:
+        """Original background-music cues for the studio's feed, written from a reference's score notes: its craft
+        (cue anatomy, instruments per emotion, tempo, percussion), never its melodies or motifs."""
+        notes = {k: profile.get(k) for k in ("title", "categories", "summary", "score", "emotion", "lessons",
+                                             "cautions") if k in profile}
+        task = (
+            f"Write {count} original background-music cues for the studio's library, learned from how this "
+            "reference's score is built. Spread them across moods a Telugu film needs (mass hero elevation, action "
+            "and chase, villain menace, sad, romance, comedy, suspense, devotional, family warmth, village calm), "
+            "each 40 to 60 seconds, with raga, tala, bpm and instruments chosen for its mood. They will be reused "
+            "by many films, so no character themes (leitmotif_character: null), no scene ids (scene_ids: []) and "
+            "start_s 0, notes empty. Never reproduce the reference's melodies, motifs or signature themes: its "
+            "cautions list what must not be copied.\n"
+            f"<reference_score_notes>\n{json.dumps(notes, ensure_ascii=False, indent=1)}\n</reference_score_notes>"
+        )
+        return self.ask(CueSheet, context="", task=task)
 
     def revise(self, bible: StoryBible, sheet: CueSheet, motifs: list[str]) -> CueRevisions:
         task = (

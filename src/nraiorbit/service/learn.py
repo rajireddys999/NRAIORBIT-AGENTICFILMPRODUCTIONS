@@ -27,6 +27,7 @@ from ..providers.google_ai import google_client
 REFERENCES_DIR = Path(__file__).resolve().parents[3] / "custom_model_feed" / "notes"   # the custom model feed
 DEFAULT_MODEL = "gemini-3.1-pro-preview"      # gemini-2.5-pro is no longer served to the studio's project (404)
 DEFAULT_LOCATION = "global"                   # where Vertex AI serves it (not us-central1)
+OUTPUT_TOKENS = 12000          # the most a watch may write: its notes (a few thousand) and its thinking, billed as output
 SAMPLE_FPS = 0.25               # four frames a second is far more than craft notes need; one every 4 s keeps cost low
 
 
@@ -158,14 +159,20 @@ def video_minutes(url: str, fetch=None) -> float | None:
     return round(int(m.group(1)) / 60, 1) if m and int(m.group(1)) > 0 else None
 
 
+def _rates(pricing: dict | None) -> tuple[float, float, float]:
+    """$ per 1M tokens: input, input when a request is over 200k, output (pricing.gemini_video)."""
+    g = (pricing or {}).get("gemini_video") or {}
+    return g.get("input_per_1m", 2.00), g.get("input_per_1m_long", 4.00), g.get("output_per_1m", 18.00)
+
+
 def estimate_usd(minutes: float, fps: float = SAMPLE_FPS, pricing: dict | None = None) -> tuple[float, int]:
     """(dollars, input tokens) for watching `minutes` of video at `fps` sampled frames a second, with the model's
     audio track, from pricing.gemini_video (planning numbers)."""
     g = (pricing or {}).get("gemini_video") or {}
     seconds = max(0.0, minutes) * 60
     tokens = int(seconds * (fps * g.get("tokens_per_frame", 258) + g.get("audio_tokens_per_s", 32))) + 1500
-    rate = g.get("input_per_1m_long", 2.50) if tokens > 200_000 else g.get("input_per_1m", 1.25)
-    usd = tokens / 1e6 * rate + 4000 / 1e6 * g.get("output_per_1m", 10.0)
+    rate_in, rate_long, rate_out = _rates(pricing)
+    usd = tokens / 1e6 * (rate_long if tokens > 200_000 else rate_in) + OUTPUT_TOKENS / 1e6 * rate_out
     return round(usd, 3), tokens
 
 
@@ -215,31 +222,49 @@ def learn(url: str, title: str | None = None, what: str = "all", cfg: dict | Non
     focus = {"all": "everything in the schema", "score": "the background score above all", "emotion": "emotional beats",
              "action": "action staging and cutting", "characters": "character archetypes and introductions",
              "trailer": "trailer structure"}.get(what, what)
+    model = g.get("analysis_model") or DEFAULT_MODEL
+    if model.rsplit("/", 1)[-1].startswith("gemini-3"):
+        # Gemini 3 runs at its own temperature (1.0: set lower it can repeat itself until the reply runs out); its
+        # thinking is kept light and the whole reply capped, so the price asked for is a true ceiling
+        tuning = {"thinking_config": types.ThinkingConfig(thinking_level="low"), "max_output_tokens": OUTPUT_TOKENS}
+    else:
+        tuning = {"temperature": 0.2}
     response = client.models.generate_content(
-        model=g.get("analysis_model") or DEFAULT_MODEL, contents=[video, PROMPT.format(focus=focus)],
+        model=model, contents=[video, PROMPT.format(focus=focus)],
         config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=ReferenceProfile,
-                                           temperature=0.2))
-    profile = ReferenceProfile.model_validate_json(response.text)
+                                           **tuning))
+    usage = getattr(response, "usage_metadata", None)
+    thinking = getattr(usage, "thoughts_token_count", None) or 0     # billed as output, apart from the reply
+    rate_in, rate_long, rate_out = _rates(pricing)
+    used_in = getattr(usage, "prompt_token_count", None) or tokens
+    used_out = ((getattr(usage, "candidates_token_count", None) or 0) + thinking) or OUTPUT_TOKENS
+    usd = used_in / 1e6 * (rate_long if used_in > 200_000 else rate_in) + used_out / 1e6 * rate_out
+    watched = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+    def spent(item: str, **more) -> None:
+        """The watch in the library's ledger: every one Google bills for, an unreadable reply too."""
+        Path(out_dir or REFERENCES_DIR).mkdir(parents=True, exist_ok=True)
+        with open(Path(out_dir or REFERENCES_DIR) / "ledger.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"provider": "gemini_video", "item": item, "usd": round(usd, 4), "tokens_in": used_in,
+                                "tokens_out": used_out, "url": url, "watched": watched, **more}) + "\n")
+
+    try:
+        profile = ReferenceProfile.model_validate_json(response.text)
+    except Exception as exc:
+        spent(profile_id(url, title), failed=f"{type(exc).__name__}: {str(exc)[:200]}")
+        raise
     pid = profile_id(url, title or profile.title)
     folder = Path(out_dir or REFERENCES_DIR) / pid
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "profile.json").write_text(profile.model_dump_json(indent=2), encoding="utf-8")
-    usage = getattr(response, "usage_metadata", None)
     manifest = {"id": pid, "kind": "reference", "source_url": url, "title": title or profile.title, "learned": what,
-                "model": g.get("analysis_model") or DEFAULT_MODEL, "sample_fps": fps,
-                "watched": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+                "model": model, "sample_fps": fps, "watched": watched,
                 "tokens": {"input": getattr(usage, "prompt_token_count", None),
-                           "output": getattr(usage, "candidates_token_count", None)} if usage else None,
+                           "output": getattr(usage, "candidates_token_count", None), "thinking": thinking}
+                if usage else None,
                 "removal": "delete this folder to forget the profile; nothing else holds the source"}
     (folder / "manifest.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True), encoding="utf-8")
-    gv = (pricing or {}).get("gemini_video") or {}
-    used_in = getattr(usage, "prompt_token_count", None) or tokens
-    used_out = getattr(usage, "candidates_token_count", None) or 4000
-    usd = used_in / 1e6 * (gv.get("input_per_1m_long", 2.5) if used_in > 200_000 else gv.get("input_per_1m", 1.25)) \
-        + used_out / 1e6 * gv.get("output_per_1m", 10.0)
-    with open(folder.parent / "ledger.jsonl", "a", encoding="utf-8") as f:
-        f.write(json.dumps({"provider": "gemini_video", "item": pid, "usd": round(usd, 4), "tokens_in": used_in,
-                            "tokens_out": used_out, "url": url, "watched": manifest["watched"]}) + "\n")
+    spent(pid)
     return folder / "profile.json"
 
 

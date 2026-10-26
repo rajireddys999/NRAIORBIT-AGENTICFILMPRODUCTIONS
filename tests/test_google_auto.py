@@ -432,6 +432,11 @@ def test_vertex_location_per_model(monkeypatch):
     assert [m.get("http_options") is not None for m in made] == [False, True, True, False]  # no auto-retry for Veo
     assert made[1]["http_options"].retry_options.attempts == 5
 
+    made.clear()                                           # watching a reference: its own region, and retries
+    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+    google_ai.google_client({"vertex": True, "analysis_location": "global"}, "analysis")
+    assert made[0]["location"] == "global" and made[0]["http_options"].retry_options.attempts == 5
+
     made.clear()
     google_ai.google_client({"vertex": False, "veo_location": "us-central1"}, "veo")
     assert made == [{}]                                     # Gemini API: no project/location at all

@@ -131,7 +131,7 @@ def _transient(e: Exception) -> bool:
 
 
 def google_client(google_cfg: dict, role: str = ""):
-    """role ("veo", "image", "tts", "music"): on Vertex AI, google.<role>_location picks that model's region, because
+    """role ("veo", "image", "tts", "music", "analysis"): on Vertex AI, google.<role>_location picks that model's region, because
     one region may not serve all of them (Veo is regional, e.g. us-central1; the pro image model and Lyria are served
     from global)."""
     if CLIENT_FACTORY is not None:
@@ -141,10 +141,10 @@ def google_client(google_cfg: dict, role: str = ""):
     except ImportError:
         raise GoogleSetupError("google-genai is not installed: pip install google-genai") from None
     try:
-        # Images, voices and music retry a brief 429/5xx (a refused call is not billed). Veo submissions never retry
-        # automatically: a retry after an ambiguous error could start, and pay for, a second job.
+        # Images, voices, music and watching a reference retry a brief 429/5xx (a refused call is not billed). Veo
+        # submissions never retry automatically: a retry after an ambiguous error could start, and pay for, a second job.
         extra = {"http_options": _types().HttpOptions(retry_options=_types().HttpRetryOptions(
-            attempts=5, initial_delay=2, max_delay=60))} if role in ("image", "tts", "music") else {}
+            attempts=5, initial_delay=2, max_delay=60))} if role in ("image", "tts", "music", "analysis") else {}
         if google_cfg.get("vertex"):
             return genai.Client(vertexai=True, **extra,
                                 **vertex_auth(google_cfg.get(f"{role}_location") if role else None))

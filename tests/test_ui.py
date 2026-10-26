@@ -1569,11 +1569,11 @@ def test_references_are_priced_from_their_length_and_a_costly_one_waits_for_the_
     rows_ = queue.load(str(root / "queue" / "references.csv"), queue.REFERENCE_COLUMNS)
     assert rows_[0]["minutes"] == "12.6"                                     # read from the video's page
     html = client.get("/references").text
-    assert "Costs about <b>$0.22</b>" in html and "(12.6 min)" in html
+    assert "Costs about <b>$0.36</b>" in html and "(12.6 min)" in html
     rows_[0].update(state="blocked:LearnCostError", minutes="", note="over the $1.00 limit")
     queue.save(str(root / "queue" / "references.csv"), rows_, queue.REFERENCE_COLUMNS)
     html = client.get("/references").text
-    assert "Approve $3.55 and watch it" in html and "priced as a 150 min film" in html and "Retry</button>" not in html
+    assert "Approve $3.70 and watch it" in html and "priced as a 150 min film" in html and "Retry</button>" not in html
     rows_[0]["note"] = "watching this 170 min video costs about $2.50 (950,000 tokens), over the $1.00 limit"
     queue.save(str(root / "queue" / "references.csv"), rows_, queue.REFERENCE_COLUMNS)
     html = client.get("/references").text                                   # the runner found the real length

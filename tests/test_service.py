@@ -295,9 +295,40 @@ def test_references_and_the_feed_reach_google_as_films_do():
 
 
 
-def test_references_are_watched_by_a_model_the_project_can_use():
-    """gemini-2.5-pro answered 404 for the studio's project in every region; 3.1 Pro is served from global."""
+def test_references_are_watched_by_a_model_the_project_can_use(tmp_path, monkeypatch):
+    """gemini-2.5-pro answered 404 for the studio's project in every region; 3.1 Pro is served from global, runs at
+    its own temperature, and its thinking is billed as output."""
     from nraiorbit.config import load_pipeline_config
     g = load_pipeline_config(None)["google"]
     assert learn.DEFAULT_MODEL == g["analysis_model"] == "gemini-3.1-pro-preview"
     assert g["analysis_location"] == learn.DEFAULT_LOCATION == "global"
+
+    fake, asked = FakeGemini(), []
+    fake.models = SimpleNamespace(generate_content=lambda **kw: (fake.calls.append(kw), SimpleNamespace(
+        text=json.dumps(PROFILE), usage_metadata=SimpleNamespace(prompt_token_count=12000, candidates_token_count=900,
+                                                                 thoughts_token_count=3100)))[1])
+    monkeypatch.setattr(learn, "google_client", lambda cfg, role: (asked.append((cfg, role)), fake)[1])
+    learn.learn("https://www.youtube.com/watch?v=abc123xyz", title="Kalki", cfg={"google": {"vertex": True}},
+                out_dir=tmp_path / "refs", minutes=2.6)
+    (cfg, role), = asked
+    assert role == "analysis" and cfg["analysis_location"] == "global" and cfg["vertex"] is True
+    call = fake.calls[0]
+    assert call["model"] == "gemini-3.1-pro-preview" and call["config"].temperature is None
+    assert call["config"].thinking_config.thinking_level == "LOW"                     # the price is a true ceiling
+    assert call["config"].max_output_tokens == learn.OUTPUT_TOKENS
+    row = json.loads((tmp_path / "refs" / "ledger.jsonl").read_text().splitlines()[-1])
+    assert row["tokens_out"] == 4000 and row["usd"] == round(12000 / 1e6 * 2.00 + 4000 / 1e6 * 18.00, 4)
+    assert "thinking: 3100" in (tmp_path / "refs" / "kalki_abc123xyz" / "manifest.yaml").read_text(encoding="utf-8")
+    # an older model keeps the steady setting
+    learn.learn("https://www.youtube.com/watch?v=abc123xyz", cfg={"google": {"analysis_model": "gemini-2.5-flash"}},
+                client=fake, out_dir=tmp_path / "refs", minutes=2.6)
+    assert fake.calls[-1]["config"].temperature == 0.2
+    # a reply that cannot be read is still billed: it is in the ledger before the error goes up
+    fake.models = SimpleNamespace(generate_content=lambda **kw: SimpleNamespace(
+        text='{"title": "cut off', usage_metadata=SimpleNamespace(prompt_token_count=12000, candidates_token_count=500)))
+    with pytest.raises(ValueError):
+        learn.learn("https://www.youtube.com/watch?v=zzz999yyy", title="Broken", cfg={"google": {}}, client=fake,
+                    out_dir=tmp_path / "refs", minutes=2.6)
+    row = json.loads((tmp_path / "refs" / "ledger.jsonl").read_text().splitlines()[-1])
+    assert row["item"] == "broken_zzz999yyy" and row["tokens_out"] == 500 and row["failed"].startswith("ValidationError")
+    assert not (tmp_path / "refs" / "broken_zzz999yyy").exists()

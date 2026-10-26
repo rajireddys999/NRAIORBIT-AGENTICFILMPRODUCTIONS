@@ -186,7 +186,8 @@ class ProjectPaths:
                       + sorted(self.music.glob("cue*.wav")),
             "assemble": [self.master / "movie.mp4", self.edit / "film_dialogue.mp4", self.edit / "scenes",
                          self.master / "stems", self.edit / "movie_nocards.mp4", self.edit / "cards.json",
-                         self.edit / "cards", self.master / "deliver"],      # a new cut never ships an old 720p copy
+                         self.edit / "cards", self.master / "deliver",      # a new cut never ships an old 720p copy
+                         self.reports / "sound_plan.json"],                 # and its sound is planned again
             "trailer": [self.master / "trailer.mp4", self.edit / "trailer_plan.json"],
         }[stage]
 
@@ -1652,6 +1653,8 @@ class Pipeline:
         louder = self._owner_mix()[0]
         music = [assemble.AudioEvent(**{**e, "path": Path(e["path"]), "gain_db": e.get("gain_db", 0.0) + louder})
                  for e in tl["music"]]
+        music += [assemble.AudioEvent(path, start, 0.0, "sfx", gain_db=gain)          # into the bed the dialogue ducks
+                  for path, start, gain in self._sound_effects(tl, outline, starts)]
         scene_files = []
         for sc in outline.scenes:
             scene_shots = [s for s in shots if s.scene_id == sc.scene_id]
@@ -1668,6 +1671,25 @@ class Pipeline:
         self._write_stems(film, movie)
         self._write_subtitles(dialogue)
         self.log(f"  master: {movie} ({ffmpeg.duration(movie) / 60:.1f} min)")
+
+    def _sound_effects(self, tl: dict, outline: Outline, starts: dict) -> list[tuple[Path, float, float]]:
+        """Scene ambience and sounds on cuts from the studio's library (post/sound.py); none when sound.effects is
+        off or the library has none, and never the film's problem: a failure is logged and the film keeps its mix."""
+        if not (self.cfg.get("sound") or {}).get("effects", True):
+            return []
+        from .post import sound
+        from .service import feed
+        try:
+            order = sorted(outline.scenes, key=lambda sc: starts[sc.scene_id])
+            ends = [starts[sc.scene_id] for sc in order[1:]] + [float(tl.get("film_seconds") or 0)]
+            scenes = [(sc, starts[sc.scene_id], max(0.0, end - starts[sc.scene_id])) for sc, end in zip(order, ends)]
+            plans = {s.shot_id: s for path in sorted(self.p.shots.glob("*.json"))
+                     for s in self._load(path, ShotList).shots}
+            return sound.film_sound(self.p.root, scenes, tl["shots"], plans, feed.entries(feed.SFX),
+                                    self.p.edit / "sound", log=self.log, extra_db=self._owner_mix()[0])
+        except Exception as exc:
+            self.log(f"  sound effects skipped: {type(exc).__name__}: {str(exc)[:120]}")
+            return []
 
     def _levelled(self, lines: list) -> list:
         """Every dialogue take brought to the same speaking level (audio.dialogue_level_dbfs), so a quiet take is

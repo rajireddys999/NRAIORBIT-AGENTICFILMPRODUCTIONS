@@ -93,6 +93,8 @@ gemini_video:             # watching a public film for craft notes (nraiorbit le
 
 elevenlabs:               # Telugu voices through ElevenLabs (providers.tts: elevenlabs), per 1,000 characters
   per_1k_chars: 0.18      # list price; a Creator/Pro plan includes characters, so the ledger's figure is an upper bound
+  sfx_per_sound: 0.03     # sound effects (the custom model feed's sfx/): UNVERIFIED planning figure; ElevenLabs bills 100
+                          # credits a sound (11-20 a second when its length is set): about $0.02-0.03 on most plans
 
 sync_so:                  # lip-sync through sync.so's API (providers.lipsync: sync_so), per second of output at 25 fps
   per_second:             # sync.so/pricing, 2026-10-16 (base rates; subscription tiers discount 5-20 %)

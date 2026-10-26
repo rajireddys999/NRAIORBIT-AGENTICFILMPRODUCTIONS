@@ -217,42 +217,192 @@ def take(bucket, name: str) -> dict | None:
     return ask if isinstance(ask, dict) else {}
 
 
-def run_builds(bucket_name: str, build_fn, log=print, storage=None) -> list[str]:
+def _no_sfx(*a, **k):
+    raise RuntimeError("this runner cannot make sound effects")
+
+
+def run_builds(bucket_name: str, build_fn, log=print, storage=None, sfx_fn=None) -> list[str]:
     """Every build the owner approved (queue/feed/<reference id>.bgm.json), taken once, made by
     `build_fn(pid, count, approved_usd, log)`, its result written beside the feed (custom_model_feed/builds/<id>.json)
     for the control room, and the feed sent up. Returns the references built from."""
     from ..ops import backup
     bucket = storage or __import__("nraiorbit.release.gcs", fromlist=["client"]).client().bucket(bucket_name)
-    asked = sorted(b.name for b in bucket.list_blobs(prefix=REQUESTS) if b.name.endswith(".bgm.json"))
+    asked = sorted(b.name for b in bucket.list_blobs(prefix=REQUESTS) if b.name.endswith((".bgm.json", ".sfx.json")))
     if not asked:
         return []
-    backup.sync_library(bucket_name, "restore", sets=("references", "bgm"), log=lambda *_: None)
+    backup.sync_library(bucket_name, "restore", sets=("references", "bgm", "sfx"), log=lambda *_: None)
     done = []
     for name in asked:
         ask = take(bucket, name)
         if ask is None:
             continue
-        pid = name[len(REQUESTS):-len(".bgm.json")]
-        result = {"reference": pid, "asked": {k: ask.get(k) for k in ("by", "at", "count", "price")}}
+        kind = "sfx" if name.endswith(".sfx.json") else "bgm"
+        pid = name[len(REQUESTS):-len(f".{kind}.json")]
+        result = {"reference": pid, "kind": kind, "asked": {k: ask.get(k) for k in ("by", "at", "count", "price")},
+                  "started": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
+        try:                                            # under way: the page shows it and asks for nothing new
+            bucket.blob(f"custom_model_feed/builds/{pid}.{kind}.json").upload_from_string(
+                json.dumps(result, indent=1, ensure_ascii=False), content_type="application/json")
+        except Exception:
+            pass
         try:
-            out = build_fn(pid, int(ask.get("count") or 0), float(ask.get("approved_usd") or 0), log)
+            out = (build_fn(pid, int(ask.get("count") or 0), float(ask.get("approved_usd") or 0), log) if kind == "bgm"
+                   else (sfx_fn or _no_sfx)(pid, int(ask.get("count") or 0), float(ask.get("approved_usd") or 0), log))
             made, spent = (out.get("made", []), out.get("spent_usd")) if isinstance(out, dict) else (out, None)
             result.update(made=made, spent_usd=spent,
                           finished=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"))
             if not made:
-                result["error"] = "no track was made (see the runner's log)"
+                result["error"] = f"no {'sound' if kind == 'sfx' else 'track'} was made (see the runner's log)"
             done.append(pid)
         except Exception as exc:
             result["error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
             log(f"  feed build from {pid} stopped: {result['error']}")
         try:                                            # what was paid goes up now, not after every build
-            backup.sync_library(bucket_name, "backup", sets=("bgm",), log=lambda *_: None)
+            backup.sync_library(bucket_name, "backup", sets=(kind,), log=lambda *_: None)
         except Exception as exc:
             result["error"] = (result.get("error", "") + f" The tracks did not reach the bucket yet ({type(exc).__name__}: "
                                f"{str(exc)[:120]}); the next run sends them.").strip()
         try:
-            bucket.blob(f"custom_model_feed/builds/{pid}.json").upload_from_string(
+            bucket.blob(f"custom_model_feed/builds/{pid}.{kind}.json").upload_from_string(
                 json.dumps(result, indent=1, ensure_ascii=False), content_type="application/json")
         except Exception as exc:
             log(f"  feed build from {pid}: its result was not saved ({type(exc).__name__}: {str(exc)[:120]})")
     return done
+
+
+# ---------------------------------------------------------------------------------------------- sound effects
+
+# the starter pack: sounds Telugu films use all the time, each with its name (what it is), its prompt and its length
+STARTER_SFX = [
+    ("punch", "a heavy cinematic punch impact for a Telugu action film, deep body thud with a short whoosh", 1.5),
+    ("kick", "a powerful cinematic kick impact, dull body hit with cloth movement", 1.5),
+    ("slap", "a sharp loud face slap, cinematic", 1.0),
+    ("body_fall", "a person falling hard onto a dirt ground, thud and dust", 2.0),
+    ("sword_clash", "two steel swords clashing hard, metallic ring", 2.0),
+    ("sword_draw", "a sword drawn from a sheath, metallic scrape", 1.5),
+    ("whoosh_fast", "a fast cinematic whoosh for a quick camera move", 1.0),
+    ("whoosh_heavy", "a heavy slow cinematic whoosh with low rumble", 2.0),
+    ("slowmo_boom", "a deep cinematic slow-motion boom, sub bass hit with long tail, for a hero's elevation moment", 4.0),
+    ("hit_stinger", "a short cinematic impact stinger, big hit with metallic shimmer", 2.0),
+    ("riser_tension", "a rising cinematic tension riser that builds for four seconds and stops", 4.0),
+    ("heartbeat", "a slow tense heartbeat, low and close", 4.0),
+    ("glass_break", "a glass window shattering", 2.0),
+    ("wood_break", "a wooden plank or door breaking apart", 2.0),
+    ("gunshot_distant", "a single distant gunshot echoing across hills", 2.5),
+    ("explosion", "a large cinematic explosion with debris", 4.0),
+    ("fire_crackling", "a fire crackling and burning steadily", 6.0),
+    ("rain_heavy", "heavy monsoon rain falling on leaves and a tin roof", 8.0),
+    ("thunder", "a loud rolling thunderclap", 5.0),
+    ("wind", "strong wind blowing across open land", 8.0),
+    ("river_flow", "a fast river flowing over rocks", 8.0),
+    ("flood_water", "rushing flood water, powerful and chaotic", 8.0),
+    ("forest_birds", "a quiet South Indian forest morning with birds calling", 10.0),
+    ("night_crickets", "a village night with crickets and distant frogs", 10.0),
+    ("village_morning", "an Indian village morning, roosters, distant cattle bells, soft voices far away", 10.0),
+    ("temple_bells", "temple bells ringing in an Indian temple, with a little reverb", 6.0),
+    ("crowd_cheer", "a large crowd cheering and whistling for a hero, Indian festival energy", 6.0),
+    ("crowd_murmur", "a crowd murmuring in a village square, indistinct voices", 8.0),
+    ("market_bustle", "a busy Indian street market, vendors calling indistinctly, footsteps", 8.0),
+    ("jeep_pass", "an old jeep driving past on a dirt road", 5.0),
+    ("bike_rev", "a motorcycle engine revving and pulling away", 4.0),
+    ("bullock_cart", "a bullock cart rolling on a dirt road with wooden wheels creaking", 6.0),
+    ("train_pass", "a passenger train passing by with a horn", 8.0),
+    ("footsteps_dirt", "footsteps walking on a dirt path", 4.0),
+    ("footsteps_running", "footsteps running fast on a dirt path", 4.0),
+    ("door_creak", "an old wooden door creaking open", 3.0),
+    ("door_slam", "a heavy wooden door slamming shut", 2.0),
+    ("monkey_chatter", "monkeys chattering and calling in trees", 5.0),
+    ("dog_bark", "a village dog barking a few times", 3.0),
+    ("cow_moo", "a cow mooing in a village", 3.0),
+]
+
+
+def sfx_price(count: int, per_sound: float) -> float:
+    return round(count * per_sound, 2)
+
+
+class SfxRefused(RuntimeError):
+    """ElevenLabs refused the account (a bad key, no credits left): no further sound is asked for."""
+
+
+def make_sfx(text: str, seconds: float, key: str, http=None) -> bytes:
+    """One sound effect from ElevenLabs (text to sound effects), as MP3 bytes. Its length is left to ElevenLabs, so
+    each costs the same (a flat 100 credits); the wanted length is said in the text. `http` defaults to requests."""
+    import requests
+    resp = (http or requests).post("https://api.elevenlabs.io/v1/sound-generation",
+                                   headers={"xi-api-key": key, "Content-Type": "application/json",
+                                            "Accept": "audio/mpeg"},
+                                   json={"text": f"{text}, about {seconds:g} seconds", "prompt_influence": 0.5},
+                                   timeout=120)
+    status = getattr(resp, "status_code", 200)
+    if status >= 400:
+        body = str(getattr(resp, "text", ""))[:200]
+        error = SfxRefused if status in (401, 402) or "quota" in body.lower() else RuntimeError
+        raise error(f"ElevenLabs sound effects {status}: {body}")
+    return resp.content
+
+
+def build_sfx(pack: list[tuple[str, str, float]], ledger, per_sound: float, key: str, http=None, log=print,
+              work: Path | None = None, root: Path | None = None) -> list[str]:
+    """The pack's sounds the feed does not have yet into it (sfx/<name>_sfx_<when>.mp3), each checked against the
+    approved amount (`ledger`) before it is asked for. Spend is recorded for every sound made, and for every call
+    that timed out or lost its connection after it was sent (it may have been billed: noted as unconfirmed); a
+    refused reply is not billed. A bad key or an account out of credits stops the build."""
+    import tempfile
+
+    import requests
+    work = Path(work or tempfile.mkdtemp())
+    work.mkdir(parents=True, exist_ok=True)
+    have = {e.get("mood") for e in entries(SFX, root)}
+    made = []
+    for name, text, seconds in pack:
+        if name in have:
+            continue                                    # made by an earlier build: never paid for twice
+        try:
+            ledger.check(per_sound, f"sound effect {name}")
+        except Exception as exc:
+            log(f"  {name}: not made ({exc})")
+            break                                       # the approved amount is spent: stop
+        try:
+            data = make_sfx(text, seconds, key, http)
+        except SfxRefused as exc:
+            log(f"  {name}: {exc}; stopping")
+            break
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            ledger.record("elevenlabs_sfx", name, per_sound, note=f"unconfirmed: may have been billed ({type(exc).__name__})")
+            log(f"  {name}: no reply ({type(exc).__name__}); counted as spent")
+            continue
+        except Exception as exc:
+            log(f"  {name}: not made ({type(exc).__name__}: {str(exc)[:120]})")
+            continue
+        try:
+            ledger.record("elevenlabs_sfx", name, per_sound, seconds=seconds)
+            raw = work / f"{name}.mp3"
+            raw.write_bytes(data)
+            stored = add(raw, SFX, name, {"prompt": text, "seconds": seconds, "made_for": {"pack": "starter"},
+                                          "model": "elevenlabs sound-generation"}, root)
+        except Exception as exc:
+            log(f"  {name}: not kept ({type(exc).__name__}: {str(exc)[:120]})")
+            continue
+        made.append(stored.name)
+        log(f"  {stored.name}")
+    return made
+
+
+
+def under_way(result) -> bool:
+    """Whether a build's result says it started and has not ended (finished, or stopped with an error) in the last
+    two hours (a longer one was killed: asking again is allowed)."""
+    if not isinstance(result, dict) or not result.get("started") or result.get("finished") or result.get("error"):
+        return False
+    try:
+        t = datetime.datetime.fromisoformat(result["started"])
+    except ValueError:
+        return False
+    t = t if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)
+    return (datetime.datetime.now(datetime.timezone.utc) - t).total_seconds() < 2 * 3600
+
+
+def missing_sfx(have: set[str]) -> list[tuple[str, str, float]]:
+    """The starter pack's sounds the feed does not have yet."""
+    return [s for s in STARTER_SFX if s[0] not in have]

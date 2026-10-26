@@ -1012,23 +1012,61 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                                           "approved_usd": round(price * 1.15, 2)}), "application/json")
         return back("/feed", f"{n} tracks approved at about ${price:.2f}; " + tick_now("the music is being made"))
 
+    def sfx_state() -> tuple[list, float, bool]:
+        """(the starter sounds the feed lacks, what making them costs, whether a build is asked for or under way)."""
+        from ..costing import load_pricing
+        have = {(films._json(store, rel) or {}).get("mood") for rel in store.list("custom_model_feed/sfx/")
+                if rel.endswith(".json")}
+        missing = feed_mod.missing_sfx(have)
+        per = float((load_pricing(None).get("elevenlabs") or {}).get("sfx_per_sound", 0.03))
+        busy = store.exists(f"{feed_mod.REQUESTS}starter.sfx.json") or \
+            feed_mod.under_way(films._json(store, "custom_model_feed/builds/starter.sfx.json"))
+        return missing, feed_mod.sfx_price(len(missing), per), busy
+
+    @app.post("/feed/sfx-build")
+    def sfx_build(email: str = Depends(guard), usd: str = Form("")):
+        """The owner approves making the starter pack of sound effects (ElevenLabs) at the price shown: saved as
+        queue/feed/starter.sfx.json for the next tick."""
+        missing, price, busy = sfx_state()
+        if busy:
+            return back("/feed", "the sound effects are already being made; nothing changed")
+        if not missing:
+            return back("/feed", "every starter sound is in the library already; nothing changed")
+        try:
+            shown = float(usd)
+        except ValueError:
+            shown = -1.0
+        if abs(price - shown) > 0.01:
+            return back("/feed", f"the price is now ${price:.2f}; look again before approving. Nothing changed.")
+        ask = f"{feed_mod.REQUESTS}starter.sfx.json"
+        n = len(missing)
+        store.write_text(ask, json.dumps({"by": email, "at": queue.now(), "count": n, "price": price,
+                                          "approved_usd": round(price * 1.1, 2)}), "application/json")
+        return back("/feed", f"{n} sound effects approved at about ${price:.2f}; " + tick_now("they are being made"))
+
     @app.get("/feed", response_class=HTMLResponse)
     def feed_page(request: Request, email: str = Depends(guard), mood: str = ""):
-        tracks = []
-        for rel in store.list("custom_model_feed/bgm/"):
-            if not rel.endswith(".json"):
-                continue
-            rec = films._json(store, rel)
-            if not isinstance(rec, dict) or not rec.get("name") or (mood and rec.get("mood") != mood):
-                continue
-            tracks.append({**rec, "url": store.url(f"custom_model_feed/bgm/{rec['name']}")})
+        tracks, sounds = [], []
+        for kind, into in (("bgm", tracks), ("sfx", sounds)):
+            for rel in store.list(f"custom_model_feed/{kind}/"):
+                if not rel.endswith(".json"):
+                    continue
+                rec = films._json(store, rel)
+                if not isinstance(rec, dict) or not rec.get("name") or (kind == "bgm" and mood and rec.get("mood") != mood):
+                    continue
+                into.append({**rec, "url": store.url(f"custom_model_feed/{kind}/{rec['name']}")})
         tracks.sort(key=lambda t: t.get("created") or "", reverse=True)
-        pending = [{**(films._json(store, rel) or {}), "reference": rel.rsplit("/", 1)[-1].removesuffix(".bgm.json")}
-                   for rel in store.list(feed_mod.REQUESTS) if rel.endswith(".bgm.json")]
+        sounds.sort(key=lambda t: t.get("name") or "")
+        pending = [{**(films._json(store, rel) or {}), "reference": rel.rsplit("/", 1)[-1].split(".")[0],
+                    "kind": "sfx" if rel.endswith(".sfx.json") else "bgm"}
+                   for rel in store.list(feed_mod.REQUESTS) if rel.endswith((".bgm.json", ".sfx.json"))]
         builds = [b for rel in store.list("custom_model_feed/builds/") if rel.endswith(".json")
                   and isinstance(b := films._json(store, rel), dict)]
+        sfx_missing, sfx_cost, sfx_busy = sfx_state()
         return page("feed.html", request, email, tracks=tracks, moods=feed_mod.MOODS, mood=mood, pending=pending,
-                    builds=builds, refresh=30 if pending else 0)
+                    builds=builds, refresh=30 if pending or sfx_busy else 0, sounds=sounds,
+                    starter_count=len(sfx_missing), starter_price=sfx_cost, starter_waiting=sfx_busy,
+                    starter_total=len(feed_mod.STARTER_SFX))
 
     def reference_id(r: dict) -> str:
         """The library folder of a learned reference, from where the runner wrote its profile."""

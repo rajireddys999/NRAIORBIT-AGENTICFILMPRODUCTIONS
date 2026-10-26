@@ -4,6 +4,7 @@ theme), and seeded from a reference's score notes at a price the owner approved 
 
 import datetime
 import json
+from types import SimpleNamespace as N
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,7 @@ def cue(cid="c1", rasa="raudra", intensity=8, bpm=140, instruments=("dhol", "bra
 @pytest.fixture
 def lib(tmp_path, monkeypatch):
     monkeypatch.setattr(feed, "FEED_DIR", tmp_path / "custom_model_feed")
-    monkeypatch.setattr(feed, "audio_seconds", lambda path: 0.0 if b"short" in Path(path).read_bytes() else 45.0)
+    monkeypatch.setattr(feed, "audio_seconds", lambda path: 0.0 if b"TOO-SHORT" in Path(path).read_bytes() else 45.0)
     return tmp_path / "custom_model_feed"
 
 
@@ -46,7 +47,7 @@ def test_a_sound_is_named_for_what_it_is_for_and_kept_once(lib, tmp_path):
     assert third.name.startswith("action_bgm_20261025-210512-")           # the same second: kept apart
     assert [e["mood"] for e in feed.entries(feed.BGM)].count("action") == 2
     with pytest.raises(ValueError, match="not a usable bgm track"):
-        feed.add(_audio(tmp_path, "s.m4a", b"short"), feed.BGM, "sad", {})   # too short or will not decode: refused
+        feed.add(_audio(tmp_path, "s.m4a", b"TOO-SHORT"), feed.BGM, "sad", {})   # too short or will not decode: refused
 
 
 def test_a_cue_gets_the_stored_track_that_fits_it_never_twice_and_never_a_characters_theme(lib, tmp_path):
@@ -157,9 +158,9 @@ def test_an_approved_build_is_taken_once_and_its_result_left_for_the_page(lib, m
     out = feed.run_builds("bkt", lambda pid, count, usd, log: calls.append((pid, count, usd)) or ["action_bgm_1.m4a"],
                           log=lambda *_: None, storage=cloud)
     assert out == ["kalki"] and calls == [("kalki", 10, 1.09)] and "queue/feed/kalki.bgm.json" not in cloud.objects
-    result = json.loads(cloud.objects["custom_model_feed/builds/kalki.json"])
+    result = json.loads(cloud.objects["custom_model_feed/builds/kalki.bgm.json"])
     assert result["made"] == ["action_bgm_1.m4a"] and result["asked"]["price"] == 0.95
-    assert synced == [("restore", ("references", "bgm")), ("backup", ("bgm",))]
+    assert synced == [("restore", ("references", "bgm", "sfx")), ("backup", ("bgm",))]
     assert feed.run_builds("bkt", lambda *a: pytest.fail("nothing asked"), storage=cloud) == []
 
 
@@ -176,5 +177,69 @@ def test_a_build_whose_tracks_could_not_go_up_says_so_instead_of_vanishing(lib, 
     cloud.put("queue/feed/kalki.bgm.json", json.dumps({"count": 2, "price": 0.36, "approved_usd": 0.41}).encode())
     feed.run_builds("bkt", lambda pid, count, usd, log: {"made": ["a.m4a"], "spent_usd": 0.28}, log=lambda *_: None,
                     storage=cloud)
-    result = json.loads(cloud.objects["custom_model_feed/builds/kalki.json"])
+    result = json.loads(cloud.objects["custom_model_feed/builds/kalki.bgm.json"])
     assert result["made"] == ["a.m4a"] and result["spent_usd"] == 0.28 and "did not reach the bucket" in result["error"]
+
+
+
+def test_the_sound_effects_starter_pack_is_made_by_name_within_the_approved_amount(lib, tmp_path):
+    from nraiorbit.costing import SpendLedger
+    names = [n for n, _, _ in feed.STARTER_SFX]
+    assert len(names) == len(set(names)) >= 30 and feed.sfx_price(len(names), 0.03) == round(len(names) * 0.03, 2)
+    sent = []
+
+    class Http:
+        def post(self, url, headers, json, timeout):
+            sent.append((url, headers["xi-api-key"], json))
+            return N(status_code=200, content=b"mp3 " + json["text"].encode())
+    ledger = SpendLedger(tmp_path / "sfx.jsonl", 0.07)                       # two sounds' worth, at $0.03
+    made = feed.build_sfx(feed.STARTER_SFX[:4], ledger, 0.03, "k3y", http=Http(), log=lambda *_: None,
+                          work=tmp_path / "w")
+    assert [m.split("_sfx_")[0] for m in made] == ["punch", "kick"] and len(sent) == 2   # stopped at the amount
+    assert sent[0][0].endswith("/v1/sound-generation") and sent[0][1] == "k3y"
+    assert "duration_seconds" not in sent[0][2] and sent[0][2]["text"].endswith("about 1.5 seconds")   # flat price
+    tags = feed.entries(feed.SFX)
+    assert {t["mood"] for t in tags} == {"punch", "kick"} and all(t["made_for"] == {"pack": "starter"} for t in tags)
+    assert round(ledger.spent(), 2) == 0.06
+
+
+def test_an_approved_sound_effects_build_goes_to_its_own_maker(lib, monkeypatch):
+    from nraiorbit.ops import backup
+    from test_reels import Bucket
+    monkeypatch.setattr(backup, "sync_library", lambda *a, **k: None)
+    cloud = Bucket()
+    cloud.put("queue/feed/starter.sfx.json", json.dumps({"count": 40, "price": 1.2, "approved_usd": 1.32}).encode())
+    calls = []
+    feed.run_builds("bkt", lambda *a: pytest.fail("not a music build"), log=lambda *_: None, storage=cloud,
+                    sfx_fn=lambda pack, count, usd, log: calls.append((pack, count, usd)) or {"made": ["punch_sfx_1.mp3"],
+                                                                                             "spent_usd": 0.03})
+    assert calls == [("starter", 40, 1.32)]
+    assert json.loads(cloud.objects["custom_model_feed/builds/starter.sfx.json"])["made"] == ["punch_sfx_1.mp3"]
+
+
+
+def test_a_second_build_makes_only_what_is_missing_and_a_refused_or_lost_call_is_handled(lib, tmp_path):
+    import requests
+
+    from nraiorbit.costing import SpendLedger
+    replies = iter([N(status_code=200, content=b"slap"), requests.Timeout("read timed out"),
+                    N(status_code=401, content=b"", text="invalid api key")])
+    sent = []
+
+    class Http:
+        def post(self, url, headers, json, timeout):
+            sent.append(json["text"])
+            r = next(replies)
+            if isinstance(r, Exception):
+                raise r
+            return r
+    feed.add(_audio(tmp_path, "p.mp3", b"punch audio"), feed.SFX, "punch", {})          # made by an earlier build
+    feed.add(_audio(tmp_path, "k.mp3", b"kick audio"), feed.SFX, "kick", {})
+    ledger = SpendLedger(tmp_path / "sfx.jsonl", 5.0)
+    made = feed.build_sfx(feed.STARTER_SFX[:6], ledger, 0.03, "k", http=Http(), log=lambda *_: None, work=tmp_path / "w")
+    assert [m.split("_sfx_")[0] for m in made] == ["slap"]                  # punch and kick: never made again
+    assert len(sent) == 3 and sent[1].startswith("a person falling")         # body_fall timed out: counted
+    records = ledger.records()
+    assert [r["item"] for r in records] == ["slap", "body_fall"] and "unconfirmed" in records[1]["note"]
+    assert "sword_draw" not in str(made) and sent[2].startswith("two steel swords")   # the 401 stopped it there
+    assert feed.missing_sfx({"punch", "kick", "slap"})[0][0] == "body_fall"

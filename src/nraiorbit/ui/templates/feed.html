@@ -9,13 +9,14 @@
 {% endblock %}
 {% block body %}
 <section class="wrap" style="max-width:1200px;margin:0 auto">
-  <p class="eyebrow">Custom model feed · {{ tracks|length }} music tracks</p>
+  <p class="eyebrow">Custom model feed · {{ tracks|length }} music tracks · {{ sounds|length }} sound effects</p>
   <h1 class="serif" style="margin:6px 0 12px">The studio's <em class="gold">sound library</em>.</h1>
   <p class="muted" style="max-width:680px">Our own background music, made by Lyria from what Gemini learned from your reference videos, never their audio. Every film looks here first: a track that fits a scene's mood, intensity and tempo is reused for free, and each new track a film makes (not a character's own theme) joins the library. Stored in the bucket under <span class="mono">custom_model_feed/</span>.</p>
-  {% if pending %}<div class="card" style="margin-top:14px">{% for b in pending %}<p><span class="live-dot" style="margin-right:8px"></span>Building {{ b.count }} tracks from <b>{{ b.reference }}</b> (approved about ${{ '%.2f'|format(b.price) }} by {{ b.by }}). This page refreshes by itself.</p>{% endfor %}</div>{% endif %}
-  {% for b in builds %}{% if b.error %}<p class="small" style="color:var(--warn)">The build from {{ b.reference }}{% if b.made %} made {{ b.made|length }} tracks, then{% endif %} stopped: {{ b.error }}{% if b.spent_usd is not none %} (spent ${{ '%.2f'|format(b.spent_usd) }}){% endif %}</p>{% elif b.made %}<p class="small muted">Built from {{ b.reference }}: {{ b.made|length }} tracks{% if b.spent_usd is not none %} for ${{ '%.2f'|format(b.spent_usd) }}{% endif %}{% if b.finished %} on {{ b.finished|local }}{% endif %}.</p>{% endif %}{% endfor %}
+  {% if pending %}<div class="card" style="margin-top:14px">{% for b in pending %}<p><span class="live-dot" style="margin-right:8px"></span>{% if b.kind == 'sfx' %}Making {{ b.count }} sound effects{% else %}Building {{ b.count }} tracks from <b>{{ b.reference }}</b>{% endif %} (approved about ${{ '%.2f'|format(b.price) }} by {{ b.by }}). This page refreshes by itself.</p>{% endfor %}</div>{% endif %}
+  {% for b in builds %}{% set what = 'sound effects' if b.kind == 'sfx' else 'tracks' %}{% set src = 'the starter pack' if b.kind == 'sfx' else 'the build from ' ~ b.reference %}{% if b.error %}<p class="small" style="color:var(--warn)">{{ src|capitalize }}{% if b.made %} made {{ b.made|length }} {{ what }}, then{% endif %} stopped: {{ b.error }}{% if b.spent_usd is not none %} (spent ${{ '%.2f'|format(b.spent_usd) }}){% endif %}</p>{% elif b.made %}<p class="small muted">{{ src|capitalize }}: {{ b.made|length }} {{ what }}{% if b.spent_usd is not none %} for ${{ '%.2f'|format(b.spent_usd) }}{% endif %}{% if b.finished %} on {{ b.finished|local }}{% endif %}.</p>{% endif %}{% endfor %}
   <p class="moods small" style="margin:16px 0">Mood: <a href="/feed"{% if not mood %} class="gold"{% endif %}>all</a>{% for m in moods %}<a href="/feed?mood={{ m }}"{% if mood == m %} class="gold"{% endif %}>{{ m }}</a>{% endfor %}</p>
   {% if not tracks %}<div class="card" style="text-align:center;padding:40px 24px"><p class="serif" style="font-size:24px;margin:0">No tracks yet.</p><p class="muted small" style="margin-top:8px">Build some from a learned reference on the <a href="/references">References</a> page, or make a film: its new cues land here.</p></div>{% endif %}
+  <h2 class="serif" style="margin:24px 0 10px">Music</h2>
   <div class="tracks">
   {% for t in tracks %}
     <article class="track">
@@ -24,6 +25,23 @@
       <audio controls preload="none" src="{{ t.url }}"></audio>
       {% if t.instruments %}<span class="small muted">{{ t.instruments|join(', ') }}{% if t.raga %} · raga {{ t.raga }}{% endif %}</span>{% endif %}
       <span class="tiny dim">{% if t.made_for and t.made_for.reference %}learned from {{ t.made_for.reference }}{% elif t.made_for and t.made_for.film %}made for {{ t.made_for.film }} ({{ t.made_for.cue }}){% endif %}{% if t.created %} · {{ t.created|local }}{% endif %}</span>
+    </article>
+  {% endfor %}
+  </div>
+  <h2 class="serif" style="margin:28px 0 10px">Sound effects</h2>
+  <p class="muted small" style="max-width:680px">Hits, whooshes, rain, temple bells, crowds and more, made by ElevenLabs from our own descriptions, named by what they are (punch_sfx_…, rain_sfx_…).</p>
+  {% if starter_waiting %}<p><span class="live-dot" style="margin-right:8px"></span>The starter sound effects are being made. This page refreshes by itself.</p>
+  {% elif starter_count %}
+  <form method="post" action="/feed/sfx-build" style="margin:10px 0 14px"><input type="hidden" name="usd" value="{{ '%.2f'|format(starter_price) }}"><button>{% if starter_count == starter_total %}Make the starter pack: {{ starter_count }} sound effects{% else %}Make the {{ starter_count }} missing starter sound effects{% endif %} · about ${{ '%.2f'|format(starter_price) }}</button></form>
+  <p class="tiny dim">Priced at a planning figure per sound; your ElevenLabs plan may charge a little less. Nothing is made before you press it, and a sound already in the library is never made again.</p>
+  {% endif %}
+  <div class="tracks">
+  {% for t in sounds %}
+    <article class="track">
+      <span class="mood">{{ t.mood|replace('_', ' ') }}{% if t.seconds %} · {{ t.seconds }} s{% endif %}</span>
+      <b class="mono small" style="word-break:break-all">{{ t.name }}</b>
+      <audio controls preload="none" src="{{ t.url }}"></audio>
+      {% if t.prompt %}<span class="tiny dim">{{ t.prompt }}</span>{% endif %}
     </article>
   {% endfor %}
   </div>

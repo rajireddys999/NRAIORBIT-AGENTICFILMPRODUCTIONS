@@ -605,8 +605,20 @@ def cmd_service(args) -> None:
             made = feed.build_music(pid, count, MusicDirector(llm, quick), music, log=log)
             return {"made": made, "spent_usd": round(ledger.spent(), 2)}
 
+        def sfx_fn(pack, count, approved_usd, log=print):
+            from .costing import SpendLedger, load_pricing
+            from .service import feed
+            key = os.environ.get("ELEVENLABS_API_KEY", "")
+            if not key:
+                raise RuntimeError("ELEVENLABS_API_KEY is not set on the runner")
+            stamp = feed.name_for("build", "sfx").replace("build_sfx_", "")
+            ledger = SpendLedger(feed.FEED_DIR / "builds" / f"{pack}-sfx-{stamp}.jsonl", approved_usd)
+            per_sound = float((load_pricing(None).get("elevenlabs") or {}).get("sfx_per_sound", 0.03))
+            made = feed.build_sfx(feed.STARTER_SFX, ledger, per_sound, key, log=log)   # those the feed lacks
+            return {"made": made, "spent_usd": round(ledger.spent(), 2)}
+
         out = queue.tick(args.stories, args.references, PROJECTS, bucket=args.bucket, produce_fn=produce_fn,
-                         learn_fn=learn_fn, template=project_template(), feed_fn=feed_fn)
+                         learn_fn=learn_fn, template=project_template(), feed_fn=feed_fn, sfx_fn=sfx_fn)
         print(out)
         return
     if args.action == "add-story":                       # load and save (gcloud when the client's login is stale)

@@ -283,3 +283,12 @@ def test_a_film_learns_first_from_the_references_of_its_own_kind(tmp_path):
     cfg = {"references": {"folder": str(refs), "limit": 1}}
     block = reference_examples("music_director", cfg, categories=["devotional"])
     assert '"title": "lullaby"' in block and '"devotional"' in block
+
+
+
+def test_references_and_the_feed_reach_google_as_films_do():
+    """The runner watched a reference with the bare defaults (google.vertex: false) and failed for want of a Gemini
+    API key it never has; films use the template's Vertex AI settings, and so must everything else it does."""
+    from nraiorbit import cli
+    cfg = cli.studio_config()
+    assert cfg["google"]["vertex"] is True and cfg["providers"]["music"] == "lyria"

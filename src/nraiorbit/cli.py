@@ -49,6 +49,13 @@ def project_template() -> Path:
     return REPO_ROOT / "projects" / "_template"
 
 
+def studio_config() -> dict:
+    """The settings the runner works under outside any one film (watching references, building the feed): the
+    project template's, as every new film gets them (Google through Vertex AI on the studio's project), never the
+    bare defaults (a Gemini API key the runner does not have)."""
+    return load_pipeline_config(project_template())
+
+
 def _project(slug: str) -> Path:
     path = PROJECTS / slug
     if not path.exists():
@@ -573,7 +580,7 @@ def cmd_service(args) -> None:
 
         def learn_fn(url, title, what, minutes=None, max_usd=1.0):
             from .costing import load_pricing
-            return learn.learn(url, title=title, what=what, cfg=load_pipeline_config(None),
+            return learn.learn(url, title=title, what=what, cfg=studio_config(),
                                minutes=float(minutes) if minutes else None, pricing=load_pricing(None),
                                max_usd=max_usd)
 
@@ -584,7 +591,7 @@ def cmd_service(args) -> None:
             from .costing import SpendLedger, load_pricing
             from .providers.lyria import LyriaMusic
             from .service import feed
-            cfg = load_pipeline_config(None)
+            cfg = studio_config()
             stamp = feed.name_for("build", "music").replace("build_music_", "")
             spend = feed.FEED_DIR / "builds" / f"{pid}-{stamp}.jsonl"   # this build alone, held to what was approved
             llm = ClaudeClient(model=cfg["llm"]["model"], max_tokens=feed.PLAN_MAX_TOKENS,   # its cost capped too

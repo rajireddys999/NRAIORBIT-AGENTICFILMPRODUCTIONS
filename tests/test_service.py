@@ -292,3 +292,12 @@ def test_references_and_the_feed_reach_google_as_films_do():
     from nraiorbit import cli
     cfg = cli.studio_config()
     assert cfg["google"]["vertex"] is True and cfg["providers"]["music"] == "lyria"
+
+
+
+def test_references_are_watched_by_a_model_the_project_can_use():
+    """gemini-2.5-pro answered 404 for the studio's project in every region; 3.1 Pro is served from global."""
+    from nraiorbit.config import load_pipeline_config
+    g = load_pipeline_config(None)["google"]
+    assert learn.DEFAULT_MODEL == g["analysis_model"] == "gemini-3.1-pro-preview"
+    assert g["analysis_location"] == learn.DEFAULT_LOCATION == "global"

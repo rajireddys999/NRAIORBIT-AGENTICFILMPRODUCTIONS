@@ -84,10 +84,10 @@ cloud_run_gpu:            # lip-sync worker (deploy/lipsync): Cloud Run job, 1x 
   startup_minutes: 6      # image pull + model load, once per job execution
   minutes_per_clip: 10.0  # LatentSync 1.6 on a 6-8 s 1080p shot (measured ~9.7 min on an L4, 2026-10-14)
 
-gemini_video:             # watching a public film for craft notes (nraiorbit learn youtube), Gemini 2.5 Pro
-  input_per_1m: 1.25      # planning numbers: Gemini 2.5 Pro list price per 1M input tokens up to 200k per request,
-  input_per_1m_long: 2.50 # above 200k; verify on ai.google.dev/pricing before budgeting
-  output_per_1m: 10.00
+gemini_video:             # watching a public film for craft notes (nraiorbit learn youtube): gemini-3.1-pro-preview
+  input_per_1m: 2.00      # planning numbers, Gemini 3 Pro preview list price per 1M input tokens up to 200k per
+  input_per_1m_long: 4.00 # request, and above; verify on cloud.google.com/vertex-ai/generative-ai/pricing
+  output_per_1m: 18.00    # (the higher, long-request output rate, to be safe)
   tokens_per_frame: 258   # what a sampled video frame costs in tokens; audio adds 32 tokens per second
   audio_tokens_per_s: 32
 

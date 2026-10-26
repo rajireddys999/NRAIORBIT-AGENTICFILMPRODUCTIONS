@@ -166,7 +166,7 @@ def test_learn_refuses_an_expensive_watch_unless_told_yes(tmp_path):
     est, tokens = learn.estimate_usd(150, pricing=pricing)
     assert est > 1.0 and tokens > 200_000
     short, _ = learn.estimate_usd(10, pricing=pricing)
-    assert short < 0.2
+    assert short < 0.25
     fake = FakeGemini()
     with pytest.raises(learn.LearnCostError, match=r"length not known, priced as 150 min.* over the \$1.00 limit"):
         learn.learn("https://www.youtube.com/watch?v=abc123xyz", cfg={"google": {}}, client=fake,
@@ -178,7 +178,8 @@ def test_learn_refuses_an_expensive_watch_unless_told_yes(tmp_path):
     assert out.exists() and len(fake.calls) == 1
     row = json.loads((tmp_path / "refs" / "ledger.jsonl").read_text().splitlines()[-1])
     assert row["provider"] == "gemini_video" and row["tokens_in"] == 12000
-    assert row["usd"] == pytest.approx(12000 / 1e6 * 1.25 + 900 / 1e6 * 10, abs=1e-4)
+    g = pricing["gemini_video"]
+    assert row["usd"] == pytest.approx(12000 / 1e6 * g["input_per_1m"] + 900 / 1e6 * g["output_per_1m"], abs=1e-4)
     # --yes overrides the limit
     learn.learn("https://www.youtube.com/watch?v=abc123xyz", cfg={"google": {}}, client=fake,
                 out_dir=tmp_path / "refs", pricing=pricing, yes=True)

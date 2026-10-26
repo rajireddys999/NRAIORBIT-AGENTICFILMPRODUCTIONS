@@ -95,6 +95,8 @@ google:                            # used by the veo / gemini / lyria providers 
   poll_seconds: 10
   timeout_seconds: 900
   image_model: gemini-2.5-flash-image
+  analysis_model: gemini-3.1-pro-preview   # watches reference videos (service/learn); gemini-2.5-pro is no longer served
+  analysis_location: global                #   to this project, and 3.1 Pro is served from global only
   tts_model: gemini-2.5-flash-preview-tts
   tts_language_code: null          # auto-detected from Telugu script; set if your model needs it
   music_model: lyria-3-pro-preview # providers.music: lyria; lyria-3-clip-preview = cheaper 30 s clips, looped to the cue

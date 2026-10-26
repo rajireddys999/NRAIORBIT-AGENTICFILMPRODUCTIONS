@@ -25,7 +25,8 @@ from pydantic import BaseModel, Field
 from ..providers.google_ai import google_client
 
 REFERENCES_DIR = Path(__file__).resolve().parents[3] / "custom_model_feed" / "notes"   # the custom model feed
-DEFAULT_MODEL = "gemini-2.5-pro"
+DEFAULT_MODEL = "gemini-3.1-pro-preview"      # gemini-2.5-pro is no longer served to the studio's project (404)
+DEFAULT_LOCATION = "global"                   # where Vertex AI serves it (not us-central1)
 SAMPLE_FPS = 0.25               # four frames a second is far more than craft notes need; one every 4 s keeps cost low
 
 
@@ -190,6 +191,9 @@ def learn(url: str, title: str | None = None, what: str = "all", cfg: dict | Non
         else:
             minutes = video_minutes(url)                  # the real length, from the video's page
             guessed = minutes is None
+            if guessed:
+                print(f"  {url}: its length could not be read from YouTube; priced as a {DEFAULT_MINUTES:.0f} min "
+                      "film (give the length on the References page for a true price)", flush=True)
             minutes = minutes or DEFAULT_MINUTES
     est, tokens = estimate_usd(minutes, fps, pricing)
     if est > max_usd and not yes:
@@ -199,7 +203,8 @@ def learn(url: str, title: str | None = None, what: str = "all", cfg: dict | Non
                              "limit: approve it on the References page (or run nraiorbit learn with --max-usd, "
                              "--minutes or --start/--end)", minutes=minutes, usd=est)
     g = (cfg or {}).get("google", {})
-    client = client or google_client(g, "image")
+    client = client or google_client({**g, "analysis_location": g.get("analysis_location") or DEFAULT_LOCATION},
+                                     "analysis")          # the watching model's own region
     meta = {"fps": fps}
     if start_s is not None:
         meta["start_offset"] = f"{int(start_s)}s"
@@ -211,7 +216,7 @@ def learn(url: str, title: str | None = None, what: str = "all", cfg: dict | Non
              "action": "action staging and cutting", "characters": "character archetypes and introductions",
              "trailer": "trailer structure"}.get(what, what)
     response = client.models.generate_content(
-        model=g.get("analysis_model", DEFAULT_MODEL), contents=[video, PROMPT.format(focus=focus)],
+        model=g.get("analysis_model") or DEFAULT_MODEL, contents=[video, PROMPT.format(focus=focus)],
         config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=ReferenceProfile,
                                            temperature=0.2))
     profile = ReferenceProfile.model_validate_json(response.text)
@@ -221,7 +226,7 @@ def learn(url: str, title: str | None = None, what: str = "all", cfg: dict | Non
     (folder / "profile.json").write_text(profile.model_dump_json(indent=2), encoding="utf-8")
     usage = getattr(response, "usage_metadata", None)
     manifest = {"id": pid, "kind": "reference", "source_url": url, "title": title or profile.title, "learned": what,
-                "model": g.get("analysis_model", DEFAULT_MODEL), "sample_fps": fps,
+                "model": g.get("analysis_model") or DEFAULT_MODEL, "sample_fps": fps,
                 "watched": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
                 "tokens": {"input": getattr(usage, "prompt_token_count", None),
                            "output": getattr(usage, "candidates_token_count", None)} if usage else None,

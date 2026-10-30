@@ -847,11 +847,14 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
             return back(f"/film/{slug}", "That is the character's final face: choose another, or use the AI's own "
                                          "look, before removing it; nothing changed.")
 
+        gone: list[dict] = []
+
         def change(text: str):
             data = (yaml.safe_load(text) or {}) if text else {}
             data = data if isinstance(data, dict) else {}
             mine = [e for e in (data.get(character) or []) if isinstance(e, dict)]
-            if not any(e.get("file") == file for e in mine):
+            gone[:] = [e for e in mine if e.get("file") == file]
+            if not gone:
                 return None
             data[character] = [e for e in mine if e.get("file") != file]
             return yaml.safe_dump(data, sort_keys=True, allow_unicode=True)
@@ -863,8 +866,8 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         look = chosen.get(character) if isinstance(chosen, dict) and isinstance(chosen.get(character), dict) else {}
         if kept and not look.get("removed") and look.get("image") == file:   # chosen as the face meanwhile: kept
             store.write_bytes(path, kept, "image/png")
-            into_gallery(slug, character, [{"file": file, "sha": look.get("image_sha"), "source": "yours",
-                                             "rights": look.get("rights"), "by": email, "at": queue.now()}])
+            into_gallery(slug, character, gone[:1] or [{"file": file, "sha": look.get("image_sha"), "source": "yours",
+                                                        "rights": look.get("rights"), "by": email, "at": queue.now()}])
             return back(f"/film/{slug}", "That picture was just chosen as the final face, so it was kept.")
         return back(f"/film/{slug}", "The picture was deleted from the bucket.")
 

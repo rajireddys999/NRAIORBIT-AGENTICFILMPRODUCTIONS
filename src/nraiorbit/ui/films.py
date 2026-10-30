@@ -868,7 +868,8 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
                             "at": e.get("at"), "final": e["file"] == final, "removable": e["file"] != final}
                            for e in theirs] + [
             {"pick": f"ai:{f['aid']}", "url": img(f["rel"]), "source": f["made"], "at": None, "final": False,
-             "current": final is None and now.rsplit("/", 1)[-1].split("@")[0] == f["aid"], "removable": False}
+             "current": (not look or bool(look.get("removed"))) and now.rsplit("/", 1)[-1].split("@")[0] == f["aid"],
+             "removable": False}
             for f in (ai_faces(store, slug, cid, now, ((taken.get(cid) or {}).get("before") or {}).get(
                 "character_asset"), library_dirs) if state_now["open"] else [])   # chosen only while looks are open
             if f["aid"] not in copied]

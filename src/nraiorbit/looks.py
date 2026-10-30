@@ -2,9 +2,11 @@
 the character's face, a body build, and notes on how the character looks. All of it is optional: a character with no
 look is cast and drawn as before.
 
-The control room keeps the looks in the bucket (stories/<slug>.looks.yaml; the pictures in stories/<slug>.looks/),
-each tick copies them into the project's looks/, and the cast step takes them in before its pictures are drawn
-(Pipeline._cast):
+The control room keeps each film's character pictures in the film's own folder in the bucket, <slug>/characters/:
+every picture the owner gave, per character (<character>/<character>_<sha>.png, listed in gallery.yaml, with the AI's
+faces the owner chose copied in beside them), and the looks chosen from them (looks.yaml). No other film reads it.
+Each tick copies the looks and their pictures into the project's looks/, and the cast step takes them in before its
+pictures are drawn (Pipeline._cast):
 
     picture  the character's front portrait; the other angles and every still are drawn from it
     build    the story bible's build for the character, so the portraits, the director and every still agree
@@ -28,6 +30,8 @@ import yaml
 
 FOLDER = "looks"             # in the project: looks.yaml and the pictures it names, copied from the bucket each tick
 CHOICES = "looks.yaml"
+GALLERY = "gallery.yaml"     # in the film's bucket folder: every picture per character, with whose it is
+CHARACTER_ID = re.compile(r"[a-z0-9_-]{1,60}")      # a story bible's character id: never a path
 RECORD = "reports/looks.json"
 TRIED = "reports/looks_waiting.json"   # looks the cast step could not take, and why (shown on the film page)
 NOTES_MAX = 600
@@ -90,6 +94,11 @@ def normalize_picture(data: bytes) -> bytes:
     out = io.BytesIO()
     img.save(out, format="PNG", optimize=True)
     return out.getvalue()
+
+
+def film_folder(slug: str) -> str:
+    """The film's own folder for character pictures and looks, relative to the bucket."""
+    return f"{slug}/characters"
 
 
 def cast_gate_waits(cfg: dict) -> bool:
@@ -165,7 +174,7 @@ def owner_words(root: Path) -> dict[str, str]:
 
 def sync(root: Path, text: str, fetch_picture, log=print) -> None:
     """Copy the owner's looks (the bucket's looks.yaml `text`) into the project's looks/, each picture fetched once
-    (`fetch_picture(name)` -> bytes or None) and kept while its name is listed. No text: no looks."""
+    (`fetch_picture(character, name)` -> bytes or None) and kept while its name is listed. No text: no looks."""
     folder = Path(root) / FOLDER
     if not text.strip():
         if folder.exists():
@@ -173,11 +182,11 @@ def sync(root: Path, text: str, fetch_picture, log=print) -> None:
         return
     folder.mkdir(parents=True, exist_ok=True)
     (folder / CHOICES).write_text(text, encoding="utf-8")
-    wanted = {str(v["image"]) for v in choices(root).values() if v.get("image")}
-    for name in sorted(wanted):
-        if not PICTURE_NAME.fullmatch(name) or (folder / name).exists():
+    wanted = {str(v["image"]): cid for cid, v in choices(root).items() if v.get("image")}
+    for name, cid in sorted(wanted.items()):
+        if not (PICTURE_NAME.fullmatch(name) and CHARACTER_ID.fullmatch(cid)) or (folder / name).exists():
             continue
-        data = fetch_picture(name)
+        data = fetch_picture(cid, name)
         if data:
             (folder / name).write_bytes(data)
         else:

@@ -678,7 +678,7 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
 
     def looks_waiting(slug: str) -> list[str]:
         """Characters whose saved look the cast step has not taken in yet."""
-        given = films._yaml(store, f"stories/{slug}.looks.yaml")
+        given = films._yaml(store, f"{looks_mod.film_folder(slug)}/{looks_mod.CHOICES}")
         bible = films._json(store, f"{slug}/project/01_story_bible.json") or {}
         lock = (films._yaml(store, f"{slug}/project/cast.lock.yaml") or {}).get("characters")
         return looks_mod.waiting(given if isinstance(given, dict) else {},
@@ -705,42 +705,179 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         if not SLUG_RE.match(slug):
             raise HTTPException(404)
         bible = films._json(store, f"{slug}/project/01_story_bible.json") or {}
-        chars = {c.get("id"): c for c in bible.get("characters") or []}
+        chars = {c.get("id"): c for c in bible.get("characters") or []
+                 if looks_mod.CHARACTER_ID.fullmatch(str(c.get("id") or ""))}
         if character not in chars:
             return chars, f"No character {character[:40]!r} in this film; nothing changed."
         row = next((r for r in load_rows(store, STORIES, queue.STORY_COLUMNS) if r["slug"] == slug), None)
         state = films.looks_state(store, slug, row, films._config(store, slug), True)
         return chars, None if state["open"] else (state["why_closed"] or "Looks cannot be given now") + " Nothing changed."
 
-    @app.post("/film/{slug}/look")
-    def set_look(slug: str, email: str = Depends(guard), character: str = Form(""), build: str = Form(""),
-                 notes: str = Form(""), notes_shown: str = Form(""), rights: str = Form(""),
-                 picture: UploadFile | None = File(None)):
-        """The owner's look for one character (looks.py): a picture that becomes its face, a body build, notes on
-        how it looks. Each is optional; what is not given stays as it was."""
-        chars, why = look_of(slug, character)
-        if why:
-            return back(f"/film/{slug}", why)
-        data = picture.file.read(looks_mod.MAX_PICTURE + 1) if picture is not None and picture.filename else b""
-        if len(data) > looks_mod.MAX_PICTURE:
-            return back(f"/film/{slug}", "That picture is over 15 MB; nothing changed.")
-        png = None
-        if data:
-            if rights not in looks_mod.RIGHTS:
-                return back(f"/film/{slug}", "Say whose picture it is (yours with the person's permission, or "
-                                             "AI-made) before it is used as a face; nothing changed.")
+    def picture_name(character: str, png: bytes) -> tuple[str, str]:
+        import hashlib
+        sha = hashlib.sha256(png).hexdigest()
+        return f"{character}_{sha[:12]}.png", sha
+
+    def into_gallery(slug: str, character: str, entries: list[dict]) -> None:
+        """Add pictures to the film's gallery (<slug>/characters/gallery.yaml); one already there is kept once."""
+        def change(text: str):
+            data = (yaml.safe_load(text) or {}) if text else {}
+            data = data if isinstance(data, dict) else {}
+            mine = [e for e in (data.get(character) or []) if isinstance(e, dict)]
+            have = {e.get("file") for e in mine}
+            new = [e for e in entries if e["file"] not in have]
+            if not new:
+                return None
+            data[character] = mine + new
+            return yaml.safe_dump(data, sort_keys=True, allow_unicode=True)
+        store.update_text(f"{looks_mod.film_folder(slug)}/{looks_mod.GALLERY}", change, content_type="text/yaml")
+
+    def film_characters(slug: str) -> dict:
+        if not SLUG_RE.match(slug):
+            raise HTTPException(404)
+        bible = films._json(store, f"{slug}/project/01_story_bible.json") or {}
+        return {c.get("id"): c for c in bible.get("characters") or [] if looks_mod.CHARACTER_ID.fullmatch(
+            str(c.get("id") or ""))}
+
+    @app.post("/film/{slug}/pictures")
+    def add_pictures(slug: str, email: str = Depends(guard), pictures: list[UploadFile] | None = File(None),
+                     character_for: list[str] = Form([]), character: str = Form(""), rights: str = Form("")):
+        """Pictures into the film's character gallery, each for the character picked beside it (or one character for
+        all of them). Kept for this film only; choosing one as a character's face is a separate step."""
+        chars = film_characters(slug)
+        if next((r for r in load_rows(store, STORIES, queue.STORY_COLUMNS) if r["slug"] == slug), None) is None:
+            return back(f"/film/{slug}", "Only films in the queue keep character pictures; nothing changed.")
+        files = [p for p in pictures or [] if p.filename]
+        if not files:
+            return back(f"/film/{slug}", "Choose one or more pictures first; nothing changed.")
+        if len(files) > films.MAX_FILES:
+            return back(f"/film/{slug}", f"At most {films.MAX_FILES} pictures at a time; nothing changed.")
+        whose = character_for if len(character_for) == len(files) else [character] * len(files)
+        if any(w not in chars for w in whose):
+            return back(f"/film/{slug}", "Pick a character for every picture; nothing changed.")
+        if rights not in looks_mod.RIGHTS:
+            return back(f"/film/{slug}", "Say whose pictures these are (yours with the people's permission, or "
+                                         "AI-made); nothing changed.")
+        added: dict[str, list[dict]] = {}
+        problems = []
+        for f, cid in zip(files, whose):
+            data = f.file.read(looks_mod.MAX_PICTURE + 1)
+            if len(data) > looks_mod.MAX_PICTURE:
+                problems.append(f"{f.filename[:40]}: over 15 MB")
+                continue
             try:
                 png = looks_mod.normalize_picture(data)
             except ValueError as exc:
+                problems.append(f"{f.filename[:40]}: {str(exc).replace('; nothing changed.', '')}")
+                continue
+            name, sha = picture_name(cid, png)
+            store.write_bytes(f"{looks_mod.film_folder(slug)}/{cid}/{name}", png, "image/png")
+            added.setdefault(cid, []).append({"file": name, "sha": sha, "source": "yours", "rights": rights,
+                                              "by": email, "at": queue.now()})
+        for cid, entries in added.items():
+            into_gallery(slug, cid, entries)
+        said = "; ".join(f"{len(e)} for {chars[c].get('name_en') or c}" for c, e in added.items())
+        msg = (f"Added to the gallery: {said}. Choose one as a character's final face below." if added
+               else "No picture was added.")
+        return back(f"/film/{slug}", msg + (" Not added: " + "; ".join(problems) if problems else ""))
+
+    @app.post("/film/{slug}/face")
+    def use_face(slug: str, email: str = Depends(guard), character: str = Form(""), pick: str = Form("")):
+        """A gallery picture (or a face the AI drew for this character) as the character's final face."""
+        chars, why = look_of(slug, character)
+        if why:
+            return back(f"/film/{slug}", why)
+        entry = next((e for e in films.gallery(store, slug).get(character, []) if e.get("file") == pick), None)
+        if entry is None and pick.startswith("ai:"):
+            lock = (films._yaml(store, f"{slug}/project/cast.lock.yaml") or {}).get("characters") or {}
+            taken = films._json(store, f"{slug}/reports/looks.json") or {}
+            chosen = films._yaml(store, f"{looks_mod.film_folder(slug)}/{looks_mod.CHOICES}") or {}
+            mine = chosen.get(character) if isinstance(chosen, dict) and isinstance(chosen.get(character), dict) else {}
+            now = (lock.get(character) or {}).get("character_asset") or ""
+            if (not mine or mine.get("removed")) and now.rsplit("/", 1)[-1].split("@")[0] == pick[3:]:
+                return back(f"/film/{slug}", "That is the face in use now; nothing changed.")
+            face = next((f for f in films.ai_faces(
+                store, slug, character, now, ((taken.get(character) or {}).get("before") or {}).get("character_asset"),
+                store.dirs("library/characters/")) if f["aid"] == pick[3:]), None)
+            raw = store.read_bytes(face["rel"]) if face else None
+            if not raw:
+                return back(f"/film/{slug}", "That face is not one of this character's; nothing changed.")
+            try:
+                png = looks_mod.normalize_picture(raw)
+            except ValueError as exc:
                 return back(f"/film/{slug}", str(exc))
+            name, sha = picture_name(character, png)
+            store.write_bytes(f"{looks_mod.film_folder(slug)}/{character}/{name}", png, "image/png")
+            entry = {"file": name, "sha": sha, "source": "ai", "from": face["aid"], "rights": "ai", "by": email,
+                     "at": queue.now()}
+            into_gallery(slug, character, [entry])
+        if entry is None:
+            return back(f"/film/{slug}", "That picture is not in this character's gallery; nothing changed.")
+        said = {}
+
+        def change(text: str):
+            data = (yaml.safe_load(text) or {}) if text else {}
+            data = data if isinstance(data, dict) else {}
+            old = data.get(character) if isinstance(data.get(character), dict) else {}
+            old = {} if old.get("removed") else old
+            if old.get("image") == entry["file"]:
+                said["msg"] = "That is already the final face; nothing changed."
+                return None
+            new = {k: old[k] for k in ("build", "notes") if old.get(k)}
+            new.update(image=entry["file"], image_sha=entry["sha"], rights=entry.get("rights") or "ai")
+            data[character] = {**new, "by": email, "at": queue.now()}
+            return yaml.safe_dump(data, sort_keys=True, allow_unicode=True)
+        store.update_text(f"{looks_mod.film_folder(slug)}/{looks_mod.CHOICES}", change, content_type="text/yaml")
+        if said:
+            return back(f"/film/{slug}", said["msg"])
+        who = chars[character].get("name_en") or character
+        return look_saved(slug, character, f"{who}'s final face chosen")
+
+    @app.post("/film/{slug}/picture-remove")
+    def remove_picture(slug: str, email: str = Depends(guard), character: str = Form(""), file: str = Form("")):
+        """Delete one of the owner's gallery pictures from the bucket (the page asks to confirm first). The picture
+        that is a character's final face stays until another is chosen."""
+        chars = film_characters(slug)
+        if character not in chars or not looks_mod.PICTURE_NAME.fullmatch(file) or not any(
+                e.get("file") == file for e in films.gallery(store, slug).get(character, [])):
+            return back(f"/film/{slug}", "That picture is not in the gallery; nothing changed.")
+        chosen = films._yaml(store, f"{looks_mod.film_folder(slug)}/{looks_mod.CHOICES}") or {}
+        look = chosen.get(character) if isinstance(chosen, dict) and isinstance(chosen.get(character), dict) else {}
+        if not look.get("removed") and look.get("image") == file:
+            return back(f"/film/{slug}", "That is the character's final face: choose another, or use the AI's own "
+                                         "look, before removing it; nothing changed.")
+
+        def change(text: str):
+            data = (yaml.safe_load(text) or {}) if text else {}
+            data = data if isinstance(data, dict) else {}
+            mine = [e for e in (data.get(character) or []) if isinstance(e, dict)]
+            if not any(e.get("file") == file for e in mine):
+                return None
+            data[character] = [e for e in mine if e.get("file") != file]
+            return yaml.safe_dump(data, sort_keys=True, allow_unicode=True)
+        path = f"{looks_mod.film_folder(slug)}/{character}/{file}"
+        kept = store.read_bytes(path)
+        store.update_text(f"{looks_mod.film_folder(slug)}/{looks_mod.GALLERY}", change, content_type="text/yaml")
+        store.delete(path)
+        chosen = films._yaml(store, f"{looks_mod.film_folder(slug)}/{looks_mod.CHOICES}") or {}
+        look = chosen.get(character) if isinstance(chosen, dict) and isinstance(chosen.get(character), dict) else {}
+        if kept and not look.get("removed") and look.get("image") == file:   # chosen as the face meanwhile: kept
+            store.write_bytes(path, kept, "image/png")
+            into_gallery(slug, character, [{"file": file, "sha": look.get("image_sha"), "source": "yours",
+                                             "rights": look.get("rights"), "by": email, "at": queue.now()}])
+            return back(f"/film/{slug}", "That picture was just chosen as the final face, so it was kept.")
+        return back(f"/film/{slug}", "The picture was deleted from the bucket.")
+
+    @app.post("/film/{slug}/look")
+    def set_look(slug: str, email: str = Depends(guard), character: str = Form(""), build: str = Form(""),
+                 notes: str = Form(""), notes_shown: str = Form("")):
+        """The owner's body build and notes for one character (looks.py); its face is chosen in the gallery. Each
+        is optional; what is not given stays as it was."""
+        chars, why = look_of(slug, character)
+        if why:
+            return back(f"/film/{slug}", why)
         if build and build != "written" and build not in looks_mod.BUILDS:
             return back(f"/film/{slug}", f"No body build called {build[:30]!r}; nothing changed.")
-        name = None
-        if png is not None:
-            import hashlib
-            sha = hashlib.sha256(png).hexdigest()
-            name = f"{character}_{sha[:12]}.png"
-            store.write_bytes(f"stories/{slug}.looks/{name}", png, "image/png")    # before the list names it
         said = {}
         stuck = (films._json(store, f"{slug}/reports/looks_waiting.json") or {}).get(character) or {}
 
@@ -758,21 +895,19 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                 new["notes"] = notes.strip()[:looks_mod.NOTES_MAX]
             if not new.get("notes"):
                 new.pop("notes", None)
-            if png is not None:
-                new.update(image=name, image_sha=sha, rights=rights)
             same = old and looks_mod.fingerprint(new) == looks_mod.fingerprint(old)
             if same and stuck.get("fp") != looks_mod.fingerprint(old):     # the same again: a try once more only
                 said["msg"] = "Nothing new for this character; nothing changed."    # when it could not be taken
                 return None
             if not any(new.get(k) for k in ("image", "build", "notes")):
                 if not old:
-                    said["msg"] = "Nothing given: choose a picture, a body build or notes; nothing changed."
+                    said["msg"] = "Nothing given: choose a body build or notes; nothing changed."
                     return None
                 data[character] = {"removed": True, "by": email, "at": queue.now()}
             else:
                 data[character] = {**new, "by": email, "at": queue.now()}
             return yaml.safe_dump(data, sort_keys=True, allow_unicode=True)
-        store.update_text(f"stories/{slug}.looks.yaml", change, content_type="text/yaml")
+        store.update_text(f"{looks_mod.film_folder(slug)}/{looks_mod.CHOICES}", change, content_type="text/yaml")
         if said:
             return back(f"/film/{slug}", said["msg"])
         who = chars[character].get("name_en") or character
@@ -794,7 +929,7 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                 return None
             data[character] = {"removed": True, "by": email, "at": queue.now()}
             return yaml.safe_dump(data, sort_keys=True, allow_unicode=True)
-        store.update_text(f"stories/{slug}.looks.yaml", change, content_type="text/yaml")
+        store.update_text(f"{looks_mod.film_folder(slug)}/{looks_mod.CHOICES}", change, content_type="text/yaml")
         if said:
             return back(f"/film/{slug}", said["msg"])
         who = chars[character].get("name_en") or character

@@ -44,7 +44,7 @@ def project(tmp_path: Path, given: dict | None = None, pictures: dict | None = N
                                                 f"characters/{c.id}@pending", costumes={"cst_old": "old"} if c is hero
                                                 else {}) for c in bible.characters})
     if given is not None:
-        looks.sync(root, yaml.safe_dump(given), lambda name: (pictures or {}).get(name), log=lambda *_: None)
+        looks.sync(root, yaml.safe_dump(given), lambda cid, name: (pictures or {}).get(name), log=lambda *_: None)
     return root, bible, lock, library, hero
 
 
@@ -96,16 +96,16 @@ def test_a_changed_look_is_a_new_character_and_removing_it_goes_back(tmp_path):
     bible2, lock2, library2, _ = looks.take(root, bible, lock, library, film=FILM, log=lambda *_: None)
     one = lock2.characters[hero.id].character_asset
     looks.sync(root, yaml.safe_dump({hero.id: {"build": "stocky", "notes": "a scar over the left eyebrow"}}),
-               lambda name: None)
+               lambda cid, name: None)
     bible3, lock3, library3, changed = looks.take(root, bible2, lock2, library2, film=FILM, log=lambda *_: None)
     two = lock3.characters[hero.id].character_asset
     assert changed == [hero.id] and two != one and f"character:{one.split('/')[1].split('@')[0]}" in library3.assets
     assert next(c for c in bible3.characters if c.id == hero.id).physical.build == "stocky"
     # the list unreadable (empty): nothing is undone
-    looks.sync(root, "", lambda name: None)
+    looks.sync(root, "", lambda cid, name: None)
     assert looks.take(root, bible3, lock3, library3, film=FILM, log=lambda *_: None)[3] == []
     # removed by the owner: the casting and the build it had before
-    looks.sync(root, yaml.safe_dump({hero.id: {"removed": True}}), lambda name: None)
+    looks.sync(root, yaml.safe_dump({hero.id: {"removed": True}}), lambda cid, name: None)
     bible4, lock4, _, changed = looks.take(root, bible3, lock3, library3, film=FILM, log=lambda *_: None)
     assert changed == [hero.id]
     assert lock4.characters[hero.id].character_asset == "characters/hero_shared@v1"
@@ -156,7 +156,7 @@ def test_the_look_folder_follows_the_bucket(tmp_path):
     fetched = []
     root = tmp_path / FILM
 
-    def fetch(name):
+    def fetch(cid, name):
         fetched.append(name)
         return b"png"
     looks.sync(root, yaml.safe_dump({"a": {"image": "a_1.png"}, "b": {"notes": "tall"}}), fetch)
@@ -327,7 +327,7 @@ def test_an_animal_keeps_its_animal_words_and_is_drawn_as_an_animal(tmp_path):
     bible = bible.model_copy(update={"characters": [dog, *bible.characters[1:]]})
     assert is_animal(dog)
     looks.sync(root, yaml.safe_dump({dog.id: {"build": "slim", "notes": "a black patch over the left eye"}}),
-               lambda name: None)
+               lambda cid, name: None)
     bible2, lock2, library2, _ = take(root, bible, lock, library)
     still = next(c for c in bible2.characters if c.id == dog.id)
     assert still.physical.build == "small, wiry, with a curled tail" and is_animal(still)
@@ -342,7 +342,7 @@ def test_a_new_look_is_drawn_from_the_ais_own_character_never_a_removed_photo(tm
                                                                      "rights": "own"}}, {"hero_1.png": png})
     _, lock2, library2, _ = take(root, bible, lock, library)
     # the owner removed the picture and chose a build before any run saw the removal
-    looks.sync(root, yaml.safe_dump({hero.id: {"build": "stocky"}}), lambda name: None)
+    looks.sync(root, yaml.safe_dump({hero.id: {"build": "stocky"}}), lambda cid, name: None)
     _, lock3, library3, _ = take(root, bible, lock2, library2)
     asset = library3.resolve(lock3.characters[hero.id].character_asset)
     assert asset.identity_from.asset == "hero_shared" and not asset.owner_picture

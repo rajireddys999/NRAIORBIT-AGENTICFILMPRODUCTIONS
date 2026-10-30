@@ -716,9 +716,10 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
             if chosen.strip():
                 apply_voices(root, chosen)                # the owner's voices win, every tick
             if bucket:                                    # the owner's looks for characters, as last saved (looks.py)
-                from ..looks import sync as sync_looks
-                where = f"gs://{bucket}/stories/{s['slug']}.looks"
-                sync_looks(root, fetch_story(f"{where}.yaml"), lambda name: FETCH_BYTES(f"{where}/{name}"), log=log)
+                from ..looks import CHOICES, film_folder, sync as sync_looks
+                where = f"gs://{bucket}/{film_folder(s['slug'])}"
+                sync_looks(root, fetch_story(f"{where}/{CHOICES}"),
+                           lambda cid, name: FETCH_BYTES(f"{where}/{cid}/{name}"), log=log)
             from .shorts import MODE_FILE, MODE_SUFFIX
             picked = fetch_story(f"gs://{bucket}/stories/{s['slug']}{MODE_SUFFIX}") if bucket else ""
             if picked.strip():                            # the owner's Shorts choice for this film, as last saved

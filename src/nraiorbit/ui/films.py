@@ -346,6 +346,44 @@ def money(store: Store, slug: str, cfg: dict, row: dict | None, produce: dict | 
             "left": round(float(cap) - spent, 2) if cap else None}
 
 
+MAX_FILES = 12                 # pictures in one upload (a Cloud Run request carries at most 32 MB)
+
+
+def gallery(store: Store, slug: str) -> dict[str, list[dict]]:
+    """The film's character pictures (<slug>/characters/gallery.yaml): character id -> [{file, sha, source, ...}]."""
+    from ..looks import GALLERY, film_folder
+    data = _yaml(store, f"{film_folder(slug)}/{GALLERY}")
+    if not isinstance(data, dict):
+        return {}
+    return {str(cid): [e for e in entries if isinstance(e, dict) and e.get("file")]
+            for cid, entries in data.items() if isinstance(entries, list)}
+
+
+def ai_faces(store: Store, slug: str, cid: str, asset_now: str | None, before: str | None,
+             library_dirs: list[str]) -> list[dict]:
+    """The faces the AI drew for this character in this film: [{aid, rel, made}]. Its casting (now, or before the
+    owner's look) and every library character this film made for it; a look whose face is the owner's picture is
+    the owner's, not the AI's, and is left out."""
+    from ..identity import new_character_id
+    base = new_character_id(cid, slug)
+    cast = [aid for ref in (asset_now, before) if ref and not ref.endswith("@pending")
+            and (aid := ref.rsplit("/", 1)[-1].split("@")[0])]
+    ids = list(dict.fromkeys(cast + [d for d in library_dirs if d == base or d.startswith(base + "_")]))
+    out = []
+    for aid in ids:
+        manifest = _yaml(store, f"library/characters/{aid}/manifest.yaml")
+        manifest = manifest if isinstance(manifest, dict) else {}
+        made = manifest.get("made_for") if isinstance(manifest.get("made_for"), dict) else {}
+        if aid not in cast and (made.get("film") != slug or made.get("character") != cid):
+            continue                                      # a name alike, of another film (or another character)
+        rel = f"library/characters/{aid}/refs/face/01_front.png"
+        if manifest.get("owner_picture") or not store.exists(rel):
+            continue
+        out.append({"aid": aid, "rel": rel, "made": "AI, from your build and notes" if manifest.get("owner_look")
+                    else "AI"})
+    return out
+
+
 def looks_state(store: Store, slug: str, row: dict | None, cfg: dict, has_characters: bool) -> dict:
     """Whether the owner may give characters looks now (looks.py): once the story bible has them, while the cast
     waits for the owner and is not approved (nor being approved); else why not, in the owner's words."""
@@ -813,27 +851,48 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
                                "personality": spec.get("personality"), "arc": spec.get("arc"), "voice": spec.get("voice"),
                                "voice_asset": None, "costumes": None, "images": [], "el_voice": el_voice(cid),
                                "voice_note": voice_note(cid, spec)})
-    from ..looks import BUILDS, RIGHTS, fingerprint, in_film, waiting
-    given = _yaml(store, f"stories/{slug}.looks.yaml")
+    from ..looks import BUILDS, CHOICES, RIGHTS, film_folder, fingerprint, in_film, waiting
+    folder = film_folder(slug)
+    given = _yaml(store, f"{folder}/{CHOICES}")
     given = given if isinstance(given, dict) else {}
     taken = _json(store, f"{slug}/reports/looks.json") or {}
     tried = _json(store, f"{slug}/reports/looks_waiting.json") or {}
     locked = cast.get("characters") if isinstance(cast.get("characters"), dict) else {}
+    pictures = gallery(store, slug)
+    state_now = looks_state(store, slug, row, cfg, bool(names))
+    library_dirs = store.dirs("library/characters/") if cast_cards and state_now["open"] else []
     for card in cast_cards:                               # the owner's look for each character, and whether it is in
-        look = given.get(card["id"]) if isinstance(given.get(card["id"]), dict) else None
+        cid = card["id"]
+        look = given.get(cid) if isinstance(given.get(cid), dict) else None
+        final = look.get("image") if look and not look.get("removed") else None
         if look and not look.get("removed"):
-            stuck = tried.get(card["id"]) if isinstance(tried.get(card["id"]), dict) else {}
+            stuck = tried.get(cid) if isinstance(tried.get(cid), dict) else {}
             card["look"] = {"build": BUILDS.get(look.get("build") or "", ("",))[0], "build_key": look.get("build") or "",
                             "notes": look.get("notes") or "",
-                            "picture": img(f"stories/{slug}.looks/{look['image']}") if look.get("image") else None,
-                            "taken": in_film(look, taken.get(card["id"]) or {},
-                                             (locked.get(card["id"]) or {}).get("character_asset")),
+                            "picture": img(f"{folder}/{cid}/{final}") if final else None,
+                            "taken": in_film(look, taken.get(cid) or {}, (locked.get(cid) or {}).get("character_asset")),
                             "stuck": stuck.get("why") if stuck.get("fp") == fingerprint(look) else None}
-        elif look and card["id"] in taken:
+        elif look and cid in taken:
             card["look"] = {"removing": True}
-    looks = {**looks_state(store, slug, row, cfg, bool(names)),
+        # the gallery: every picture the owner gave, then the faces the AI drew (one already copied in shows once)
+        theirs = pictures.get(cid, [])
+        copied = {e.get("from") for e in theirs if e.get("from")}
+        now = (locked.get(cid) or {}).get("character_asset") or ""
+        card["gallery"] = [{"pick": e["file"], "url": img(f"{folder}/{cid}/{e['file']}"),
+                            "source": "AI face you kept" if e.get("source") == "ai" else "Yours",
+                            "at": e.get("at"), "final": e["file"] == final, "removable": e["file"] != final}
+                           for e in theirs] + [
+            {"pick": f"ai:{f['aid']}", "url": img(f["rel"]), "source": f["made"], "at": None, "final": False,
+             "current": (not look or bool(look.get("removed"))) and now.rsplit("/", 1)[-1].split("@")[0] == f["aid"],
+             "removable": False}
+            for f in (ai_faces(store, slug, cid, now, ((taken.get(cid) or {}).get("before") or {}).get(
+                "character_asset"), library_dirs) if state_now["open"] else [])   # chosen only while looks are open
+            if f["aid"] not in copied]
+    looks = {**state_now,
              "builds": [(k, label) for k, (label, _) in BUILDS.items()], "rights": list(RIGHTS.items()),
-             "waiting": waiting(given, taken, set(names), locked, tried)}
+             "waiting": waiting(given, taken, set(names), locked, tried),
+             "can_add": bool(names) and row is not None, "max_files": MAX_FILES,
+             "any": bool(given) or any(pictures.values())}
     scene_views = []
     for sc in scenes:
         blocks = []

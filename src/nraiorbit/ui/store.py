@@ -85,14 +85,14 @@ class Store:
     def dirs(self, prefix: str = "") -> list[str]:
         """Immediate sub-folders of `prefix`, as names."""
         if self.is_gs:
-            key = self._key(prefix) if prefix else (self.prefix + "/" if self.prefix else "")
+            key = self._key(prefix.rstrip("/") + "/") if prefix else (self.prefix + "/" if self.prefix else "")
             it = self.bucket.list_blobs(prefix=key, delimiter="/")
             list(it)                                            # the prefixes come with the pages
             return sorted(p[len(key):].rstrip("/") for p in it.prefixes)
         base = self._local(prefix.rstrip("/")) if prefix else self.path
         return sorted(p.name for p in base.iterdir() if p.is_dir()) if base.is_dir() else []
 
-    # ------------------------------------------------------------------ writes (queue sheets and stories only)
+    # ------------------------------------------------------------------ writes (queue sheets, stories, character pictures)
     def write_text(self, rel: str, text: str, content_type: str | None = None) -> None:
         if self.is_gs:
             ct = content_type or mimetypes.guess_type(rel)[0] or "text/plain"
@@ -101,6 +101,17 @@ class Store:
         p = self.path / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(text, encoding="utf-8")
+
+    def delete(self, rel: str) -> None:
+        """Remove one object (the owner's own picture, after they confirmed); a missing one is not an error."""
+        if self.is_gs:
+            from google.api_core.exceptions import NotFound
+            try:
+                self.bucket.blob(self._key(rel)).delete()
+            except NotFound:
+                pass
+            return
+        (self.path / rel).unlink(missing_ok=True)
 
     def write_bytes(self, rel: str, data: bytes, content_type: str) -> None:
         if self.is_gs:

@@ -135,7 +135,7 @@ def test_the_owners_picture_is_the_face_the_cast_step_draws_from(tmp_path):
     png = looks.normalize_picture(buf.getvalue())
     looks.sync(paths.root, yaml.safe_dump({"meera": {"image": "meera_1.png", "image_sha": "s", "rights": "ai",
                                                      "build": "athletic", "notes": "a nose ring"}}),
-               lambda name: png)
+               lambda cid, name: png)
     Pipeline._take_looks(p)
     lock = CastLock.model_validate(yaml.safe_load(paths.lock.read_text()))
     ref = lock.characters["meera"].character_asset
@@ -162,7 +162,7 @@ def test_a_missing_owner_picture_stops_the_cast_and_says_so(tmp_path):
     buf = io.BytesIO()
     Image.new("RGB", (400, 500)).save(buf, format="PNG")
     looks.sync(paths.root, yaml.safe_dump({"meera": {"image": "meera_1.png", "image_sha": "s", "rights": "ai"}}),
-               lambda name: buf.getvalue())
+               lambda cid, name: buf.getvalue())
     Pipeline._take_looks(p)
     ref = CastLock.model_validate(yaml.safe_load(paths.lock.read_text())).characters["meera"].character_asset
     (tmp_path / "library" / "characters" / ref.split("/")[1].split("@")[0] / "refs" / "face" / "01_front.png").unlink()

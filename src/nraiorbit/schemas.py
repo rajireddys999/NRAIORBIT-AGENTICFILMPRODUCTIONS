@@ -396,6 +396,8 @@ class CharacterAsset(AssetBase):
     identity_from: IdentityFrom | None = None
     guard: dict[str, float] = {}
     default_voice: str | None = None
+    private: bool = False               # the owner's look for one film (looks.py): never cast in another
+    owner_picture: bool = False         # its face is the owner's picture: never drawn over
 
 
 class VoiceAsset(AssetBase):

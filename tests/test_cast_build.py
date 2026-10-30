@@ -119,6 +119,58 @@ def test_the_cast_step_builds_new_characters_and_pictures_once(tmp_path):
     assert len(images.prompts) == made
 
 
+def test_the_owners_picture_is_the_face_the_cast_step_draws_from(tmp_path):
+    """A pending character with the owner's picture: the cast step takes the look in (its own library character, the
+    bible's build), then draws only the other angles, from the picture."""
+    import io
+
+    from PIL import Image
+
+    from nraiorbit import looks
+    images = FakeImages()
+    p, paths = cast_step(tmp_path, images, "bhairava_old")
+    p._save = Pipeline._save
+    buf = io.BytesIO()
+    Image.new("RGB", (400, 500), (90, 60, 40)).save(buf, format="PNG")
+    png = looks.normalize_picture(buf.getvalue())
+    looks.sync(paths.root, yaml.safe_dump({"meera": {"image": "meera_1.png", "image_sha": "s", "rights": "ai",
+                                                     "build": "athletic", "notes": "a nose ring"}}),
+               lambda name: png)
+    Pipeline._take_looks(p)
+    lock = CastLock.model_validate(yaml.safe_load(paths.lock.read_text()))
+    ref = lock.characters["meera"].character_asset
+    assert "_look_" in ref
+    bible = StoryBible.model_validate_json(paths.bible.read_text())
+    assert next(c for c in bible.characters if c.id == "meera").physical.build == "athletic"
+    Pipeline._build_cast(p)
+    face = tmp_path / "library" / "characters" / ref.split("/")[1].split("@")[0] / "refs" / "face"
+    assert (face / "01_front.png").read_bytes() == png                    # never redrawn
+    assert (face / "02_three_quarter.png").exists()
+    meera = [t for t in images.prompts if "a nose ring" in t]
+    assert meera and not any("Front-facing head-and-shoulders portrait of an entirely fictional" in t for t in meera)
+
+
+def test_a_missing_owner_picture_stops_the_cast_and_says_so(tmp_path):
+    import io
+
+    from PIL import Image
+
+    from nraiorbit import looks
+    images = FakeImages()
+    p, paths = cast_step(tmp_path, images, "bhairava_old")
+    p._save = Pipeline._save
+    buf = io.BytesIO()
+    Image.new("RGB", (400, 500)).save(buf, format="PNG")
+    looks.sync(paths.root, yaml.safe_dump({"meera": {"image": "meera_1.png", "image_sha": "s", "rights": "ai"}}),
+               lambda name: buf.getvalue())
+    Pipeline._take_looks(p)
+    ref = CastLock.model_validate(yaml.safe_load(paths.lock.read_text())).characters["meera"].character_asset
+    (tmp_path / "library" / "characters" / ref.split("/")[1].split("@")[0] / "refs" / "face" / "01_front.png").unlink()
+    (paths.root / "looks" / "meera_1.png").unlink()
+    with pytest.raises(PipelineBlocked, match="the owner's picture, their face, is missing"):
+        Pipeline._build_cast(p)
+
+
 def test_a_refused_portrait_blocks_with_the_characters_name(tmp_path):
     p, _ = cast_step(tmp_path, FakeImages(refuse="macaque"), "bhairava_old")
     with pytest.raises(PipelineBlocked, match=r"\['chintu'\] have no portrait"):
@@ -129,17 +181,29 @@ def test_the_cast_step_runs_before_the_cast_gate_only_for_films_that_make_pictur
     lock_file = tmp_path / "cast.lock.yaml"
     lock_file.write_text("characters: {}\n")
     calls = []
-    for providers, build, expected in (({"video": "veo"}, True, ["build", "gate"]),
-                                       ({"keyframe": "gemini"}, True, ["build", "gate"]),
-                                       ({"video": "veo"}, False, ["gate"]),           # hand-made: identity build
-                                       ({"video": "mock", "music": "lyria"}, True, ["gate"])):   # no pictures made
+    for providers, build, expected in (({"video": "veo"}, True, ["looks", "build", "gate"]),
+                                       ({"keyframe": "gemini"}, True, ["looks", "build", "gate"]),
+                                       ({"video": "veo"}, False, ["looks", "gate"]),   # hand-made: identity build
+                                       ({"video": "mock", "music": "lyria"}, True, ["looks", "gate"])):   # no pictures
         calls.clear()
-        p = SimpleNamespace(p=SimpleNamespace(lock=lock_file), cfg={"providers": providers,
-                                                                     "cast": {"build_identity": build}},
+        p = SimpleNamespace(p=SimpleNamespace(lock=lock_file, reviews=tmp_path / "reviews"),
+                            cfg={"providers": providers, "cast": {"build_identity": build}},
                             _animatic=lambda: False, _build_cast=lambda: calls.append("build"),
+                            _take_looks=lambda: calls.append("looks"),
                             gate=lambda g: calls.append("gate"), _lock=lambda: CastLock(characters={}))
         Pipeline._cast(p)
         assert calls == expected, providers
+    # the owner's looks are taken only while the cast waits for them: not once approved, nor when it approves itself
+    (tmp_path / "reviews").mkdir()
+    (tmp_path / "reviews" / "cast.approved").write_text("ok")
+    calls.clear()
+    Pipeline._cast(p)
+    assert calls == ["gate"]
+    (tmp_path / "reviews" / "cast.approved").unlink()
+    p.cfg["review_gates"] = {"cast": {"auto_approve": True}}
+    calls.clear()
+    Pipeline._cast(p)
+    assert calls == ["gate"]
 
 
 

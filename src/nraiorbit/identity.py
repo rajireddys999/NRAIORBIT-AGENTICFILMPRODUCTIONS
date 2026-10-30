@@ -37,27 +37,37 @@ def is_animal(spec: CharacterSpec) -> bool:
     return marked_animal(spec) or animal_physical(spec.physical)
 
 
-def portrait_prompt(spec: CharacterSpec, era_region: str) -> str:
+def _owner(notes: str) -> str:
+    """The owner's own words for a character (looks.py), after the description."""
+    return f" As the film's owner describes them: {notes.strip().rstrip('.')}." if notes and notes.strip() else ""
+
+
+def portrait_prompt(spec: CharacterSpec, era_region: str, notes: str = "") -> str:
     ph = spec.physical
     marks = "" if ph.marks.lower() == "none" else f", {ph.marks}"
     if is_animal(spec):
         return (f"Front-facing head-and-shoulders photograph of an entirely fictional {ph.age}-year-old {ph.gender} "
-                f"animal from {era_region}: {ph.build}, {ph.skin_tone}, {ph.face}, {ph.hair}{marks}. Calm, looking "
-                f"into the camera. {spec.costume_baseline}. {ANIMAL_STUDIO}")
+                f"animal from {era_region}: {ph.build}, {ph.skin_tone}, {ph.face}, {ph.hair}{marks}.{_owner(notes)} "
+                f"Calm, looking into the camera. {spec.costume_baseline}. {ANIMAL_STUDIO}")
     return (f"Front-facing head-and-shoulders portrait of an entirely fictional {ph.age}-year-old Telugu {ph.gender} "
-            f"from {era_region}: {ph.build} build, {ph.skin_tone} skin, {ph.face}, {ph.hair}{marks}. "
+            f"from {era_region}: {ph.build} build, {ph.skin_tone} skin, {ph.face}, {ph.hair}{marks}.{_owner(notes)} "
             f"Neutral expression, looking into the camera. Wearing {spec.costume_baseline}. {STUDIO} "
             "Must not resemble any real actor or public figure.")
 
 
-def derived_portrait_prompt(spec: CharacterSpec, era_region: str, change: str) -> str:
+def derived_portrait_prompt(spec: CharacterSpec, era_region: str, change: str, notes: str = "") -> str:
     """Front portrait drawn from another character's portrait (the reference image): same person or a close family
     resemblance, with the manifest's change. The description's face details are left out: the reference is the face."""
     ph = spec.physical
+    if is_animal(spec):
+        return (f"Front-facing head-and-shoulders photograph of the same animal as in the reference image, but "
+                f"{change.strip().rstrip('.')}. An entirely fictional {ph.age}-year-old {ph.gender} animal from "
+                f"{era_region}, {ph.build}.{_owner(notes)} Calm, looking into the camera. {spec.costume_baseline}. "
+                f"{ANIMAL_STUDIO}")
     return (f"Front-facing head-and-shoulders portrait of the same person, or a close family resemblance, as in the "
             f"reference image, but {change.strip().rstrip('.')}. An entirely fictional {ph.age}-year-old Telugu "
-            f"{ph.gender} from {era_region}, {ph.build} build. Neutral expression, looking into the camera. "
-            f"Wearing {spec.costume_baseline}. {STUDIO} Must not resemble any real actor or public figure.")
+            f"{ph.gender} from {era_region}, {ph.build} build.{_owner(notes)} Neutral expression, looking into the "
+            f"camera. Wearing {spec.costume_baseline}. {STUDIO} Must not resemble any real actor or public figure.")
 
 
 @dataclass
@@ -151,8 +161,12 @@ def images_to_make(jobs: list[IdentityJob], force: bool = False) -> list[Path]:
 
 
 def build_identity_pack(bible: StoryBible, lock: CastLock, library: AssetRegistry, images: GeminiImages,
-                        force: bool = False, log=print, only: list[str] | None = None) -> dict[str, list[Path]]:
+                        force: bool = False, log=print, only: list[str] | None = None,
+                        notes: dict[str, str] | None = None) -> dict[str, list[Path]]:
+    """`notes`: character id -> the owner's words for its pictures (looks.owner_words): in its portraits, and the
+    build named in its full-body pictures."""
     made: dict[str, list[Path]] = {}
+    notes = notes or {}
 
     def make(prompt: str, out: Path, **kw) -> bool:
         try:
@@ -167,15 +181,19 @@ def build_identity_pack(bible: StoryBible, lock: CastLock, library: AssetRegistr
         out: list[Path] = []
         who, studio = ("animal", ANIMAL_STUDIO) if is_animal(spec) else ("person", STUDIO)
 
-        if force or not front.exists():
+        if getattr(job.asset, "owner_picture", False):
+            if not front.exists():                       # the owner's picture is the face: never drawn over
+                log(f"  {spec.id}: the owner's picture is missing from {front}; give it again in the control room")
+                continue
+        elif force or not front.exists():
             if job.reference is None:
-                if make(portrait_prompt(spec, bible.era_and_region), front, aspect_ratio="3:4",
+                if make(portrait_prompt(spec, bible.era_and_region, notes.get(spec.id, "")), front, aspect_ratio="3:4",
                         item=f"identity {spec.id} front"):
                     out.append(front)
             elif not job.reference.exists():
                 log(f"  {spec.id}: no front portrait of {job.reference_asset} to draw from ({job.reference}); "
                     f"build that character first")
-            elif make(derived_portrait_prompt(spec, bible.era_and_region, job.change or ""), front,
+            elif make(derived_portrait_prompt(spec, bible.era_and_region, job.change or "", notes.get(spec.id, "")), front,
                       refs=[job.reference], aspect_ratio="3:4", item=f"identity {spec.id} front"):
                 out.append(front)
         if not front.exists():
@@ -188,7 +206,8 @@ def build_identity_pack(bible: StoryBible, lock: CastLock, library: AssetRegistr
         for costume_id, description, img in job.costumes:
             if (force or not img.exists()) and make(
                     f"The same {who} as in the reference image, identical face, build and skin tone. "
-                    f"Full-body photograph, standing naturally, wearing {description}. {studio}",
+                    f"Full-body photograph, standing naturally, wearing {description}."
+                    f"{_owner(notes[spec.id]) if spec.id in notes else ''} {studio}",
                     img, refs=[front], aspect_ratio="2:3", item=f"identity {spec.id} {costume_id}"):
                 out.append(img)
         made[spec.id] = out

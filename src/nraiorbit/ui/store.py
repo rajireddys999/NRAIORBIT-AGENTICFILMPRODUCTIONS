@@ -102,6 +102,14 @@ class Store:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(text, encoding="utf-8")
 
+    def write_bytes(self, rel: str, data: bytes, content_type: str) -> None:
+        if self.is_gs:
+            self.bucket.blob(self._key(rel)).upload_from_string(data, content_type=content_type)
+            return
+        p = self.path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+
     def update_text(self, rel: str, change, content_type: str | None = None, attempts: int = 6) -> str:
         """Read, change, write under a precondition: on the bucket the write lands only if nobody wrote the object
         since it was read (its generation), else the change is redone on the new text, so a save here and a tick's

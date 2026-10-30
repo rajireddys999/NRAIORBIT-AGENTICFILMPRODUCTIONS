@@ -451,6 +451,22 @@ def voices_uri(story_uri: str) -> str:
 VOICE_ID = re.compile(r"^[A-Za-z0-9]{8,64}$")
 
 
+def _fetch_bytes(uri: str) -> bytes | None:
+    """The bytes at a local path or gs:// URI (an owner's picture), None when there are none or they cannot be read."""
+    if uri.startswith("gs://"):
+        from ..release import gcs
+        try:
+            bucket, key = gcs._split(uri)
+            return gcs.client().bucket(bucket).blob(key).download_as_bytes()
+        except Exception:
+            return None
+    p = Path(uri)
+    return p.read_bytes() if p.is_file() else None
+
+
+FETCH_BYTES = _fetch_bytes
+
+
 def apply_voices(root: Path, text: str) -> bool:
     """The owner's voices into the project's voice.cast: they win over the runner's picks and over what was there.
     Only character: voice-id pairs that look like ElevenLabs ids are taken; True when something changed."""
@@ -699,6 +715,10 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
                 chosen = fetch_story(voices_uri(s["story_uri"]))                # the row's story
             if chosen.strip():
                 apply_voices(root, chosen)                # the owner's voices win, every tick
+            if bucket:                                    # the owner's looks for characters, as last saved (looks.py)
+                from ..looks import sync as sync_looks
+                where = f"gs://{bucket}/stories/{s['slug']}.looks"
+                sync_looks(root, fetch_story(f"{where}.yaml"), lambda name: FETCH_BYTES(f"{where}/{name}"), log=log)
             from .shorts import MODE_FILE, MODE_SUFFIX
             picked = fetch_story(f"gs://{bucket}/stories/{s['slug']}{MODE_SUFFIX}") if bucket else ""
             if picked.strip():                            # the owner's Shorts choice for this film, as last saved

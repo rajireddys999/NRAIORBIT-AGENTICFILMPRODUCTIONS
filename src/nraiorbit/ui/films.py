@@ -50,7 +50,8 @@ GATE_HELP = {
                 "Read the outline"),
     "scenes": ("Approve the scenes and dialogue", "What every character says, scene by scene.", "#scenes",
                "Read the scenes"),
-    "cast": ("Approve the cast", "Who plays each character: their look and their voice.", "#cast", "See the cast"),
+    "cast": ("Approve the cast", "Who plays each character: their look and their voice. Approve as it is, or first "
+             "give a character your own picture, body build or notes below.", "#cast", "See the cast"),
     "shots": ("Approve the shot lists", "How every scene is filmed, shot by shot.", "#shots", "See the shot lists"),
     "cost": ("Approve the cost", "What the paid work (picture, voices, music, lip-sync) will cost, against your cap. "
              "Nothing is paid for before you approve.", "#money", "See the estimate"),
@@ -328,6 +329,23 @@ def money(store: Store, slug: str, cfg: dict, row: dict | None, produce: dict | 
             "rows": costs,
             "estimate": est if isinstance(est, dict) else None,
             "left": round(float(cap) - spent, 2) if cap else None}
+
+
+def looks_state(store: Store, slug: str, row: dict | None, cfg: dict, has_characters: bool) -> dict:
+    """Whether the owner may give characters looks now (looks.py): once the story bible has them, while the cast
+    waits for the owner and is not approved (nor being approved); else why not, in the owner's words."""
+    from ..looks import cast_gate_waits
+    marks = {n.rsplit("/", 1)[-1] for n in store.list(f"{slug}/reviews/")}
+    approved = "cast.approved" in marks or ((row or {}).get("state") == "approved" and "cast.pending" in marks)
+    auto = "auto" in ((row or {}).get("gates"), (cfg.get("policy") or {}).get("gates"))
+    waits = cast_gate_waits(cfg) and not auto
+    why = ("" if not has_characters else
+           "Only films in the queue take looks: the runner brings them in." if row is None else
+           "The cast is approved, so its looks are fixed. To change one, send the film back to Cast: its stills and "
+           "clips are made again." if approved else
+           "This film approves its steps by itself (gates: auto), so it takes no looks; set it to ask to give one."
+           if not waits else "")
+    return {"open": has_characters and row is not None and waits and not approved, "why_closed": why}
 
 
 def pending_gates(store: Store, slug: str, produce: dict | None, row: dict | None) -> list[str]:
@@ -780,6 +798,27 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
                                "personality": spec.get("personality"), "arc": spec.get("arc"), "voice": spec.get("voice"),
                                "voice_asset": None, "costumes": None, "images": [], "el_voice": el_voice(cid),
                                "voice_note": voice_note(cid, spec)})
+    from ..looks import BUILDS, RIGHTS, fingerprint, in_film, waiting
+    given = _yaml(store, f"stories/{slug}.looks.yaml")
+    given = given if isinstance(given, dict) else {}
+    taken = _json(store, f"{slug}/reports/looks.json") or {}
+    tried = _json(store, f"{slug}/reports/looks_waiting.json") or {}
+    locked = cast.get("characters") if isinstance(cast.get("characters"), dict) else {}
+    for card in cast_cards:                               # the owner's look for each character, and whether it is in
+        look = given.get(card["id"]) if isinstance(given.get(card["id"]), dict) else None
+        if look and not look.get("removed"):
+            stuck = tried.get(card["id"]) if isinstance(tried.get(card["id"]), dict) else {}
+            card["look"] = {"build": BUILDS.get(look.get("build") or "", ("",))[0], "build_key": look.get("build") or "",
+                            "notes": look.get("notes") or "",
+                            "picture": img(f"stories/{slug}.looks/{look['image']}") if look.get("image") else None,
+                            "taken": in_film(look, taken.get(card["id"]) or {},
+                                             (locked.get(card["id"]) or {}).get("character_asset")),
+                            "stuck": stuck.get("why") if stuck.get("fp") == fingerprint(look) else None}
+        elif look and card["id"] in taken:
+            card["look"] = {"removing": True}
+    looks = {**looks_state(store, slug, row, cfg, bool(names)),
+             "builds": [(k, label) for k, (label, _) in BUILDS.items()], "rights": list(RIGHTS.items()),
+             "waiting": waiting(given, taken, set(names), locked, tried)}
     scene_views = []
     for sc in scenes:
         blocks = []
@@ -818,7 +857,7 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
             deliver_links.append({"name": name, "url": store.url(key, filename=name) if key else rec.get("url"),
                                   "mb": rec.get("mb")})
     return {
-        "slug": slug, "row": row, "cfg": cfg, "bible": bible, "outline": scenes_out, "cast": cast_cards,
+        "slug": slug, "row": row, "cfg": cfg, "bible": bible, "outline": scenes_out, "cast": cast_cards, "looks": looks,
         "scenes": scene_views, "shots": shot_views, "keyframes": keyframe_cards, "stages": stage, "gates": gates,
         "reject_gate": (next((g for g in gates if g in REJECT_GATES), None) or ("done" if state == "done" else None))
         if "movie.mp4" in media else None,

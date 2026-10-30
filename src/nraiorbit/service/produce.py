@@ -677,16 +677,18 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
             return finish(f"blocked:{str(b)[:120]}")
     report["steps"]["render"] = "done"
 
-    # 3b. reels: 5-second upright clips cut from the film itself for Instagram and YouTube Shorts; nothing is paid,
-    #     and a reel that cannot be made never stops the film
+    # 3b. reels: upright whole moments (5 to 15 s, cut to cut) from the film itself for Instagram and YouTube
+    #     Shorts, as many as the owner asked for; nothing is paid, and a reel that cannot be made never stops the film
     if (pipeline.cfg.get("reels") or {}).get("enabled", True):
         step("reels")
         try:
             from ..post import reels
+            from . import shorts
             r = pipeline.cfg.get("reels") or {}
             report["steps"]["reels"] = reels.make_reels(
-                root, count=int(r.get("count", reels.REEL_COUNT)), length=float(r.get("seconds", reels.REEL_S)),
-                fps=int((pipeline.cfg.get("film") or {}).get("fps", 24)), log=log)
+                root, count=shorts.count(root, pipeline.cfg), shortest=float(r.get("shortest_s", reels.SHORTEST_S)),
+                longest=float(r.get("longest_s", reels.LONGEST_S)),
+                fps=int((pipeline.cfg.get("film") or {}).get("fps", 24)), log=log, cards=pipeline.cfg.get("cards"))
         except Exception as exc:
             report["steps"]["reels"] = f"skipped: {type(exc).__name__}: {str(exc)[:160]}"
 

@@ -1464,10 +1464,11 @@ def _reels(root, n=3):
 
 
 def test_the_film_page_offers_each_reel_to_download_with_its_caption(client, root):
-    assert 'id="reels"' not in client.get("/film/demo").text
+    html = client.get("/film/demo").text                                    # no reels yet: how many, and nothing else
+    assert 'id="reels"' in html and 'action="/film/demo/shorts-count"' in html and "Download short" not in html
     _reels(root)
     html = client.get("/film/demo").text
-    assert 'id="reels"' in html and "Download reel 3" in html and "caption 2" in html and "Copy caption" in html
+    assert 'id="reels"' in html and "Download short 3" in html and "caption 2" in html and "Copy caption" in html
     assert 'href="/file/demo/11_master/reels/reel_1.mp4" download' in html
 
 
@@ -1821,3 +1822,49 @@ def test_looks_are_offered_only_where_the_runner_takes_them(client, root):
     assert not state["open"] and "Only films in the queue" in state["why_closed"]
     assert films.looks_state(Store(str(root)), "demo", {"state": "awaiting:cast", "gates": "ask"},
                              yaml.safe_load((proj / "project" / "pipeline.yaml").read_text()), True)["open"]
+
+
+def test_the_owner_sets_how_many_shorts_a_film_gets(client, root):
+    """One number for Instagram and YouTube alike, kept with the film's Shorts choices; a finished film's shorts are
+    cut again at once (nothing paid), any other film uses it when its shorts are cut."""
+    from urllib.parse import unquote
+    html = client.get("/film/demo").text
+    assert 'name="count"' in html and 'value="3"' in html and 'max="20"' in html
+    r = client.post("/film/demo/shorts-count", data={"count": "25"}, follow_redirects=False)
+    assert "between 1 and 20" in unquote(r.headers["location"])
+    client.post("/film/demo/shorts-mode", data={"mode": "ask"}, follow_redirects=False)
+    r = client.post("/film/demo/shorts-count", data={"count": "8"}, follow_redirects=False)
+    assert "8 shorts" in unquote(r.headers["location"]) and rows(root)[0]["state"] == "awaiting:faces"
+    saved = json.loads((root / "stories" / "demo.shorts-mode.json").read_text())
+    assert saved["count"] == 8 and saved["mode"] == "ask"                    # the other choice is kept
+    client.post("/film/demo/shorts-mode", data={"mode": "auto"}, follow_redirects=False)
+    assert json.loads((root / "stories" / "demo.shorts-mode.json").read_text())["count"] == 8
+    assert 'value="8"' in client.get("/film/demo").text
+    rs = rows(root)
+    rs[0].update(state="done")
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    r = client.post("/film/demo/shorts-count", data={"count": "10"}, follow_redirects=False)
+    assert "cuts them from the finished film" in unquote(r.headers["location"]) and rows(root)[0]["state"] == "retry"
+    assert client.started
+    rs = rows(root)
+    rs[0].update(state="done")                                              # the re-cut made fewer (or none): the
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))   # same number saved again re-cuts
+    r = client.post("/film/demo/shorts-count", data={"count": "10"}, follow_redirects=False)
+    assert "cuts them from the finished film" in unquote(r.headers["location"]) and rows(root)[0]["state"] == "retry"
+    _reels(root)
+    (root / "demo" / "reports" / "youtube_shorts.json").write_text(json.dumps({
+        "error": "YouTube's daily upload limit was reached", "resume_after": "2999-10-31T08:10:00+00:00"}))
+    (root / "stories" / "demo.shorts.json").write_text(json.dumps({"not_before": "2999-10-31T08:10:00+00:00"}))
+    html = client.get("/film/demo").text
+    assert "the rest of the Shorts go up on their own after" in html and "The last Shorts upload stopped" not in html
+    assert "You asked for the Shorts" not in html                           # waiting is not "going up now"
+
+
+def test_the_runner_cuts_as_many_shorts_as_the_owner_asked(tmp_path):
+    from nraiorbit.service import shorts as shorts_mod
+    assert shorts_mod.count(tmp_path, {}) == 3
+    assert shorts_mod.count(tmp_path, {"reels": {"count": 5}}) == 5
+    (tmp_path / shorts_mod.MODE_FILE).write_text(json.dumps({"mode": "auto", "count": 12}))
+    assert shorts_mod.count(tmp_path, {"reels": {"count": 5}}) == 12
+    (tmp_path / shorts_mod.MODE_FILE).write_text(json.dumps({"count": 99}))
+    assert shorts_mod.count(tmp_path, {}) == 20

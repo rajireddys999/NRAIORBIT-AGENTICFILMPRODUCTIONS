@@ -65,9 +65,23 @@ def deliver(project_root: Path, bucket: str | None = None, *, prefix: str = "fin
     trailer = project_root / "11_master" / "trailer.mp4"
     if not master.exists():
         raise FileNotFoundError(f"{master} is missing: run the pipeline to the assemble stage first")
+    out_dir = project_root / "11_master" / "deliver"
+    bucket = bucket if (bucket or not upload) else gcs.default_bucket()
+    from ..post.reels import film_mark
+    cut = {"movie": film_mark(master), "trailer": film_mark(trailer) if trailer.exists() else None, "tag": tag,
+           "parts": parts, "bucket": bucket if upload else None, "prefix": prefix}
+    try:
+        done = json.loads((out_dir / "delivery.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        done = {}
+    if upload and date is None and isinstance(done, dict) and done.get("cut") == cut and done.get("files") and all(
+            r.get("gs") for r in done["files"]):               # this very cut is delivered: fresh links, no upload
+        for rec in done["files"]:
+            remote = rec["gs"].split("/", 3)[3]
+            rec["url"] = gcs.signed_url(bucket, remote, days=days, filename=rec["name"].rsplit("/", 1)[-1])
+        return done["files"]
     date = date or datetime.date.today().isoformat()
     nm = names(title_of(project_root), date, tag)
-    out_dir = project_root / "11_master" / "deliver"
     out_dir.mkdir(parents=True, exist_ok=True)
     small = out_dir / nm["small"]
     if not small.exists():
@@ -81,7 +95,6 @@ def deliver(project_root: Path, bucket: str | None = None, *, prefix: str = "fin
         files.append((dest, f"parts/{dest.name}"))
     records = []
     slug = project_root.name
-    bucket = bucket if (bucket or not upload) else gcs.default_bucket()
     for local, name in files:
         rec = {"local": str(local), "name": name, "mb": round(local.stat().st_size / 1e6, 1)}
         if upload:
@@ -91,7 +104,8 @@ def deliver(project_root: Path, bucket: str | None = None, *, prefix: str = "fin
             rec["url"] = gcs.signed_url(bucket, remote, days=days, filename=name)
             log(f"  {name} ({rec['mb']} MB): {rec['url']}")
         records.append(rec)
-    (out_dir / "delivery.json").write_text(json.dumps({"date": date, "files": records}, indent=1), encoding="utf-8")
+    (out_dir / "delivery.json").write_text(json.dumps({"date": date, "cut": cut, "files": records}, indent=1),
+                                           encoding="utf-8")
     return records
 
 

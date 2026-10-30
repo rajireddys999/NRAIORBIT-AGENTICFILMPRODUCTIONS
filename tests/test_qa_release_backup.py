@@ -92,6 +92,27 @@ def test_deliver_without_upload_writes_the_record(tmp_path):
     assert (root / "11_master" / "deliver" / "delivery.json").exists()
 
 
+def test_the_same_cut_is_delivered_once_whatever_the_day(tmp_path, monkeypatch):
+    """A finished film run again (to cut its shorts) never encodes and uploads its copies again under a new date."""
+    from nraiorbit.release import gcs
+    root = tmp_path / "film"
+    (root / "11_master").mkdir(parents=True)
+    (root / "11_master" / "movie.mp4").write_bytes(b"the film")
+    sent = []
+    monkeypatch.setattr(deliver, "encode_720p", lambda src, out: out.write_bytes(b"small") or out)
+    monkeypatch.setattr(gcs, "upload", lambda local, bucket, name, content_type=None: sent.append(name))
+    monkeypatch.setattr(gcs, "signed_url", lambda bucket, name, days=7, filename=None: f"https://x/{name}")
+    first = deliver.deliver(root, "bkt", date="2026-10-17", log=lambda *_: None)
+    again = deliver.deliver(root, "bkt", log=lambda *_: None)                  # as produce calls it: no date given
+    assert len(sent) == 2 and [r["name"] for r in again] == [r["name"] for r in first]
+    assert again[0]["url"] == "https://x/film/final/film_2026-10-17_1080p.mp4"
+    deliver.deliver(root, "bkt", date="2026-10-30", log=lambda *_: None)    # a date asked for: made under it
+    assert len(sent) == 4
+    (root / "11_master" / "movie.mp4").write_bytes(b"a new cut")                   # a new cut is delivered again
+    deliver.deliver(root, "bkt", log=lambda *_: None)
+    assert len(sent) == 6
+
+
 def _no_client():
     raise RuntimeError("no credentials on this machine")
 

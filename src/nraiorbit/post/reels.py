@@ -4,10 +4,11 @@ Nothing is paid for: each reel is a stretch of 11_master/movie.mp4, picture and 
 stay in sync and no new music is needed), set upright at 1080x1920 over a blurred, enlarged copy of itself, with the
 film's name at the top, the line spoken in it at the bottom (Telugu over English) and the AI-made tag.
 
-Choosing them (plan_reels, pure): a reel holds one whole line, never a line cut off at either end, over real shots
-only (no placeholder), from before the ending (the trailer's SPOILER_CUTOFF); the punchiest lines first, scored as the
-trailer scores its punch line, with the picture's own score. Reels sit apart from each other in the film, and when
-too few lines fit, a stretch of strong picture with no line cut off makes up the number.
+Choosing them (plan_reels, pure): each reel is a whole moment, 5 to 15 seconds from one cut to a later cut of the
+same scene, so it starts and ends where the film itself cuts and no line is cut off at either end; real shots only
+(no placeholder), from before the ending (the trailer's SPOILER_CUTOFF). The punchiest first, scored as the trailer
+scores its punch line, with the picture's own score; one from each scene before a second from any, never overlapping.
+How many: the owner's number for the film (service/shorts.count), else the config's.
 
 Everything the planner reads is backed up (reports/edl.json, the shot lists, the scenes), so a fresh container makes
 them without re-rendering, and they are made again only when the film itself changed (11_master/reels/reels.json).
@@ -23,13 +24,15 @@ from typing import Callable
 from ..schemas import SceneScript, Shot, ShotList, StoryBible
 from .trailer import SPOILER_CUTOFF, TrailerLine, score_line, score_shot
 
-REEL_S = 5.0                 # each reel's length
+SHORTEST_S, LONGEST_S = 5.0, 15.0    # each reel: a whole moment, cut to cut
 REEL_COUNT = 3
+MAX_COUNT = 20               # the most the owner can ask for in one film
+GAP_S = 0.5                  # reels never overlap (nor quite touch) in the film
+PICTURE_ONLY = 0.75          # a moment with no line counts for less than one with a line
+FADE_IN_S, FADE_OUT_S = 0.15, 0.3    # a reel fades in and out: a line inside keeps clear of both
+CARD_CLEAR_S = 0.3           # and a reel keeps this clear of a card laid over the picture (the title, INTERVAL)
+PLAN = 2                     # how reels are chosen: a reel set made another way is made again
 REEL_SIZE = (1080, 1920)     # 9:16, as Instagram and YouTube Shorts take them
-LEAD_MIN_S, LEAD_MAX_S = 0.3, 1.5    # picture before the line starts
-TAIL_MIN_S = 0.3             # and after it ends
-APART_S = 8.0                # reels never closer than this in the film
-STEP_S = 0.1
 TOL_S = 1e-3                 # starts are kept to the millisecond: a line on a frame time is never shut out by it
 FOLDER = "reels"             # under 11_master/
 RECORD = "reels.json"
@@ -68,71 +71,65 @@ def _picture_score(under: list[tuple[dict, float]], plans: dict[str, Shot], role
 
 
 def plan_reels(edl: dict, plans: dict[str, Shot], lines: list[TrailerLine], roles: dict[str, str],
-               count: int = REEL_COUNT, length: float = REEL_S) -> list[dict]:
-    """Up to `count` reels of exactly `length` seconds, best first then in film order: {start_s, duration_s, line_id
-    (None for picture only), scene_id, score}. `edl`: reports/edl.json; `plans`: shot_id -> Shot; `lines`: the
-    film's placed dialogue with what scores it."""
+               count: int = REEL_COUNT, shortest: float = SHORTEST_S, longest: float = LONGEST_S,
+               cards: list[tuple[float, float]] = ()) -> list[dict]:
+    """Up to `count` reels, each a whole moment: from one cut to a later cut of the same scene, `shortest` to
+    `longest` seconds, every line in it whole (none cut off at either end), real shots only, before the ending.
+    The strongest first (one from each scene before a second from any), then in film order: {start_s, duration_s,
+    line_id (its strongest line; None for picture only), scene_id, score, shots}. `edl`: reports/edl.json; `plans`:
+    shot_id -> Shot; `lines`: the film's placed dialogue with what scores it; `cards`: (start, end) of the cards laid
+    over the film's picture (card_spans), which no reel shows."""
     film = float(edl.get("film_seconds") or 0)
-    shots, placed = edl.get("shots") or [], edl.get("dialogue") or []
-    if film < length or not shots:
+    shots = sorted(edl.get("shots") or [], key=lambda s: float(s["start_s"]))
+    placed = edl.get("dialogue") or []
+    if not shots or count < 1:
         return []
-    first_line = min((float(d["start_s"]) for d in placed), default=0.0)
-    lo, hi = max(0.0, first_line - LEAD_MIN_S), SPOILER_CUTOFF * film      # after the title, before the ending
+    hi = SPOILER_CUTOFF * film                            # never the ending
     punch_ids = {b for p in plans.values() if p.punch_dialogue for b in p.block_ids}
-    longest = max((ln.duration_s for ln in lines), default=length) or length
-
-    def usable(a: float) -> list[tuple[dict, float]] | None:
-        b = a + length
-        if a < lo - TOL_S or b > hi + TOL_S or _crossing(a, b, placed):
-            return None
-        under = _shots_under(a, b, shots)
-        if not under or any(not s.get("real", True) for s, _ in under):
-            return None                                   # never a placeholder in a reel
-        return under
-
+    strongest = max((ln.duration_s for ln in lines), default=longest) or longest
     candidates = []
-    for ln in lines:
-        if ln.duration_s > length - LEAD_MIN_S - TAIL_MIN_S:
-            continue
-        lead = min(LEAD_MAX_S, max(LEAD_MIN_S, (length - ln.duration_s) / 2))
-        shifts = sorted({round(x * STEP_S, 3) for x in range(int(-LEAD_MAX_S / STEP_S), int(LEAD_MAX_S / STEP_S) + 1)},
-                        key=abs)                         # the centred window first, then nearer ones
-        for shift in shifts:
-            a = round(ln.film_start_s - lead + shift, 3)
-            if not (LEAD_MIN_S - TOL_S <= ln.film_start_s - a and
-                    a + length - (ln.film_start_s + ln.duration_s) >= TAIL_MIN_S - TOL_S):
-                continue
-            under = usable(a)
-            if under is None:
-                continue
-            score = 0.6 * score_line("punch", ln, roles, punch_ids, film, longest) + 0.4 * _picture_score(
-                under, plans, roles)
-            candidates.append({"start_s": a, "line_id": ln.line_id, "score": round(score, 4),
-                               "scene_id": max(under, key=lambda u: u[1])[0].get("scene_id")})
-            break
-    candidates.sort(key=lambda c: -c["score"])
+    for i, first in enumerate(shots):
+        a = float(first["start_s"])
+        for last in shots[i:]:                            # one cut to a later one, inside the scene
+            if last.get("scene_id") != first.get("scene_id") or not last.get("real", True) \
+                    or not first.get("real", True):
+                break                                     # never a placeholder in a reel
+            b = float(last["start_s"]) + float(last["duration_s"])
+            if b - a > longest + TOL_S or b > hi + TOL_S:
+                break
+            if any(a < e + CARD_CLEAR_S and s - CARD_CLEAR_S < b for s, e in cards):
+                continue                                  # never a card over the picture
+            if b - a < shortest - TOL_S or _crossing(a, b, placed) or any(
+                    a < float(d["start_s"]) + float(d["duration_s"]) and float(d["start_s"]) < b and (
+                        float(d["start_s"]) < a + FADE_IN_S - TOL_S or
+                        float(d["start_s"]) + float(d["duration_s"]) > b - FADE_OUT_S + TOL_S) for d in placed):
+                continue                                  # a line cut off, or under the reel's own fades
+            under = _shots_under(a, b, shots)
+            picture = _picture_score(under, plans, roles)
+            inside = [ln for ln in lines if ln.film_start_s >= a - TOL_S
+                      and ln.film_start_s + ln.duration_s <= b + TOL_S]
+            said = {ln.line_id: score_line("punch", ln, roles, punch_ids, film, strongest) for ln in inside}
+            best = max(said, key=said.get) if said else None
+            score = 0.6 * said[best] + 0.4 * picture if best else PICTURE_ONLY * 0.4 * picture
+            candidates.append({"start_s": round(a, 3), "duration_s": round(b - a, 3), "line_id": best,
+                               "score": round(score, 4), "scene_id": first.get("scene_id"),
+                               "shots": [s["shot_id"] for s, _ in under]})
+    candidates.sort(key=lambda c: (-c["score"], c["duration_s"], c["start_s"]))   # the shorter of equals: room
+    #                                                                                  for as many as asked
     chosen: list[dict] = []
-    for c in candidates:
-        if len(chosen) >= count:
-            break
-        if all(abs(c["start_s"] - k["start_s"]) >= length + APART_S for k in chosen):
-            chosen.append(c)
-    if len(chosen) < count:                               # strong picture, no line cut off, to make up the number
-        pictures = []
-        a = lo
-        while a + length <= hi + 1e-6:
-            under = usable(round(a, 3))
-            if under is not None:
-                pictures.append({"start_s": round(a, 3), "line_id": None,
-                                 "score": round(0.4 * _picture_score(under, plans, roles), 4),
-                                 "scene_id": max(under, key=lambda u: u[1])[0].get("scene_id")})
-            a += 0.5
-        for c in sorted(pictures, key=lambda c: -c["score"]):
+
+    def apart(c: dict) -> bool:
+        return all(c["start_s"] >= k["start_s"] + k["duration_s"] + GAP_S or
+                   k["start_s"] >= c["start_s"] + c["duration_s"] + GAP_S for k in chosen)
+    for one_a_scene in (True, False):                    # spread over the film first, then fill up
+        for c in candidates:
             if len(chosen) >= count:
                 break
-            if all(abs(c["start_s"] - k["start_s"]) >= length + APART_S for k in chosen):
+            if one_a_scene and any(k["scene_id"] == c["scene_id"] for k in chosen):
+                continue
+            if apart(c):
                 chosen.append(c)
-    return [{**c, "duration_s": length} for c in sorted(chosen, key=lambda c: c["start_s"])]
+    return sorted(chosen, key=lambda c: c["start_s"])
 
 
 # ---------------------------------------------------------------------------------------------- the picture
@@ -199,7 +196,7 @@ def cut_reel(source: Path, start_s: float, length: float, overlay: Path, out: Pa
     enlarged copy of itself, the overlay on top, faded in and out; H.264 high / yuv420p, AAC 48 kHz, faststart."""
     from . import ffmpeg
     w, h = REEL_SIZE
-    fade = max(0.0, length - 0.25)
+    fade = max(0.0, length - 0.25)                        # within FADE_OUT_S: the planner keeps lines clear of it
     graph = (f"[0:v]fps={fps},split=2[a][b];"
              f"[a]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},gblur=sigma=28,"
              f"eq=brightness=-0.12[bg];"
@@ -227,6 +224,29 @@ def caption(bible: StoryBible, line_te: str = "", line_en: str = "") -> str:
 
 # ---------------------------------------------------------------------------------------------- the film's reels
 
+def card_spans(root: Path, edl: dict, chosen=None) -> list[tuple[float, float]]:
+    """Where the film's cards lie over its picture (the title over the opening, an INTERVAL), as the cut lays them
+    (pipeline._cards): (start, end) in film seconds. `chosen`: the film's cards setting as the run resolved it; None
+    reads it as the run would (the defaults with the project's own pipeline.yaml over them). The end card comes after
+    the last frame and is no reel's concern."""
+    from .cards import Card, auto_cards
+    if chosen is None:
+        try:
+            from ..config import load_pipeline_config
+            chosen = load_pipeline_config(Path(root)).get("cards")
+        except Exception:
+            return []
+    try:
+        if chosen == "auto":
+            first = min((float(d["start_s"]) for d in edl.get("dialogue") or []), default=None)
+            cards = auto_cards("", "", first)
+        else:
+            cards = [Card.from_config(c, Path(root)) for c in chosen or [] if isinstance(c, dict)]
+    except Exception:
+        return []
+    return [(float(c.at_s), float(c.at_s) + float(c.length_s)) for c in cards if not getattr(c, "after", False)]
+
+
 def film_mark(movie: Path) -> str:
     """The cut a set of reels comes from: a hash of movie.mp4."""
     h = hashlib.sha256()
@@ -236,10 +256,13 @@ def film_mark(movie: Path) -> str:
     return h.hexdigest()[:20]
 
 
-def make_reels(root: Path, count: int = REEL_COUNT, length: float = REEL_S, fps: int = 24,
-               log: Callable[[str], None] = print) -> str:
+def make_reels(root: Path, count: int = REEL_COUNT, shortest: float = SHORTEST_S, longest: float = LONGEST_S,
+               fps: int = 24, log: Callable[[str], None] = print, cards=None) -> str:
     """The film's reels in 11_master/reels/ (reel_1.mp4 ...) with reels.json: where each comes from, its line and a
-    caption. Made again only when movie.mp4 changed. Returns what happened, for the run report."""
+    caption. Made again only when movie.mp4 or the owner's number changed. Returns what happened, for the run
+    report."""
+    count = max(1, min(MAX_COUNT, int(count)))
+    plan = {"v": PLAN, "count": count, "shortest": shortest, "longest": longest}
     root = Path(root)
     movie, edl_path = root / "11_master" / "movie.mp4", root / "reports" / "edl.json"
     folder = root / "11_master" / FOLDER
@@ -250,7 +273,7 @@ def make_reels(root: Path, count: int = REEL_COUNT, length: float = REEL_S, fps:
         before = json.loads((folder / RECORD).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         before = {}
-    if before.get("film") == mark and before.get("reels") and \
+    if before.get("film") == mark and before.get("plan") == plan and before.get("reels") and \
             all((folder / r["file"]).exists() for r in before["reels"]):
         return f"{len(before['reels'])} up to date"
     bible = StoryBible.model_validate_json((root / "01_story_bible.json").read_text(encoding="utf-8"))
@@ -266,23 +289,38 @@ def make_reels(root: Path, count: int = REEL_COUNT, length: float = REEL_S, fps:
     lines = [TrailerLine(d["ref_id"], float(d["start_s"]), float(d["duration_s"]), b.character_id,
                          b.delivery.rasa if b.delivery else "shanta", b.delivery.intensity if b.delivery else 5)
              for d in edl.get("dialogue") or [] if (b := blocks.get(d["ref_id"]))]
-    picked = plan_reels(edl, plans, lines, roles, count=count, length=length)
+    picked = plan_reels(edl, plans, lines, roles, count=count, shortest=shortest, longest=longest,
+                        cards=card_spans(root, edl, cards))
     if not picked:
         return "skipped: no stretch of the film fits a reel"
     import shutil
+
+    from ..service.produce import fingerprint
     work = root / "11_master" / f".{FOLDER}.new"         # cut aside: the reels go in whole, or not at all
     shutil.rmtree(work, ignore_errors=True)
+    # a reel of this very cut, at the same place with the same line, is kept as it is (the same file goes up as a
+    # Short once): only new ones are encoded
+    kept = {(r.get("start_s"), r.get("duration_s"), r.get("line_id")): folder / r["file"]
+            for r in before.get("reels") or [] if before.get("film") == mark and (folder / r.get("file", "")).exists()}
     made = []
     try:
         for n, r in enumerate(picked, 1):
+            a = round(round(r["start_s"] * fps) / fps, 3)   # on the film's own frame grid, where its cuts are
+            length = round(round((r["start_s"] + r["duration_s"]) * fps) / fps - a, 3)
             b = blocks.get(r["line_id"]) if r["line_id"] else None
             te, en = (b.text_te, b.text_en) if b else ("", "")
-            overlay = render_overlay(work / f"reel_{n}.png", bible.title_te, bible.title_en, te, en)
-            out = cut_reel(movie, r["start_s"], r["duration_s"], overlay, work / f"reel_{n}.mp4", fps)
-            overlay.unlink(missing_ok=True)
-            made.append({"file": out.name, "start_s": r["start_s"], "duration_s": r["duration_s"],
-                         "line_id": r["line_id"], "line_te": te, "line_en": en, "scene_id": r["scene_id"],
-                         "caption": caption(bible, te, en)})
+            out = work / f"reel_{n}.mp4"
+            same = kept.get((a, length, r["line_id"]))
+            if same is not None:
+                work.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(same, out)
+            else:
+                overlay = render_overlay(work / f"reel_{n}.png", bible.title_te, bible.title_en, te, en)
+                out = cut_reel(movie, a, length, overlay, out, fps)
+                overlay.unlink(missing_ok=True)
+            made.append({"file": out.name, "start_s": a, "duration_s": length, "line_id": r["line_id"],
+                         "line_te": te, "line_en": en, "scene_id": r["scene_id"], "caption": caption(bible, te, en),
+                         "fp": fingerprint(out)})
             log(f"  reel {n}: {r['start_s']:.1f}-{r['start_s'] + r['duration_s']:.1f} s"
                 + (f", line {r['line_id']}" if r["line_id"] else ", picture only"))
     except Exception:
@@ -296,6 +334,7 @@ def make_reels(root: Path, count: int = REEL_COUNT, length: float = REEL_S, fps:
     for new in work.glob("reel_*.mp4"):
         new.replace(folder / new.name)
     shutil.rmtree(work, ignore_errors=True)
-    (folder / RECORD).write_text(json.dumps({"film": mark, "reels": made}, indent=1, ensure_ascii=False),
-                                 encoding="utf-8")
-    return f"{len(made)} made"
+    (folder / RECORD).write_text(json.dumps({"film": mark, "plan": plan, "reels": made}, indent=1,
+                                            ensure_ascii=False), encoding="utf-8")
+    return f"{len(made)} made" + (f" (the film has room for {len(made)} whole moments, not {count})"
+                                  if len(made) < count else "")

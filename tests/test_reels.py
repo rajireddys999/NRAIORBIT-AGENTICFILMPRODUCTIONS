@@ -1,6 +1,7 @@
-"""Reels and Shorts: 5-second upright clips cut from the finished film itself (nothing paid), each holding one whole
-line over real shots from before the ending, made again only when the film changes; and YouTube Shorts uploaded only
-when the owner asks, once each, apart from the film's own upload."""
+"""Reels and Shorts: upright whole moments cut from the finished film itself (nothing paid), 5 to 15 seconds from
+one cut to a later cut of a scene with no line cut off, over real shots from before the ending, as many as the owner
+asks for, made again only when the film or that number changes; and YouTube Shorts uploaded once each, apart from the
+film's own upload, the rest after YouTube's daily limit resets."""
 
 import json
 import subprocess
@@ -40,26 +41,30 @@ def _film(seconds=60.0, shot_s=5.0, placeholder=(), lines=(), punch=()):
 ROLES = {c.id: c.role for c in BIBLE.characters}
 
 
-def test_each_reel_holds_one_whole_line_over_real_shots_from_before_the_ending():
-    lines = [("b01", 3.0, 2.0), ("b02", 12.4, 2.5), ("b03", 16.0, 3.0), ("b04", 31.0, 2.0), ("b05", 40.0, 2.2),
-             ("b06", 55.0, 2.0)]                                  # b06 is after the spoiler cutoff
+def test_each_reel_is_a_whole_moment_cut_to_cut_with_every_line_whole():
+    lines = [("b01", 3.0, 2.0), ("b02", 12.4, 2.5), ("b03", 16.0, 3.0), ("b04", 31.0, 2.0), ("b05", 40.4, 2.2),
+             ("b06", 55.0, 2.0), ("b07", 24.0, 2.0)]              # b06 is after the spoiler cutoff; b03 crosses 20 s
     edl, plans, placed = _film(lines=lines, placeholder={"sc001_s007"}, punch={"b05"})   # 30-35 s is a placeholder
-    picked = reels.plan_reels(edl, plans, placed, ROLES)
-    assert 1 <= len(picked) <= reels.REEL_COUNT and [p["start_s"] for p in picked] == sorted(p["start_s"] for p in picked)
-    for p in picked:
-        a, b = p["start_s"], p["start_s"] + p["duration_s"]
-        assert p["duration_s"] == reels.REEL_S and b <= SPOILER_CUTOFF * 60 + 1e-6
-        assert not (a < 35.0 and b > 30.0)                                    # never over the placeholder
-        for lid, at, dur in lines:                                            # no line is cut off at either end
-            assert at + dur <= a + 1e-6 or at >= b - 1e-6 or (a <= at and at + dur <= b)
-        if p["line_id"]:
-            mine = next(x for x in lines if x[0] == p["line_id"])
-            assert mine[1] - a >= reels.LEAD_MIN_S - 1e-6 and b - (mine[1] + mine[2]) >= reels.TAIL_MIN_S - 1e-6
-    assert sum(p["line_id"] is not None for p in picked) >= 2
-    assert "b06" not in {p["line_id"] for p in picked} and "b04" not in {p["line_id"] for p in picked}
-    assert "b05" in {p["line_id"] for p in picked}                            # the punch line is always among them
-    starts = [p["start_s"] for p in picked]
-    assert all(b - a >= reels.REEL_S + reels.APART_S for a, b in zip(starts, starts[1:]))
+    cuts = {round(s["start_s"], 3) for s in edl["shots"]} | {round(s["start_s"] + s["duration_s"], 3)
+                                                             for s in edl["shots"]}
+    scene_at = {round(s["start_s"], 3): s["scene_id"] for s in edl["shots"]}
+    for count in (1, 3, 6):
+        picked = reels.plan_reels(edl, plans, placed, ROLES, count=count)
+        assert 1 <= len(picked) <= count and [p["start_s"] for p in picked] == sorted(p["start_s"] for p in picked)
+        for p in picked:
+            a, b = p["start_s"], round(p["start_s"] + p["duration_s"], 3)
+            assert a in cuts and b in cuts                                    # starts and ends where the film cuts
+            assert reels.SHORTEST_S - 1e-6 <= p["duration_s"] <= reels.LONGEST_S + 1e-6
+            assert b <= SPOILER_CUTOFF * 60 + 1e-6 and not (a < 35.0 and b > 30.0)   # no ending, no placeholder
+            assert {scene_at[round(t, 3)] for t in (a, b - 5.0)} == {p["scene_id"]}  # inside one scene
+            for lid, at, dur in lines:                                        # no line is cut off at either end
+                assert at + dur <= a + 1e-6 or at >= b - 1e-6 or (a <= at and at + dur <= b)
+        ends = [(p["start_s"], p["start_s"] + p["duration_s"]) for p in picked]
+        assert all(nxt[0] >= end + reels.GAP_S - 1e-6 for (_, end), nxt in zip(ends, ends[1:]))   # never overlapping
+        assert "b05" in {p["line_id"] for p in picked}                        # the punch line comes first
+        assert not {"b06", "b04"} & {p["line_id"] for p in picked}
+    three = reels.plan_reels(edl, plans, placed, ROLES, count=3)
+    assert len({p["scene_id"] for p in three}) == len(three)                  # spread over the film first
 
 
 def test_with_too_few_lines_strong_picture_makes_up_the_number_and_a_short_film_gets_none():
@@ -117,23 +122,31 @@ def test_reels_are_made_once_per_film_and_again_when_the_film_changes(tmp_path, 
     assert reels.make_reels(root, log=lambda *_: None) == "3 up to date" and len(cut) == 3   # a re-run pays nothing
     (root / "11_master" / "movie.mp4").write_bytes(b"the film, re-cut")
     assert reels.make_reels(root, log=lambda *_: None) == "3 made" and len(cut) == 6
+    said = reels.make_reels(root, count=20, log=lambda *_: None)            # the owner asked for more: cut again
+    record = json.loads((root / "11_master" / "reels" / "reels.json").read_text())
+    kept = {(r["start_s"], r["duration_s"]) for r in record["reels"]} & set(zip(cut[3:6], [5.0] * 3))
+    assert len(cut) == 6 + len(record["reels"]) - len(kept)                 # the ones still chosen are not cut again
+    assert all(r["fp"]["sha256"] for r in record["reels"])
+    assert record["plan"]["count"] == 20 and 3 < len(record["reels"]) < 20
+    assert said == f"{len(record['reels'])} made (the film has room for {len(record['reels'])} whole moments, not 20)"
+    assert reels.make_reels(root, count=20, log=lambda *_: None).endswith("up to date")
 
 
 @pytest.mark.skipif(not ffmpeg.available(), reason="needs ffmpeg")
-def test_a_reel_is_upright_five_seconds_with_the_films_sound_ready_for_instagram(tmp_path):
+def test_a_reel_is_upright_with_the_films_sound_ready_for_instagram(tmp_path):
     src = tmp_path / "film.mp4"
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=24:d=9",
                     "-f", "lavfi", "-i", "sine=frequency=440:d=9", "-c:v", "libx264", "-pix_fmt", "yuv420p",
                     "-c:a", "aac", "-shortest", str(src)], check=True)
     overlay = reels.render_overlay(tmp_path / "o.png", BIBLE.title_te, BIBLE.title_en, "", "I will come")
-    out = reels.cut_reel(src, 2.0, reels.REEL_S, overlay, tmp_path / "reel.mp4", 24)
+    out = reels.cut_reel(src, 2.0, 6.5, overlay, tmp_path / "reel.mp4", 24)
     probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json",
                                        str(out)], capture_output=True, text=True, check=True).stdout)
     video = next(s for s in probe["streams"] if s["codec_type"] == "video")
     audio = next(s for s in probe["streams"] if s["codec_type"] == "audio")
     assert (video["width"], video["height"], video["pix_fmt"]) == (1080, 1920, "yuv420p")
     assert video["codec_name"] == "h264" and audio["codec_name"] == "aac" and audio["sample_rate"] == "48000"
-    assert abs(float(probe["format"]["duration"]) - reels.REEL_S) < 0.1
+    assert abs(float(probe["format"]["duration"]) - 6.5) < 0.1
     data = out.read_bytes()
     assert data.index(b"moov") < data.index(b"mdat")                        # faststart: plays while it loads
 
@@ -209,15 +222,17 @@ def test_the_owners_shorts_go_up_once_each_with_their_metadata_and_the_request_i
         return [{"slug": "rain", "state": "awaiting:publish"}]
     assert shorts.run(cloud, rows, log=lambda *_: None, upload=upload, creds="c") == ["rain"]
     assert "stories/rain.shorts.json" not in cloud.objects and len(sent) == 3
-    assert "reel_1" in kept[1] and "reel_2" in kept[2]                    # each one recorded before the next goes
+    assert [sum(k.startswith("reel_") for k in seen) for seen in kept] == [0, 1, 2]   # each recorded before the next
     m = sent[0]
     assert m["snippet"]["title"].endswith("#Shorts") and len(m["snippet"]["title"]) <= 100
     assert m["status"] == {"privacyStatus": "public", "selfDeclaredMadeForKids": False, "containsSyntheticMedia": True}
     assert "https://youtu.be/FILM1" in m["snippet"]["description"] and reels.AI_TAG in m["snippet"]["description"]
     record = json.loads(cloud.objects["rain/reports/youtube_shorts.json"])
-    assert [record[f"reel_{n}"]["id"] for n in (1, 2, 3)] == ["ID1", "ID2", "ID3"] and record["privacy"] == "public"
-    assert all(record[f"reel_{n}"]["film"] == "x" for n in (1, 2, 3)) and "uploading" not in record
-    assert shorts.current(record, "x").keys() == {"reel_1", "reel_2", "reel_3"} and shorts.current(record, "y") == {}
+    ups = sorted((v for k, v in record.items() if k.startswith("reel_")), key=lambda v: v["reel"])
+    assert [v["id"] for v in ups] == ["ID1", "ID2", "ID3"] and record["privacy"] == "public"
+    assert all(v["film"] == "x" and v["file"]["sha256"] for v in ups) and "uploading" not in record
+    made = json.loads(cloud.objects["rain/11_master/reels/reels.json"])
+    assert shorts.current(record, made).keys() == {1, 2, 3} and shorts.current(record, {**made, "film": "y"}) == {}
     assert all(m["snippet"]["title"].endswith(" #Shorts") for m in sent)
     _ask(cloud)                                                            # asked again: nothing new goes up
     assert shorts.run(cloud, rows, log=lambda *_: None, upload=upload, creds="c") == ["rain"] and len(sent) == 3
@@ -240,12 +255,59 @@ def test_a_request_is_taken_by_one_tick_only_and_waits_while_a_run_works_on_the_
 def test_a_failed_upload_is_written_down_for_the_page_and_the_request_is_not_retried_by_itself(cloud):
     _ask(cloud, privacy="sideways")
 
-    def quota(video, meta, creds):
+    def broken(video, meta, creds):
         assert meta["status"]["privacyStatus"] == "private"                # anything else asked: private
-        raise RuntimeError("quotaExceeded")
-    shorts.run(cloud, lambda: [], log=lambda *_: None, upload=quota, creds="c")
+        raise RuntimeError("backendError")
+    shorts.run(cloud, lambda: [], log=lambda *_: None, upload=broken, creds="c")
     record = json.loads(cloud.objects["rain/reports/youtube_shorts.json"])
-    assert "quotaExceeded" in record["error"] and "stories/rain.shorts.json" not in cloud.objects
+    assert "backendError" in record["error"] and "stories/rain.shorts.json" not in cloud.objects
+
+
+def test_youtubes_daily_limit_puts_the_rest_off_until_it_resets(cloud):
+    """Many Shorts outrun YouTube's daily upload quota: what went up is kept, and the rest are asked for again for
+    after the reset, which no tick takes before then."""
+    import datetime
+    _ask(cloud)
+    sent = []
+
+    def upload(video, meta, creds):
+        if sent:
+            raise RuntimeError('<HttpError 403 "The request cannot be completed because you have exceeded your '
+                               'quota." reason "quotaExceeded">')
+        sent.append(video.name)
+        return "vid1"
+    shorts.run(cloud, lambda: [], log=lambda *_: None, upload=upload, creds="c")
+    record = json.loads(cloud.objects["rain/reports/youtube_shorts.json"])
+    assert [v["id"] for k, v in record.items() if k.startswith("reel_")] == ["vid1"]
+    assert "daily upload limit" in record["error"] and record["resume_after"]
+    again = json.loads(cloud.objects["stories/rain.shorts.json"])
+    assert again["not_before"] == record["resume_after"] and not shorts.due(again)
+    assert shorts.run(cloud, lambda: [], log=lambda *_: None, upload=upload, creds="c") == []   # not before then
+    later = datetime.datetime.fromisoformat(again["not_before"]) + datetime.timedelta(minutes=1)
+    assert shorts.due(again, later)
+    at = shorts.after_daily_reset(datetime.datetime(2026, 10, 31, 7, 30, tzinfo=datetime.timezone.utc))
+    assert at == "2026-11-01T08:10:00+00:00"                                 # at least an hour away
+    assert shorts.after_daily_reset(datetime.datetime(2026, 10, 31, 2, 0, tzinfo=datetime.timezone.utc)) == \
+        "2026-10-31T08:10:00+00:00"
+
+
+def test_a_short_already_up_under_another_number_is_never_uploaded_twice(cloud):
+    _ask(cloud)
+    from nraiorbit.service.produce import fingerprint
+    made = json.loads(cloud.objects["rain/11_master/reels/reels.json"])
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as d:
+        first = Path(d) / "r.mp4"
+        first.write_bytes(cloud.objects[f"rain/11_master/reels/{made['reels'][0]['file']}"])
+        fp = fingerprint(first)
+    cloud.put("rain/reports/youtube_shorts.json", json.dumps({"reel_9": {"id": "old", "file": fp}}).encode())
+    sent = []
+    shorts.run(cloud, lambda: [], log=lambda *_: None, upload=lambda v, m, c: sent.append(v.name) or f"v{len(sent)}",
+               creds="c")
+    record = json.loads(cloud.objects["rain/reports/youtube_shorts.json"])
+    assert record["reel_9"]["id"] == "old" and len(sent) == len(made["reels"]) - 1    # the old one kept, not resent
+    assert made["reels"][0]["file"] not in sent
 
 
 def test_a_tick_hands_the_shorts_step_the_bucket_and_reads_the_sheet_only_when_asked(tmp_path, monkeypatch):
@@ -383,3 +445,49 @@ def test_the_tick_carries_the_owners_shorts_choice_and_sends_what_the_run_asked_
     out = queue.tick(str(st), str(rf), tmp_path / "projects", bucket="bkt", produce_fn=produce_fn, learn_fn=None,
                      template=template, fetch_story=fetch, log=lambda *_: None)
     assert seen["mode"] == "ask" and calls == ["before", "done"] and out["shorts"] == ["rain"]
+
+
+def test_a_raised_count_uploads_only_the_new_shorts(cloud):
+    """Reels renumbered in film order after the owner asked for more: the ones already up never go up again."""
+    _ask(cloud)
+    sent = []
+    shorts.run(cloud, lambda: [], log=lambda *_: None, upload=lambda v, m, c: sent.append(v.read_bytes()) or
+               f"v{len(sent)}", creds="c")
+    assert len(sent) == 3
+    made = [{"file": f"reel_{n}.mp4", "line_en": f"line {n}"} for n in (1, 2, 3, 4, 5)]
+    for n, body in enumerate((b"reel 1", b"new a", b"reel 2", b"new b", b"reel 3"), 1):
+        cloud.put(f"rain/11_master/reels/reel_{n}.mp4", body)
+    cloud.put("rain/11_master/reels/reels.json", json.dumps({"film": "x", "reels": made}).encode())
+    _ask(cloud)
+    shorts.run(cloud, lambda: [], log=lambda *_: None, upload=lambda v, m, c: sent.append(v.read_bytes()) or
+               f"v{len(sent)}", creds="c")
+    assert sent[3:] == [b"new a", b"new b"]
+    record = json.loads(cloud.objects["rain/reports/youtube_shorts.json"])
+    assert len([k for k in record if k.startswith("reel_")]) == 5                # the old Shorts' ids are all kept
+
+
+def test_reels_keep_clear_of_the_cards_and_of_their_own_fades():
+    lines = [("b01", 6.0, 2.0), ("b02", 21.0, 3.7)]                      # b02 ends 0.3 s before 25: inside its fade
+    edl, plans, placed = _film(lines=lines)
+    picked = reels.plan_reels(edl, plans, placed, ROLES, count=6, cards=[(0.3, 4.3)])
+    assert picked and all(p["start_s"] >= 4.3 + reels.CARD_CLEAR_S for p in picked)
+    for p in picked:
+        b = p["start_s"] + p["duration_s"]
+        for lid, at, dur in lines:
+            if p["start_s"] <= at and at + dur <= b:
+                assert at >= p["start_s"] + reels.FADE_IN_S - 1e-6 and at + dur <= b - reels.FADE_OUT_S + 1e-6
+
+
+def test_the_cards_are_read_as_the_cut_lays_them(tmp_path):
+    import yaml
+    edl = {"dialogue": [{"start_s": 10.0, "duration_s": 2.0}]}
+    (tmp_path / "pipeline.yaml").write_text(yaml.safe_dump({"cards": "auto"}))
+    assert reels.card_spans(tmp_path, edl) == [(0.3, 4.3)]
+    (tmp_path / "pipeline.yaml").write_text(yaml.safe_dump({"cards": [
+        {"kind": "interval", "at_s": 261.0, "length_s": 2.0, "text_te": "విరామం", "text_en": "INTERVAL"}]}))
+    assert reels.card_spans(tmp_path, edl) == [(261.0, 263.0)]
+    (tmp_path / "pipeline.yaml").write_text(yaml.safe_dump({"cards": []}))
+    assert reels.card_spans(tmp_path, edl) == []
+    (tmp_path / "pipeline.yaml").write_text(yaml.safe_dump({"film": {"runtime_minutes": 3}}))   # as queued films
+    assert reels.card_spans(tmp_path, edl) == [(0.3, 4.3)]                  # the defaults' cards: auto
+    assert reels.card_spans(tmp_path, edl, "auto") == [(0.3, 4.3)] and reels.card_spans(tmp_path, edl, []) == []

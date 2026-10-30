@@ -843,7 +843,7 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
                            "personality": spec.get("personality"), "arc": spec.get("arc"), "voice": spec.get("voice"),
                            "voice_asset": locked.get("voice_asset"), "costumes": locked.get("costumes"),
                            "images": [img(r) for r in refs[:4]], "el_voice": el_voice(cid),
-                           "voice_note": voice_note(cid, spec)})
+                           "voice_note": voice_note(cid, spec), "_files": set(refs)})
     for cid, spec in names.items():                       # characters not locked yet still show from the bible
         if not any(c["id"] == cid for c in cast_cards):
             cast_cards.append({"id": cid, "name": spec.get("name_en", cid), "name_te": spec.get("name_te"),
@@ -878,9 +878,12 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         theirs = pictures.get(cid, [])
         copied = {e.get("from") for e in theirs if e.get("from")}
         now = (locked.get(cid) or {}).get("character_asset") or ""
+        closed = not state_now["open"]
+        used = bool((card.get("look") or {}).get("taken")) and any(e["file"] == final for e in theirs)
         card["gallery"] = [{"pick": e["file"], "url": img(f"{folder}/{cid}/{e['file']}"),
                             "source": "AI face you kept" if e.get("source") == "ai" else "Yours",
-                            "at": e.get("at"), "final": e["file"] == final, "removable": e["file"] != final}
+                            "at": e.get("at"), "final": e["file"] == final and (used or not closed),
+                            "removable": e["file"] != final}
                            for e in theirs] + [
             {"pick": f"ai:{f['aid']}", "url": img(f["rel"]), "source": f["made"], "at": None, "final": False,
              "current": (not look or bool(look.get("removed"))) and now.rsplit("/", 1)[-1].split("@")[0] == f["aid"],
@@ -888,6 +891,11 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
             for f in (ai_faces(store, slug, cid, now, ((taken.get(cid) or {}).get("before") or {}).get(
                 "character_asset"), library_dirs) if state_now["open"] else [])   # chosen only while looks are open
             if f["aid"] not in copied]
+        if closed and not used and now and not now.endswith("@pending"):
+            rel = f"library/characters/{now.rsplit('/', 1)[-1].split('@')[0]}/refs/face/01_front.png"
+            if rel in card.get("_files", ()):              # faces are fixed: the face in the film, to look at
+                card["gallery"].insert(0, {"pick": None, "url": img(rel), "source": "the face in the film",
+                                           "at": None, "final": True, "removable": False})
     looks = {**state_now,
              "builds": [(k, label) for k, (label, _) in BUILDS.items()], "rights": list(RIGHTS.items()),
              "waiting": waiting(given, taken, set(names), locked, tried),

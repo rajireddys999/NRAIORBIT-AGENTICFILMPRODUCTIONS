@@ -1823,7 +1823,7 @@ def test_the_owner_fills_a_films_gallery_and_chooses_each_characters_final_face(
     rs[0].update(state="awaiting:faces")
     (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
     html = card(client.get("/film/demo").text, "cast")
-    assert "Use as final face" not in html and "Faces are fixed now that the cast is approved" in html
+    assert "Use as final face" not in html and "Faces are fixed for this film" in html
     assert 'action="/film/demo/pictures"' in html
     r = client.post("/film/demo/face", data={"character": hero, "pick": mine["file"]}, follow_redirects=False)
     assert "The cast is approved" in unquote(r.headers["location"])
@@ -1968,3 +1968,23 @@ def test_the_bucket_lists_folders_under_a_prefix_with_or_without_its_slash():
     store._bucket = SimpleNamespace(list_blobs=lambda prefix, delimiter: seen.append(prefix) or Listing())
     assert store.dirs("library/characters") == ["a", "b"] == store.dirs("library/characters/")
     assert seen == ["library/characters/", "library/characters/"]
+
+
+def test_after_the_cast_is_approved_the_gallery_shows_each_characters_face_in_the_film(client, root):
+    """Read-only: the face each character has in the film, marked Final face, with no button to change it."""
+    proj = root / "demo"
+    lock = yaml.safe_load((proj / "project" / "cast.lock.yaml").read_text())["characters"]
+    hero, villain = list(lock)[:2]
+    for cid in (hero, villain):
+        face = root / "library" / "characters" / f"{cid}_x" / "refs" / "face"
+        face.mkdir(parents=True, exist_ok=True)
+        (face / "01_front.png").write_bytes(jpeg())
+    html = card(client.get("/film/demo").text, "cast")
+    assert "Face now" in html and "the face in the film" not in html        # the cast can still change
+    (proj / "reviews" / "cast.approved").write_text("ok")
+    html = card(client.get("/film/demo").text, "cast")
+    gallery = html[html.index("Character gallery"):]
+    assert gallery.count("<b>Final face</b>") == 2 and gallery.count("</b> · the face in the film") == 2
+    assert f"/file/library/characters/{hero}_x/refs/face/01_front.png" in gallery
+    assert "Use as final face" not in gallery and "Remove" not in gallery
+    assert "each character's face in the film is marked Final face" in gallery

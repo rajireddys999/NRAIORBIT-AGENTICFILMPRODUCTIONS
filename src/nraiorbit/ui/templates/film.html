@@ -506,14 +506,20 @@
     {% if f.media['trailer.mp4'] %}<div><h3 style="margin-top:0">Trailer</h3><video controls preload="metadata" src="{{ f.media['trailer.mp4'] }}"></video></div>{% endif %}
   </div>
   {% if not f.media %}<p class="muted">Not assembled yet.</p>{% endif %}
+  {% if f.reels or f.row %}
+  <h3 id="reels">Shorts for Instagram and YouTube</h3>
+  <p class="small muted">Each short is a whole moment from the film itself, 5 to 15 seconds, starting and ending where the film cuts, with no line cut off; its own picture and sound (nothing paid). The same shorts are for Instagram (download them) and YouTube Shorts.</p>
+  {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/shorts-count" style="margin:6px 0 10px">
+    <label class="small">How many shorts? <input type="number" name="count" min="1" max="{{ f.shorts_max }}" value="{{ f.shorts_count }}" required style="width:80px"></label>
+    <button class="quiet sm">Save</button>
+    <span class="tiny dim">{% if f.reels and f.reels_asked == f.shorts_count and f.reels|length < f.shorts_count %}This film had room for {{ f.reels|length }} whole moments before its ending.{% elif f.reels and f.reels_asked != f.shorts_count %}{{ f.reels|length }} made so far; {% if f.state == 'done' %}saving cuts them again from the finished film.{% else %}the new number is used when they are cut again.{% endif %}{% elif f.state == 'done' %}Saving cuts them again from the finished film.{% else %}Cut right after the trailer is approved.{% endif %}</span>
+  </form>{% endif %}
   {% if f.reels %}
-  <h3 id="reels">Reels for Instagram and YouTube Shorts</h3>
-  <p class="small muted">{{ f.reels|length }} upright {{ f.reels[0].duration_s|round|int }}-second clips cut from the film itself, its own picture and sound (nothing paid). Download one, post it as a Reel, and paste its caption.</p>
   <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">{% for r in f.reels %}
     <div>
       <video controls preload="metadata" playsinline src="{{ r.url }}" style="width:100%;aspect-ratio:9/16;background:#000;border-radius:12px"></video>
-      <p class="tiny dim" style="margin:6px 0">{{ r.line_en or 'picture only' }}</p>
-      <a class="btn sm" href="{{ r.download }}" download>Download reel {{ r.n }}</a>
+      <p class="tiny dim" style="margin:6px 0">Short {{ r.n }} · {{ '%.0f'|format(r.duration_s) }} s · {{ r.line_en or 'picture only' }}</p>
+      <a class="btn sm" href="{{ r.download }}" download>Download short {{ r.n }}</a>
       <button type="button" class="btn quiet sm" data-copy="caption-{{ r.n }}">Copy caption</button>
       <textarea id="caption-{{ r.n }}" readonly rows="6" style="min-height:0;margin-top:8px;font-size:12px">{{ r.caption }}</textarea>
     </div>{% endfor %}
@@ -522,6 +528,7 @@
     var t = document.getElementById(b.dataset.copy); t.select();
     (navigator.clipboard ? navigator.clipboard.writeText(t.value) : Promise.reject()).then(function () { b.textContent = "Copied"; },
       function () { document.execCommand("copy"); b.textContent = "Copied"; }); }); });</script>
+  {% endif %}
   {% endif %}
 </div>
 
@@ -563,7 +570,8 @@
   {% if not f.reels %}<p class="small muted">No reels yet: they are cut right after the trailer is approved.</p>{% endif %}
   {% if f.reels %}
   {% for s in f.shorts_up %}<p>Short {{ s.n }}: <a href="https://youtube.com/shorts/{{ s.id }}" target="_blank" rel="noopener">youtube.com/shorts/{{ s.id }}</a>{% if f.shorts.privacy %} <span class="small muted">({{ f.shorts.privacy }})</span>{% endif %}</p>{% endfor %}
-  {% if f.shorts.error %}<p class="small" style="color:var(--warn)">The last Shorts upload stopped: {{ f.shorts.error }}</p>{% endif %}
+  {% if f.shorts.resume_after and f.shorts_waiting %}<p class="small">YouTube's daily upload limit was reached: the rest of the Shorts go up on their own after {{ f.shorts.resume_after|local }}.</p>
+  {% elif f.shorts.error %}<p class="small" style="color:var(--warn)">The last Shorts upload stopped: {{ f.shorts.error }}</p>{% endif %}
   {% if f.shorts_asked %}<p><span class="live-dot" style="margin-right:8px"></span>You asked for the Shorts; the runner uploads them on its next pass (a few minutes, after any film it is busy with). This page refreshes by itself.</p>
   {% elif f.shorts_up|length < f.reels|length %}
     {% if youtube.channel %}

@@ -15,6 +15,7 @@ import yaml
 
 from .. import tools
 from ..service import queue
+from ..post import reels as reels_mod
 from .store import Store
 
 STAGES = [
@@ -104,6 +105,20 @@ def shorts_mode(store: Store, slug: str, cfg: dict) -> str:
         return chosen
     default = ((cfg or {}).get("reels") or {}).get("shorts")
     return default if default in MODES else "auto"
+
+
+def shorts_count(store: Store, slug: str, cfg: dict) -> int:
+    """How many reels the film gets: the owner's number for this film (stories/<slug>.shorts-mode.json), else the
+    film's config."""
+    from ..post.reels import MAX_COUNT, REEL_COUNT
+    from ..service.shorts import MODE_SUFFIX
+    for n in ((_json(store, f"stories/{slug}{MODE_SUFFIX}") or {}).get("count"),
+              ((cfg or {}).get("reels") or {}).get("count"), REEL_COUNT):
+        try:
+            return max(1, min(MAX_COUNT, int(n)))
+        except (TypeError, ValueError):
+            continue
+    return REEL_COUNT
 
 
 def step_of(key: str | None) -> tuple[int, str] | None:
@@ -896,15 +911,18 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         rel = f"{slug}/11_master/{name}"
         if any(n == rel for n in master):
             media[name] = store.url(rel)
-    reels = []                                            # 5-second upright clips (post/reels.py), to download
-    for n, r in enumerate((_json(store, f"{slug}/11_master/reels/reels.json") or {}).get("reels") or [], 1):
+    reels = []                                            # upright whole moments (post/reels.py), to download
+    made_reels = _json(store, f"{slug}/11_master/reels/reels.json") or {}
+    for n, r in enumerate(made_reels.get("reels") or [], 1):
         rel = f"{slug}/11_master/reels/{r.get('file')}"
         if isinstance(r, dict) and rel in master:
             reels.append({**r, "n": n, "url": store.url(rel), "download": store.url(rel, filename=f"{slug}_reel_{n}.mp4")})
     from ..service import shorts as shorts_mod
     shorts = _json(store, f"{slug}/reports/youtube_shorts.json") or {}
-    mine = shorts_mod.current(shorts, (_json(store, f"{slug}/11_master/reels/reels.json") or {}).get("film"))
-    shorts_up = [{"n": r["n"], "id": mine[f"reel_{r['n']}"]["id"]} for r in reels if f"reel_{r['n']}" in mine]
+    mine = shorts_mod.current(shorts, made_reels)
+    shorts_up = [{"n": r["n"], "id": mine[r["n"]]["id"]} for r in reels if r["n"] in mine]
+    asked = _json(store, f"stories/{slug}.shorts.json")
+    shorts_waiting = asked is not None and not shorts_mod.due(asked if isinstance(asked, dict) else {})
     deliver_links = []
     if isinstance(delivery, list):
         for rec in delivery:
@@ -933,8 +951,10 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         "review_queue": review_queue[-30:], "qa_film": qa_film, "qa_md": qa_md,
         "strips": [{"shot_id": n.rsplit("/", 1)[-1].replace("_strip.jpg", ""), "url": img(n)} for n in strips],
         "media": media, "reels": reels, "shorts": shorts, "shorts_up": shorts_up,
-        "shorts_asked": store.exists(f"stories/{slug}.shorts.json") or shorts_mod.uploading(shorts),
-        "shorts_mode": shorts_mode(store, slug, resolved),
+        "shorts_asked": (asked is not None and not shorts_waiting) or shorts_mod.uploading(shorts),
+        "shorts_waiting": shorts_waiting,
+        "shorts_mode": shorts_mode(store, slug, resolved), "shorts_count": shorts_count(store, slug, resolved),
+        "shorts_max": reels_mod.MAX_COUNT, "reels_asked": (made_reels.get("plan") or {}).get("count"),
         "delivery": deliver_links,
         "title": bible.get("title_en") or slug, "title_te": bible.get("title_te"),
         "state": state,

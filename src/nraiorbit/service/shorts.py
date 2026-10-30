@@ -23,8 +23,11 @@ RECORD = "youtube_shorts.json"           # <slug>/reports/
 PRIVACY = ("private", "unlisted", "public")
 BUSY_S = 30 * 60                         # an upload marked longer ago than this was killed: asking again is allowed
 MODES = ("auto", "ask")                  # auto: right after the film's own YouTube upload; ask: only on the button
-MODE_SUFFIX = ".shorts-mode.json"        # stories/<slug>.shorts-mode.json: the owner's choice for one film
-MODE_FILE = "shorts_mode.json"           # the copy the tick puts in the project for the run
+MODE_SUFFIX = ".shorts-mode.json"        # stories/<slug>.shorts-mode.json: the owner's choices for one film (how
+MODE_FILE = "shorts_mode.json"           #   they go up, how many); the copy the tick puts in the project for the run
+DAILY_LIMIT = ("quotaExceeded", "uploadLimitExceeded", "dailyLimitExceeded", "exceeded the number of videos")
+RESET_UTC_HOUR = 8                       # YouTube's daily quota starts again at midnight Pacific time (07:00 or 08:00
+#                                          UTC); the rest of the Shorts go up after this hour
 
 
 def _now() -> str:
@@ -42,32 +45,98 @@ def uploading(record) -> bool:
     return (datetime.datetime.now(datetime.timezone.utc) - t).total_seconds() < BUSY_S
 
 
-def current(record, mark) -> dict[str, dict]:
-    """The record's uploads of this cut's reels ({reel_N: entry}); a re-cut film's old Shorts are not its own."""
+def _uploaded(record) -> dict[str, dict]:
+    """Every Short the record holds, by the content hash of the file that went up."""
     record = record if isinstance(record, dict) else {}
-    return {k: v for k, v in record.items() if k.startswith("reel_") and isinstance(v, dict) and v.get("id")
-            and mark and v.get("film") == mark}
+    return {v["file"]["sha256"]: v for k, v in record.items() if k.startswith("reel_") and isinstance(v, dict)
+            and v.get("id") and isinstance(v.get("file"), dict) and v["file"].get("sha256")}
+
+
+def current(record, made) -> dict[int, dict]:
+    """These very reels' uploads ({reel number: entry}), matched by the file that went up: a re-cut or re-numbered
+    reel set never borrows another reel's Short. Reels cut before their fingerprints were kept (no "fp") match by
+    number within their cut, as they used to."""
+    record = record if isinstance(record, dict) else {}
+    made = made if isinstance(made, dict) else {}
+    by_file, mark, out = _uploaded(record), made.get("film"), {}
+    for n, r in enumerate(made.get("reels") or [], 1):
+        sha = ((r.get("fp") if isinstance(r, dict) else None) or {}).get("sha256")
+        if sha:
+            if sha in by_file:
+                out[n] = by_file[sha]
+            continue
+        v = record.get(f"reel_{n}")
+        v = v if isinstance(v, dict) and v.get("reel") in (None, n) else None
+        v = v or next((e for e in by_file.values() if e.get("reel") == n and e.get("film") == mark), None)
+        if isinstance(v, dict) and v.get("id") and mark and v.get("film") == mark:
+            out[n] = v
+    return out
+
+
+def _choices(root: Path) -> dict:
+    try:
+        data = json.loads((Path(root) / MODE_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def count(root: Path, cfg: dict) -> int:
+    """How many reels the film gets: the owner's number for this film (from the control room), else the config's
+    reels.count; within 1 and post.reels.MAX_COUNT."""
+    from ..post.reels import MAX_COUNT, REEL_COUNT
+    for n in (_choices(root).get("count"), (cfg.get("reels") or {}).get("count"), REEL_COUNT):
+        try:
+            return max(1, min(MAX_COUNT, int(n)))
+        except (TypeError, ValueError):
+            continue
+    return REEL_COUNT
+
+
+def after_daily_reset(now: datetime.datetime | None = None) -> str:
+    """When the rest of the Shorts may go up, once YouTube's daily upload limit was reached: the next RESET_UTC_HOUR
+    (UTC), at least an hour away."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    at = now.replace(hour=RESET_UTC_HOUR, minute=10, second=0, microsecond=0)
+    while at < now + datetime.timedelta(hours=1):
+        at += datetime.timedelta(days=1)
+    return at.isoformat(timespec="seconds")
 
 
 def mode(root: Path, cfg: dict) -> str:
     """How a film's reels go up as Shorts: the owner's choice for this film (shorts_mode.json, from the control
     room), else the config's reels.shorts, else automatic."""
-    try:
-        chosen = json.loads((Path(root) / MODE_FILE).read_text(encoding="utf-8")).get("mode")
-    except (OSError, ValueError, AttributeError):
-        chosen = None
+    chosen = _choices(root).get("mode")
     if chosen in MODES:
         return chosen
     default = (cfg.get("reels") or {}).get("shorts")
     return default if default in MODES else "auto"
 
 
-def request(bucket, slug: str, privacy: str, by: str, film: str | None = None) -> None:
+def request(bucket, slug: str, privacy: str, by: str, film: str | None = None, not_before: str | None = None) -> None:
     """Ask for a film's Shorts, as the control room's button does (stories/<slug>.shorts.json); `film`: the cut the
-    reels must be of (their reels.json mark), or any."""
+    reels must be of (their reels.json mark), or any; `not_before`: no tick takes it earlier (YouTube's daily limit)."""
     bucket.blob(f"{REQUESTS}{slug}{SUFFIX}").upload_from_string(
-        json.dumps({"id": f"{_now()}-auto", "by": by, "at": _now(), "privacy": privacy, "film": film}),
-        content_type="application/json")
+        json.dumps({"id": f"{_now()}-auto", "by": by, "at": _now(), "privacy": privacy, "film": film,
+                    "not_before": not_before}), content_type="application/json")
+
+
+def _parsed(text) -> dict:
+    try:
+        data = json.loads(text or "{}")
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def due(ask: dict, now: datetime.datetime | None = None) -> bool:
+    """Whether a request may be taken now (one waiting for YouTube's daily limit to reset is not, until then)."""
+    try:
+        at = datetime.datetime.fromisoformat(str(ask.get("not_before")))
+    except (ValueError, TypeError):
+        return True
+    at = at if at.tzinfo else at.replace(tzinfo=datetime.timezone.utc)
+    return (now or datetime.datetime.now(datetime.timezone.utc)) >= at
 
 
 def film_privacy(youtube_record) -> str:
@@ -103,7 +172,7 @@ def after_film_upload(root: Path, bucket_name: str | None, cfg: dict) -> str | N
         record = json.loads((Path(root) / "reports" / RECORD).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         record = {}
-    if len(current(record, made.get("film"))) >= len(made["reels"]):
+    if len(current(record, made)) >= len(made["reels"]):
         return "all up already"
     from ..release import gcs
     request(gcs.client().bucket(bucket_name), Path(root).name, privacy, "automatic, after the film's upload",
@@ -167,7 +236,7 @@ def upload_film_shorts(bucket, slug: str, ask: dict, log: Callable[[str], None] 
     """Upload the film's reels that have not gone up yet; returns the record (also in the bucket after each one).
     `upload(video, metadata, creds)` and `creds` default to the YouTube client; tests pass fakes."""
     from ..schemas import StoryBible
-    from ..service.produce import fingerprint, uploaded_already
+    from ..service.produce import fingerprint
     privacy = ask.get("privacy") if ask.get("privacy") in PRIVACY else "private"
 
     def read(name: str):
@@ -179,6 +248,7 @@ def upload_film_shorts(bucket, slug: str, ask: dict, log: Callable[[str], None] 
     record = record if isinstance(record, dict) else {}
     record.update(asked={k: ask.get(k) for k in ("by", "at")}, privacy=privacy)
     record.pop("error", None)
+    record.pop("resume_after", None)
 
     def save():
         bucket.blob(record_name).upload_from_string(json.dumps(record, indent=1, ensure_ascii=False),
@@ -204,21 +274,32 @@ def upload_film_shorts(bucket, slug: str, ask: dict, log: Callable[[str], None] 
                 raise FileNotFoundError("no YouTube token: press Connect YouTube in the control room")
             creds = creds or youtube.credentials(secrets, token, interactive=False)
             upload = upload or (lambda video, meta, c: youtube.upload(video, meta, c))
+        up = _uploaded(record)                            # each Short by the file that went up: never twice
         with tempfile.TemporaryDirectory() as work:
             for n, reel in enumerate(reels, 1):
                 local = Path(work) / reel["file"]
                 from ..release import gcs
                 gcs.download_blob(bucket.blob(f"{slug}/11_master/reels/{reel['file']}"), local)
-                key = f"reel_{n}"
-                if uploaded_already(record, key, local):
-                    record[key]["film"] = mark                # the same file in a new cut is still this one
+                fp = fingerprint(local)
+                if fp["sha256"] in up:
                     continue
                 video_id = upload(local, metadata(bible, reel, privacy, film_id), creds)
-                record[key] = {"id": video_id, "file": fingerprint(local), "at": _now(), "film": mark}
+                up[fp["sha256"]] = record[f"reel_{fp['sha256'][:16]}"] = {
+                    "id": video_id, "file": fp, "at": _now(), "film": mark, "reel": n}
                 save()                                    # each upload is recorded before the next one starts
                 log(f"  Short {n} of {slug}: youtu.be/{video_id} ({privacy})")
     except Exception as exc:
         record["error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
+        if any(k in str(exc) for k in DAILY_LIMIT):         # the rest go up on their own once the limit resets
+            when = after_daily_reset()
+            record["error"] = "YouTube's daily upload limit was reached; the rest go up on their own once it resets"
+            record["resume_after"] = when
+            try:
+                request(bucket, slug, privacy, "automatic, after YouTube's daily limit", film=ask.get("film"),
+                        not_before=when)
+            except Exception as again:                    # nothing waits: the button asks again
+                record.pop("resume_after", None)
+                record["error"] += f"; it could not be asked for again ({type(again).__name__}): press the button"
         log(f"  Shorts of {slug} stopped: {record['error']}")
     record.pop("uploading", None)
     save()
@@ -241,6 +322,9 @@ def run(bucket, rows: Callable[[], list[dict]], log: Callable[[str], None] = pri
             under_way = bucket.get_blob(f"{slug}/reports/{RECORD}")
             if under_way is not None and uploading(json.loads(under_way.download_as_text() or "{}")):
                 continue                                  # another tick is uploading them now
+            waiting = bucket.get_blob(f"{REQUESTS}{slug}{SUFFIX}")
+            if waiting is not None and not due(_parsed(waiting.download_as_text())):
+                continue                                  # waiting for YouTube's daily limit to reset
             ask = take(bucket, slug)
             if ask is None:
                 continue

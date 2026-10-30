@@ -34,7 +34,7 @@ cards: auto                        # the film's name over its opening (before th
 # changes. The owner downloads them from the film page for Instagram. shorts: auto puts them on YouTube as Shorts
 # right after the film's own upload (same visibility, under the owner's approval of that upload); ask waits for the
 # button in the YouTube card. The control room can set either per film.
-reels: {enabled: true, count: 3, seconds: 5, shorts: auto}
+reels: {enabled: true, count: 3, shortest_s: 5, longest_s: 15, shorts: auto}
 
 # The custom model feed (service/feed.py), in the bucket under custom_model_feed/: the notes Gemini wrote from
 # reference videos, and the studio's own background music (bgm/) and sound effects (sfx/), named by what they are

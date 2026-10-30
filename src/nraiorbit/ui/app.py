@@ -1113,15 +1113,17 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404)
         if mode not in shorts_mod.MODES:
             return back(f"/film/{slug}", "Pick automatic or only when you ask; nothing changed.")
+        keep = films._json(store, f"{shorts_mod.REQUESTS}{slug}{shorts_mod.MODE_SUFFIX}") or {}
         store.write_text(f"{shorts_mod.REQUESTS}{slug}{shorts_mod.MODE_SUFFIX}",
-                         json.dumps({"mode": mode, "by": email, "at": queue.now()}), "application/json")
+                         json.dumps({**({"count": keep["count"]} if "count" in keep else {}), "mode": mode, "by": email,
+                                     "at": queue.now()}), "application/json")
         said = ("they go up on their own right after the film's upload" if mode == "auto"
                 else "only when you press the button")
         uploaded = films._json(store, f"{slug}/reports/youtube.json") or {}
         made = films._json(store, f"{slug}/11_master/reels/reels.json") or {}
         record = films._json(store, f"{slug}/reports/{shorts_mod.RECORD}")
         if (mode == "auto" and isinstance(uploaded.get("film"), dict) and uploaded["film"].get("id")
-                and made.get("reels") and len(shorts_mod.current(record, made.get("film"))) < len(made["reels"])
+                and made.get("reels") and len(shorts_mod.current(record, made)) < len(made["reels"])
                 and not shorts_mod.uploading(record) and not store.exists(f"stories/{slug}{shorts_mod.SUFFIX}")):
             privacy = shorts_mod.film_privacy(uploaded)  # the film is up already: its reels follow it now
             store.write_text(f"{shorts_mod.REQUESTS}{slug}{shorts_mod.SUFFIX}",
@@ -1130,6 +1132,40 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
             return back(f"/film/{slug}", f"YouTube Shorts: {said}. The film is on YouTube already, so its reels "
                                          f"go up now ({privacy}); " + tick_now("they go up in a minute or two"))
         return back(f"/film/{slug}", "YouTube Shorts: " + said)
+
+    @app.post("/film/{slug}/shorts-count")
+    def shorts_count(slug: str, email: str = Depends(guard), count: str = Form("")):
+        """How many shorts (reels) the film gets, for Instagram and YouTube alike: each a whole moment of 5 to 15
+        seconds, cut to cut. Saved with the film's Shorts choices; a finished film's are cut again at once (free)."""
+        from ..post.reels import MAX_COUNT
+        from ..service import shorts as shorts_mod
+        if not SLUG_RE.match(slug):
+            raise HTTPException(404)
+        try:
+            n = int(count)
+        except ValueError:
+            n = 0
+        if not 1 <= n <= MAX_COUNT:
+            return back(f"/film/{slug}", f"Choose between 1 and {MAX_COUNT} shorts; nothing changed.")
+        name = f"{shorts_mod.REQUESTS}{slug}{shorts_mod.MODE_SUFFIX}"
+        keep = films._json(store, name) or {}
+        row = next((r for r in load_rows(store, STORIES, queue.STORY_COLUMNS) if r["slug"] == slug), None)
+        cut_for = ((films._json(store, f"{slug}/11_master/reels/reels.json") or {}).get("plan") or {}).get("count")
+        if keep.get("count") == n and not (row is not None and row["state"] == "done" and cut_for != n):
+            return back(f"/film/{slug}", f"The film already gets {n} shorts; nothing changed.")
+        store.write_text(name, json.dumps({**{k: v for k, v in keep.items() if k == "mode"}, "count": n, "by": email,
+                                           "at": queue.now()}), "application/json")
+        if row is not None and row["state"] == "done":   # the film is finished: its shorts are cut again now
+            def change(r: dict):
+                if r["state"] != "done":
+                    return False
+                r.update(state="retry", note=f"{n} shorts asked for: cut again from the finished film",
+                         updated=queue.now())
+            edit_row(store, slug, change)
+            return back(f"/film/{slug}", f"{n} shorts; " + tick_now(
+                "the runner cuts them from the finished film (nothing paid) and keeps everything else as it is"))
+        return back(f"/film/{slug}", f"{n} shorts; they are cut when the film's shorts are made (right after the "
+                                     "trailer is approved), or again on the film's next run")
 
     @app.post("/film/{slug}/reject")
     def reject(slug: str, email: str = Depends(guard), gate: str = Form(""), notes: str = Form("")):

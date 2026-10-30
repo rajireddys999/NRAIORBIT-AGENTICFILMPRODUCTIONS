@@ -1711,3 +1711,113 @@ def test_the_starter_pack_is_never_asked_for_twice_and_a_partial_one_offers_only
     left = round((n - 1) * 0.03, 2)
     assert f"Make the {n - 1} missing starter sound effects · about ${left:.2f}" in html
     assert "The starter pack: 1 sound effects for $0.03" in html
+
+
+def test_the_owner_gives_a_character_a_look_until_the_cast_is_approved(client, root):
+    """At the cast gate: a picture (with whose it is), a body build and notes for one character, saved to the bucket
+    for the runner; the cast is drawn again at once and waits again. All optional; refused once the cast is approved."""
+    from urllib.parse import unquote
+
+    from PIL import Image
+    proj = root / "demo"
+    rs = rows(root)
+    rs[0].update(state="awaiting:cast")
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    (proj / "reviews" / "cast.pending").write_text("x")
+    hero = next(iter(yaml.safe_load((proj / "project" / "cast.lock.yaml").read_text())["characters"]))
+    html = card(client.get("/film/demo").text, "cast")
+    assert 'action="/film/demo/look"' in html and 'enctype="multipart/form-data"' in html
+    assert "Leave this alone and the AI casts and draws every character as it does now" in html
+    assert "Very muscular (bodybuilder)" in html and "AI-made" in html
+    buf = io.BytesIO()
+    Image.new("RGB", (500, 640), (200, 150, 120)).save(buf, format="JPEG")
+    # a picture without saying whose it is: refused
+    r = client.post("/film/demo/look", data={"character": hero, "build": "muscular"},
+                    files={"picture": ("me.jpg", buf.getvalue(), "image/jpeg")}, follow_redirects=False)
+    assert "Say whose picture it is" in unquote(r.headers["location"])
+    assert not (root / "stories" / "demo.looks.yaml").exists()
+    r = client.post("/film/demo/look", data={"character": hero, "build": "very_muscular", "rights": "ai",
+                                             "notes": "  a thick moustache  ", "notes_shown": "1"},
+                    files={"picture": ("me.jpg", buf.getvalue(), "image/jpeg")}, follow_redirects=False)
+    said = unquote(r.headers["location"])
+    assert "look saved" in said and "draws it now" in said and client.started
+    saved = yaml.safe_load((root / "stories" / "demo.looks.yaml").read_text())[hero]
+    assert saved["build"] == "very_muscular" and saved["notes"] == "a thick moustache" and saved["rights"] == "ai"
+    stored = root / "stories" / "demo.looks" / saved["image"]
+    assert Image.open(stored).format == "PNG"
+    assert rows(root)[0]["state"] == "retry"                                  # drawn now, then asked again
+    html = card(client.get("/film/demo").text, "cast")
+    assert "Your look" in html and "waiting to be drawn" in html and "Use the AI's own look" in html
+    # only the build changes: the picture and notes stay
+    rs = rows(root)
+    rs[0].update(state="awaiting:cast")
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    client.post("/film/demo/look", data={"character": hero, "build": "stocky"}, follow_redirects=False)
+    again = yaml.safe_load((root / "stories" / "demo.looks.yaml").read_text())[hero]
+    assert again["build"] == "stocky" and again["image"] == saved["image"] and again["notes"] == "a thick moustache"
+    # approving while the look is not drawn yet: it is drawn first
+    rs = rows(root)
+    rs[0].update(state="awaiting:cast")
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    r = client.post("/film/demo/approve", data={"gate": "cast"}, follow_redirects=False)
+    assert "is drawn first" in unquote(r.headers["location"]) and rows(root)[0]["state"] == "retry"
+    # the runner took it in: approval goes through
+    from nraiorbit import looks as looks_mod
+    (proj / "reports" / "looks.json").write_text(json.dumps({hero: {"fp": looks_mod.fingerprint(again),
+                                                                    "asset_ref": "characters/old@v1"}}))
+    assert "waiting to be drawn" in card(client.get("/film/demo").text, "cast")   # recast: not the one in use
+    lock = yaml.safe_load((proj / "project" / "cast.lock.yaml").read_text())
+    lock["characters"][hero]["character_asset"] = "characters/old@v1"
+    (proj / "project" / "cast.lock.yaml").write_text(yaml.safe_dump(lock))
+    rs = rows(root)
+    rs[0].update(state="awaiting:cast")
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    assert "in the film" in card(client.get("/film/demo").text, "cast")
+    client.post("/film/demo/approve", data={"gate": "cast"}, follow_redirects=False)
+    assert rows(root)[0]["state"] == "approved"
+    # a look the runner could not take: saving the same again tries once more
+    (proj / "reports" / "looks_waiting.json").write_text(json.dumps({hero: {"fp": looks_mod.fingerprint(again),
+                                                                            "why": "its picture could not be read"}}))
+    rs = rows(root)
+    rs[0].update(state="awaiting:cast")
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    r = client.post("/film/demo/look", data={"character": hero}, follow_redirects=False)
+    assert "look saved" in unquote(r.headers["location"]) and rows(root)[0]["state"] == "retry"
+    (proj / "reports" / "looks_waiting.json").write_text("{}")
+    r = client.post("/film/demo/look", data={"character": hero}, follow_redirects=False)
+    assert "Nothing new" in unquote(r.headers["location"])
+    # back to the AI's own look
+    (proj / "reviews" / "cast.approved").unlink(missing_ok=True)
+    rs = rows(root)
+    rs[0].update(state="awaiting:cast")
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    r = client.post("/film/demo/look-remove", data={"character": hero}, follow_redirects=False)
+    assert "goes back to the AI's own look" in unquote(r.headers["location"])
+    assert yaml.safe_load((root / "stories" / "demo.looks.yaml").read_text())[hero]["removed"] is True
+    # once the cast is approved, looks are fixed
+    (proj / "reviews" / "cast.approved").write_text("ok")
+    r = client.post("/film/demo/look", data={"character": hero, "build": "lean"}, follow_redirects=False)
+    assert "The cast is approved" in unquote(r.headers["location"])
+    assert 'action="/film/demo/look"' not in card(client.get("/film/demo").text, "cast")
+    r = client.post("/film/demo/look", data={"character": "nobody", "build": "lean"}, follow_redirects=False)
+    assert "No character 'nobody'" in unquote(r.headers["location"])
+
+
+def test_looks_are_offered_only_where_the_runner_takes_them(client, root):
+    """A film that approves its steps by itself (gates: auto) or that is not in the queue gets no look form."""
+    proj = root / "demo"
+    rs = rows(root)
+    rs[0].update(state="awaiting:cast", gates="auto")
+    (root / "queue" / "stories.csv").write_text(csv_text(rs, queue.STORY_COLUMNS))
+    html = card(client.get("/film/demo").text, "cast")
+    assert 'action="/film/demo/look"' not in html
+    from urllib.parse import unquote
+    hero = next(iter(yaml.safe_load((proj / "project" / "cast.lock.yaml").read_text())["characters"]))
+    r = client.post("/film/demo/look", data={"character": hero, "build": "lean"}, follow_redirects=False)
+    assert "gates: auto" in unquote(r.headers["location"]) and not (root / "stories" / "demo.looks.yaml").exists()
+    from nraiorbit.ui import films
+    from nraiorbit.ui.store import Store
+    state = films.looks_state(Store(str(root)), "demo", None, {}, True)
+    assert not state["open"] and "Only films in the queue" in state["why_closed"]
+    assert films.looks_state(Store(str(root)), "demo", {"state": "awaiting:cast", "gates": "ask"},
+                             yaml.safe_load((proj / "project" / "pipeline.yaml").read_text()), True)["open"]

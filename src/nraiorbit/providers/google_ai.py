@@ -250,15 +250,19 @@ class GeminiImages:
         return out
 
 
-def keyframe_prompt(shot: Shot, base_prompt: str, n_refs_by_char: list[tuple]) -> str:
-    """(name, number of reference images[, is an animal]) per character in frame, in the order of the images."""
+def keyframe_prompt(shot: Shot, base_prompt: str, n_refs_by_char: list[tuple],
+                    owner: dict[str, str] | None = None) -> str:
+    """(name, number of reference images[, is an animal]) per character in frame, in the order of the images.
+    `owner`: name -> the owner's words for that character (looks.owner_words)."""
     who = []
     i = 1
     for name, n, *animal in n_refs_by_char:
         span = f"image {i}" if n == 1 else f"images {i}-{i + n - 1}"
-        who.append(f"{name} is the animal in reference {span}: keep exactly the same face, fur, markings and build"
-                   if animal and animal[0] else
-                   f"{name} is the person in reference {span}: keep exactly the same face, skin tone, hair and build")
+        said = f" ({(owner or {})[name]})" if (owner or {}).get(name) else ""
+        who.append(f"{name} is the animal in reference {span}: keep exactly the same face, fur, markings and "
+                   f"build{said}" if animal and animal[0] else
+                   f"{name} is the person in reference {span}: keep exactly the same face, skin tone, hair and "
+                   f"build{said}")
         i += n
     lead = "; ".join(who)
     return (f"Create one photorealistic 16:9 film still, the first frame of this shot. {lead + '. ' if lead else ''}"
@@ -336,8 +340,12 @@ class VeoVideo:
     def _keyframe(self, shot: Shot, prompt: str, refs: list[tuple[str, list[Path]]], keyframe: Path) -> Path:
         if not keyframe.exists():
             from ..identity import is_animal
+            from ..looks import owner_words
             animals = {c.name_en for c in self.bible.characters if is_animal(c)}
-            self.images.generate(keyframe_prompt(shot, prompt, [(n, len(p), n in animals) for n, p in refs]), keyframe,
+            names = {c.id: c.name_en for c in self.bible.characters}
+            owner = {names.get(cid, cid): words for cid, words in owner_words(self.root).items()}
+            self.images.generate(keyframe_prompt(shot, prompt, [(n, len(p), n in animals) for n, p in refs], owner),
+                                 keyframe,
                                  refs=[p for _, paths in refs for p in paths], item=f"keyframe {shot.shot_id}")
         return keyframe
 

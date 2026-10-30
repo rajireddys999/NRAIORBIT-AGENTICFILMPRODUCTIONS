@@ -104,6 +104,7 @@ class AssetRegistry:
         intensity: int | None = None,
         bpm: int | None = None,
         production_only: bool = False,
+        include_private: bool = True,
         k: int = 5,
     ) -> list[SearchHit]:
         """Score = 0.5 tag overlap + 0.3 rasa match + 0.2 range fit (intensity / bpm).
@@ -117,6 +118,8 @@ class AssetRegistry:
             if not key.startswith(f"{kind}:"):
                 continue
             if production_only and not asset.usable_for_production()[0]:
+                continue
+            if not include_private and getattr(asset, "private", False):   # an owner's look for one film
                 continue
             asset_tags = {t.lower() for t in asset.tags}
             tag_score = len(asset_tags & set(tags)) / len(tags) if tags else 0.0

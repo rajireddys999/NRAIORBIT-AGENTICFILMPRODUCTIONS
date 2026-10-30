@@ -665,6 +665,9 @@ class Pipeline:
                                    encoding="utf-8")
             for cid, entry in lock.characters.items():
                 self.log(f"  {cid} -> {entry.character_asset} / voice {entry.voice_asset}")
+        from .looks import cast_gate_waits
+        if cast_gate_waits(self.cfg) and not (self.p.reviews / "cast.approved").exists():
+            self._take_looks()                            # the owner's pictures, builds and notes, until approved
         prov = self.cfg.get("providers") or {}
         makes_pictures = any(prov.get(k, "mock") not in ("mock", "none") for k in ("keyframe", "video"))
         if makes_pictures and (self.cfg.get("cast") or {}).get("build_identity"):
@@ -678,6 +681,18 @@ class Pipeline:
                 f"characters {pending} need identity packs (briefs in {self.p.briefs}). "
                 "Build the packs, register them in library/, then re-run with --force cast.")
 
+    def _take_looks(self) -> None:
+        """The owner's looks for characters (looks.py, given in the control room) into the bible and the cast lock,
+        before any of the cast's pictures are drawn. A character with no look keeps its casting."""
+        from .looks import take
+        bible = self._load(self.p.bible, StoryBible)
+        bible2, lock, self.library, changed = take(self.p.root, bible, self._lock(), self.library,
+                                                   film=self.p.root.name, log=self.log)
+        if changed:
+            self._save(self.p.bible, bible2)
+            self.p.lock.write_text(yaml.safe_dump(lock.model_dump(), sort_keys=False, allow_unicode=True),
+                                   encoding="utf-8")
+
     def _build_cast(self) -> None:
         """A real film's characters need reference pictures before any video is paid, so faces hold from shot to
         shot. A character no library character fits gets a library entry of its own from the story bible; every cast
@@ -685,16 +700,26 @@ class Pipeline:
         then shows them. Pictures already there are kept: this costs nothing a second time."""
         from .identity import build_identity_pack, images_to_make, plan_identity_pack, register_new_characters
 
+        from .looks import keep_faces
         bible = self._load(self.p.bible, StoryBible)
         lock, self.library, added = register_new_characters(bible, self._lock(), self.library, film=self.p.root.name,
                                                             log=self.log)
+        keep_faces(self.p.root, lock, self.library, log=self.log)
         if added:
             self.p.lock.write_text(yaml.safe_dump(lock.model_dump(), sort_keys=False, allow_unicode=True),
                                    encoding="utf-8")
         if images_to_make(plan_identity_pack(bible, lock, self.library, log=lambda m: None)):
-            build_identity_pack(bible, lock, self.library, self._identity_images(), log=self.log)
-        missing = [job.spec.id for job in plan_identity_pack(bible, lock, self.library, log=lambda m: None)
-                   if not job.front.exists()]
+            from .looks import owner_words
+            build_identity_pack(bible, lock, self.library, self._identity_images(), log=self.log,
+                                notes=owner_words(self.p.root))
+        jobs = [job for job in plan_identity_pack(bible, lock, self.library, log=lambda m: None)
+                if not job.front.exists()]
+        theirs = [job.spec.id for job in jobs if getattr(job.asset, "owner_picture", False)]
+        if theirs:
+            raise PipelineBlocked(f"characters {theirs}: the owner's picture, their face, is missing. Retry; if it "
+                                  "keeps happening, give the picture again in the control room (or send the film back "
+                                  "to Cast once the cast is approved).")
+        missing = [job.spec.id for job in jobs]
         if missing:
             raise PipelineBlocked(f"characters {missing} have no portrait: the image model refused or failed. "
                                   "Soften their description in the story bible, then retry.")

@@ -391,6 +391,30 @@ def test_the_owners_voices_reach_the_film_before_it_runs(tmp_path, fake_bucket):
     assert seen.get("cast") == {"rain_hero": "besideStory01"}
 
 
+def test_the_owners_looks_reach_the_film_before_it_runs(tmp_path, fake_bucket, monkeypatch):
+    """The control room saves the owner's looks to stories/<slug>.looks.yaml and their pictures beside it; every tick
+    copies them into the film's looks/ before produce, so the cast step can take them in."""
+    from pathlib import Path
+    st, rf, template = _queues(tmp_path)
+    asked = []
+    monkeypatch.setattr(queue, "FETCH_BYTES", lambda uri: asked.append(uri) or b"png")
+
+    def fetch(uri):
+        if uri == "gs://b/stories/rain.looks.yaml":
+            return "rain_hero: {image: rain_hero_1.png, build: stocky}\n"
+        p = Path(uri)
+        return p.read_text(encoding="utf-8") if p.exists() else ""
+    seen = {}
+
+    def produce_fn(root, bucket, progress=None):
+        seen["looks"] = sorted(p.name for p in (root / "looks").iterdir())
+        return {"state": "awaiting:story", "steps": {}}
+    queue.tick(st, rf, tmp_path / "projects", bucket="b", produce_fn=produce_fn, learn_fn=None, template=template,
+               fetch_story=fetch, log=lambda *_: None)
+    assert seen["looks"] == ["looks.yaml", "rain_hero_1.png"]
+    assert asked == ["gs://b/stories/rain.looks/rain_hero_1.png"]
+
+
 def test_a_tick_that_raises_still_removes_its_running_record(tmp_path, fake_bucket, monkeypatch):
     """A tick that dies on its way (here the references sheet cannot be written) must not leave its record behind:
     the board would show it live until Cloud Run ends it, and "left behind" for hours after."""

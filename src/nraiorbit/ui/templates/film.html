@@ -352,12 +352,44 @@
 <div class="card" id="cast">
   <div class="section-head"><h2>Cast{{ run_badge('cast', quiet=True) }}</h2>{% if f.cast %}<span class="mono tiny dim">{{ f.cast|selectattr('voice_asset')|list|length }} voices · {{ f.cast|selectattr('images')|list|length }} identity packs</span>{% endif %}</div>
   {{ tools_head('cast') }}
+  {% if f.looks.open and f.cast %}
+  <details id="looks"{% if 'cast' in f.gates %} open{% endif %} style="margin:6px 0 14px">
+    <summary><b>Give a character your own look</b> <span class="small muted">(optional)</span></summary>
+    <p class="small muted" style="max-width:720px">Leave this alone and the AI casts and draws every character as it does now. Or pick a character and give it your picture (it becomes the face: the other angles and every still are drawn from it), how strong a body it has, and notes on how it looks and what you expect. Taken in before you approve the cast: the runner draws that character's other pictures again (a few cents) and the cast waits for you again.</p>
+    <form method="post" action="/film/{{ f.slug }}/look" enctype="multipart/form-data" style="display:grid;gap:10px;max-width:560px">
+      <label class="small">Character
+        <select name="character" id="look-character" required>{% for c in f.cast %}<option value="{{ c.id }}" data-build="{{ c.look.build_key if c.look and c.look.build_key else '' }}" data-notes="{{ c.look.notes if c.look and c.look.notes else '' }}">{{ c.name_te ~ ' · ' if c.name_te else '' }}{{ c.name }}{% if c.physical %} ({{ c.physical.build }}){% endif %}</option>{% endfor %}</select></label>
+      <label class="small">Picture <span class="muted">(optional; JPEG, PNG or WebP, a clear face)</span>
+        <input type="file" name="picture" accept="image/jpeg,image/png,image/webp"></label>
+      <fieldset class="small" style="border:0;padding:0;margin:0">With a picture, say whose it is:
+        {% for k, label in f.looks.rights %}<label style="display:flex;gap:6px;align-items:flex-start;margin-top:4px"><input type="radio" name="rights" value="{{ k }}" style="width:auto">{{ label }}</label>{% endfor %}</fieldset>
+      <label class="small">Body build
+        <select name="build" id="look-build"><option value="">Keep as it is</option><option value="written">As the story says</option>{% for k, label in f.looks.builds %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select></label>
+      <label class="small">How they look, what you expect <span class="muted">(optional)</span>
+        <textarea name="notes" id="look-notes" rows="3" maxlength="600" placeholder="e.g. thick moustache, a scar over the left eyebrow, always in a white panche, broad shoulders like a wrestler"></textarea></label>
+      <input type="hidden" name="notes_shown" id="look-notes-shown" value="">
+      <div class="actions"><button>Save look</button></div>
+    </form>
+    <script>(function () {
+      var who = document.getElementById("look-character"), build = document.getElementById("look-build"),
+          notes = document.getElementById("look-notes"), shown = document.getElementById("look-notes-shown");
+      function fill() { var o = who.options[who.selectedIndex]; build.value = o.dataset.build || "";
+                        notes.value = o.dataset.notes || ""; shown.value = "1"; }
+      who.addEventListener("change", fill); fill();
+    })();</script>
+  </details>
+  {% elif f.looks.why_closed and f.cast|selectattr('look')|list %}<p class="small muted">{{ f.looks.why_closed }}</p>{% endif %}
   <div class="grid g4">
   {% for c in f.cast %}
     <div class="cast-card">
       {% if c.images %}<img class="face" src="{{ c.images[0] }}" alt="{{ c.name }}" loading="lazy">{% else %}<div class="face" style="display:flex;align-items:center;justify-content:center;font-family:var(--serif);font-size:40px;color:var(--gold)">{{ c.name[:1] }}</div>{% endif %}
       <b class="te">{{ c.name_te or c.name }}</b><div class="small">{{ c.name }} · <span class="muted">{{ c.role }}</span></div>
       {% if c.physical %}<div class="small muted">{{ c.physical.gender }}, {{ c.physical.age }}, {{ c.physical.build }}; {{ c.physical.face }}</div>{% endif %}
+      {% if c.look and c.look.removing %}<div class="tiny muted">Going back to the AI's own look at the next run.</div>
+      {% elif c.look %}<div class="small" style="margin-top:4px"><b>Your look</b>{% if c.look.picture %} <img src="{{ c.look.picture }}" alt="your picture of {{ c.name }}" loading="lazy" style="width:36px;height:36px;object-fit:cover;border-radius:50%;vertical-align:middle">{% endif %}{% if c.look.build %} · {{ c.look.build }}{% endif %}{% if c.look.notes %} · <span class="muted">{{ c.look.notes|short(120) }}</span>{% endif %}
+        <span class="badge {{ 'done' if c.look.taken else 'partial' if f.looks.open else 'todo' }}">{{ 'in the film' if c.look.taken else 'waiting to be drawn' if f.looks.open else 'not used in this film' }}</span>
+        {% if c.look.stuck and not c.look.taken and f.looks.open %}<div class="tiny" style="color:var(--warn)">Not taken in: {{ c.look.stuck }}. Save it again to try once more, or use the AI's own look.</div>{% endif %}
+        {% if f.looks.open %}<form method="post" action="/film/{{ f.slug }}/look-remove" class="inline" style="margin-top:4px"><input type="hidden" name="character" value="{{ c.id }}"><button class="sm quiet">Use the AI's own look</button></form>{% endif %}</div>{% endif %}
       {% if c.voice %}<div class="mono tiny cyan">voice · {{ c.voice.pitch }}{% if c.voice_asset %} · {{ c.voice_asset }}{% endif %}</div>{% endif %}
       {% if c.el_voice %}<div class="small">ElevenLabs: <b>{{ c.el_voice.name or c.el_voice.voice_id }}</b> <span class="mono tiny dim">{{ c.el_voice.voice_id }}</span><div class="tiny muted">{{ c.el_voice.source }}{% if c.el_voice.why %}: {{ c.el_voice.why }}{% endif %}{% if c.el_voice.shared %} · shared with another character{% endif %}</div></div>{% endif %}
       {% if c.voice_note %}<div class="tiny" style="color:var(--warn)">{{ c.voice_note }}</div>{% endif %}

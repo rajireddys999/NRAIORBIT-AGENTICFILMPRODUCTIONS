@@ -35,7 +35,7 @@ class CastingAgent(Agent):
         taken: set[str] = set()
         for spec in bible.characters:
             hits = [h for h in library.search("character", tags=_character_query_tags(spec),
-                                              production_only=production_only, k=10)
+                                              production_only=production_only, include_private=False, k=10)
                     if h.asset.id not in taken and getattr(h.asset, "role", None) in (spec.role, None)]
             if hits and hits[0].score >= CAST_MATCH_THRESHOLD:
                 asset = hits[0].asset

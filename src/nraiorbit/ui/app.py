@@ -12,10 +12,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from .. import looks as looks_mod
 from ..service import feed as feed_mod
 from ..service import queue
 from . import films
@@ -652,6 +653,8 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
             raise HTTPException(400, f"no gate called {gate[:40]!r}; one of {', '.join(queue.GATES)}")
         refused: dict = {}
 
+        drawn_first = looks_waiting(slug) if gate == "cast" else []
+
         def change(row: dict):
             if row["state"] == "approved":                    # pressed twice: one approval, one tick
                 refused["msg"] = "already approved; the runner takes it up on its next tick"
@@ -659,11 +662,143 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
             if row["state"] != f"awaiting:{gate}":            # a stale page, or a run under way: never touch the claim
                 refused["msg"] = f"nothing waits at the {gate} gate: the film is {row['state']}; nothing changed"
                 return False
+            if drawn_first:                                   # a look saved but not drawn: drawn, then asked again
+                row.update(state="retry", note=f"the owner's looks for {', '.join(drawn_first)} are drawn first",
+                           updated=queue.now())
+                return None
             row.update(state="approved", note=f"{gate} approved in the control room by {email}", updated=queue.now())
         edit_row(store, slug, change)
         if refused:
             return back(f"/film/{slug}", refused["msg"])
+        if drawn_first:
+            return back(f"/film/{slug}", f"Your look for {', '.join(drawn_first)} is drawn first, so you see it before "
+                                         "you approve: " + tick_now("the cast waits for you again once it is drawn")
+                        + " (if it never arrives, choose Use the AI's own look for that character)")
         return back(f"/film/{slug}", f"{gate} approved; " + tick_now("the next step is under way"))
+
+    def looks_waiting(slug: str) -> list[str]:
+        """Characters whose saved look the cast step has not taken in yet."""
+        given = films._yaml(store, f"stories/{slug}.looks.yaml")
+        bible = films._json(store, f"{slug}/project/01_story_bible.json") or {}
+        lock = (films._yaml(store, f"{slug}/project/cast.lock.yaml") or {}).get("characters")
+        return looks_mod.waiting(given if isinstance(given, dict) else {},
+                                 films._json(store, f"{slug}/reports/looks.json") or {},
+                                 {c.get("id") for c in bible.get("characters") or []},
+                                 lock if isinstance(lock, dict) else {},
+                                 films._json(store, f"{slug}/reports/looks_waiting.json") or {})
+
+    def look_saved(slug: str, character: str, what: str) -> RedirectResponse:
+        """After a look is saved or removed: a cast waiting for the owner is drawn again at once (and asks again)."""
+        row = next((r for r in load_rows(store, STORIES, queue.STORY_COLUMNS) if r["slug"] == slug), None)
+        if row is not None and row["state"] == "awaiting:cast":
+            def change(r: dict):
+                if r["state"] != "awaiting:cast":
+                    return False
+                r.update(state="retry", note=f"the owner's look for {character} is being drawn", updated=queue.now())
+            edit_row(store, slug, change)
+            return back(f"/film/{slug}", f"{what}; " + tick_now(
+                "the runner draws it now (a few cents) and the cast waits for you again"))
+        return back(f"/film/{slug}", f"{what}; the runner takes it in at the cast step, before you approve the cast")
+
+    def look_of(slug: str, character: str) -> tuple[dict, str | None]:
+        """(the film's bible characters by id, why a look cannot be given now or None)."""
+        if not SLUG_RE.match(slug):
+            raise HTTPException(404)
+        bible = films._json(store, f"{slug}/project/01_story_bible.json") or {}
+        chars = {c.get("id"): c for c in bible.get("characters") or []}
+        if character not in chars:
+            return chars, f"No character {character[:40]!r} in this film; nothing changed."
+        row = next((r for r in load_rows(store, STORIES, queue.STORY_COLUMNS) if r["slug"] == slug), None)
+        state = films.looks_state(store, slug, row, films._config(store, slug), True)
+        return chars, None if state["open"] else (state["why_closed"] or "Looks cannot be given now") + " Nothing changed."
+
+    @app.post("/film/{slug}/look")
+    def set_look(slug: str, email: str = Depends(guard), character: str = Form(""), build: str = Form(""),
+                 notes: str = Form(""), notes_shown: str = Form(""), rights: str = Form(""),
+                 picture: UploadFile | None = File(None)):
+        """The owner's look for one character (looks.py): a picture that becomes its face, a body build, notes on
+        how it looks. Each is optional; what is not given stays as it was."""
+        chars, why = look_of(slug, character)
+        if why:
+            return back(f"/film/{slug}", why)
+        data = picture.file.read(looks_mod.MAX_PICTURE + 1) if picture is not None and picture.filename else b""
+        if len(data) > looks_mod.MAX_PICTURE:
+            return back(f"/film/{slug}", "That picture is over 15 MB; nothing changed.")
+        png = None
+        if data:
+            if rights not in looks_mod.RIGHTS:
+                return back(f"/film/{slug}", "Say whose picture it is (yours with the person's permission, or "
+                                             "AI-made) before it is used as a face; nothing changed.")
+            try:
+                png = looks_mod.normalize_picture(data)
+            except ValueError as exc:
+                return back(f"/film/{slug}", str(exc))
+        if build and build != "written" and build not in looks_mod.BUILDS:
+            return back(f"/film/{slug}", f"No body build called {build[:30]!r}; nothing changed.")
+        name = None
+        if png is not None:
+            import hashlib
+            sha = hashlib.sha256(png).hexdigest()
+            name = f"{character}_{sha[:12]}.png"
+            store.write_bytes(f"stories/{slug}.looks/{name}", png, "image/png")    # before the list names it
+        said = {}
+        stuck = (films._json(store, f"{slug}/reports/looks_waiting.json") or {}).get(character) or {}
+
+        def change(text: str):
+            data = (yaml.safe_load(text) or {}) if text else {}
+            data = data if isinstance(data, dict) else {}
+            old = data.get(character) if isinstance(data.get(character), dict) else {}
+            old = {} if old.get("removed") else old
+            new = {k: old[k] for k in ("image", "image_sha", "rights", "build", "notes") if old.get(k)}
+            if build == "written":
+                new.pop("build", None)
+            elif build:
+                new["build"] = build
+            if notes_shown or notes.strip():
+                new["notes"] = notes.strip()[:looks_mod.NOTES_MAX]
+            if not new.get("notes"):
+                new.pop("notes", None)
+            if png is not None:
+                new.update(image=name, image_sha=sha, rights=rights)
+            same = old and looks_mod.fingerprint(new) == looks_mod.fingerprint(old)
+            if same and stuck.get("fp") != looks_mod.fingerprint(old):     # the same again: a try once more only
+                said["msg"] = "Nothing new for this character; nothing changed."    # when it could not be taken
+                return None
+            if not any(new.get(k) for k in ("image", "build", "notes")):
+                if not old:
+                    said["msg"] = "Nothing given: choose a picture, a body build or notes; nothing changed."
+                    return None
+                data[character] = {"removed": True, "by": email, "at": queue.now()}
+            else:
+                data[character] = {**new, "by": email, "at": queue.now()}
+            return yaml.safe_dump(data, sort_keys=True, allow_unicode=True)
+        store.update_text(f"stories/{slug}.looks.yaml", change, content_type="text/yaml")
+        if said:
+            return back(f"/film/{slug}", said["msg"])
+        who = chars[character].get("name_en") or character
+        return look_saved(slug, character, f"{who}'s look saved")
+
+    @app.post("/film/{slug}/look-remove")
+    def remove_look(slug: str, email: str = Depends(guard), character: str = Form("")):
+        """The AI's own look for this character again: its casting as it was before the owner's look."""
+        chars, why = look_of(slug, character)
+        if why:
+            return back(f"/film/{slug}", why)
+        said = {}
+
+        def change(text: str):
+            data = (yaml.safe_load(text) or {}) if text else {}
+            data = data if isinstance(data, dict) else {}
+            if not isinstance(data.get(character), dict) or data[character].get("removed"):
+                said["msg"] = "This character has no look of yours; nothing changed."
+                return None
+            data[character] = {"removed": True, "by": email, "at": queue.now()}
+            return yaml.safe_dump(data, sort_keys=True, allow_unicode=True)
+        store.update_text(f"stories/{slug}.looks.yaml", change, content_type="text/yaml")
+        if said:
+            return back(f"/film/{slug}", said["msg"])
+        who = chars[character].get("name_en") or character
+        return look_saved(slug, character, f"{who} goes back to the AI's own look")
 
     def tick_now(then: str) -> str:
         """Start a tick unless one is running, and say what happened: no fifteen-minute wait after a decision."""

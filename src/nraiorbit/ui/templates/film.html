@@ -440,7 +440,7 @@
   {% if f.cast|selectattr('gallery')|list %}
   <div id="gallery" style="margin-top:20px">
     <h3 style="margin:0 0 4px">Character gallery</h3>
-    <p class="small muted" style="margin:0 0 10px">Every picture for each character in this film: yours, and the faces the AI drew. {% if f.looks.open %}Choose each one's final face: every still in the film is drawn from it.{% else %}Faces are fixed now that the cast is approved; your pictures stay here for this film.{% endif %}</p>
+    <p class="small muted" style="margin:0 0 10px">Every picture for each character in this film: yours, and the faces the AI drew. {% if f.looks.open %}Choose each one's final face: every still in the film is drawn from it.{% else %}Faces are fixed for this film: each character's face in the film is marked Final face. Your pictures stay here for this film.{% endif %}</p>
     {% for c in f.cast if c.gallery %}
     <div style="margin-bottom:14px">
       <b class="te">{{ c.name_te or c.name }}</b> <span class="small">{{ c.name }}</span>

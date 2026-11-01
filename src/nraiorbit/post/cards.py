@@ -4,7 +4,8 @@ A card is an overlay on the live picture for [at_s, at_s + length_s]: the film k
 dialogue and music. The picture is darkened under the card and both fade in and out together. Each card is rendered
 once as a transparent PNG (Pillow; Telugu needs complex-script shaping, so RAQM) and every card goes onto the movie
 in a single ffmpeg pass, the sound copied untouched. A card marked `after` (the end card of `cards: auto`) is added
-after the film's last frame instead, on black, with silence: nothing in the film moves.
+after the film's last frame instead, on black, with silence, in the same pass (the sound then re-encoded with it):
+nothing in the film moves.
 """
 
 from __future__ import annotations
@@ -147,33 +148,29 @@ def _overlay_frame(card_png: Path, out: Path) -> Path:
 
 def apply_cards(source: Path, cards: list[Card], out: Path, resolution: tuple[int, int], fps: int,
                 card_dir: Path | None = None, log: Callable[[str], None] = print) -> Path:
-    """Lay the cards over `source` in one ffmpeg pass: picture re-encoded, sound copied, length unchanged; then add
-    the `after` cards past its last frame (append_cards).
+    """Put every card on `source` in one ffmpeg pass: the film is encoded once and only one new copy of it is
+    written (the runner keeps its files in memory, and a second whole copy of a long film once ran it out).
 
-    A card starting after the end of the film is skipped; one running past it is cut at the end.
+    The cards are laid over the picture: picture re-encoded, sound copied, length unchanged. The `after` cards then
+    follow its last frame, each on black for length_s with silence, fading in and out; with them the sound is
+    re-encoded with the picture, so the film and the cards play as one file.
+
+    A laid card starting after the end of the film is skipped; one running past it is cut at the end.
     """
-    after = [c for c in cards if c.after]
-    if after:
-        laid = apply_cards(source, [c for c in cards if not c.after], out.parent / f".{out.stem}" / f"laid{out.suffix}",
-                           resolution, fps, card_dir, log)
-        try:
-            return append_cards(laid, after, out, resolution, fps, card_dir, log)
-        finally:
-            laid.unlink(missing_ok=True)                 # a whole copy of the film: never left to be backed up
     work = out.parent / f".{out.stem}"
     card_dir = card_dir or work / "cards"
     for d in (work, card_dir):
         d.mkdir(parents=True, exist_ok=True)
     total = ffmpeg.duration(source)
     inputs, chain, last = ["-i", str(source)], [], "[0:v]"
-    for card in sorted(cards, key=lambda c: c.at_s):
+    for card in sorted((c for c in cards if not c.after), key=lambda c: c.at_s):
         if card.at_s >= total:
             log(f"  card {card.kind} at {card.at_s:.1f} s starts after the end of the film ({total:.1f} s): skipped")
             continue
         a, length = max(0.0, card.at_s), min(card.length_s, total - max(0.0, card.at_s))
         if length <= 0:
             continue
-        n = len(chain) // 2 + 1                          # ffmpeg input index of this card
+        n = inputs.count("-i")                           # ffmpeg input index of this card
         png = render_card(card, card_dir / f"{n:02d}_{card.kind}.png", resolution, log)
         frame = _overlay_frame(png, work / f"overlay_{n:02d}.png")
         fade = min(CARD_FADE_S, length / 3)
@@ -182,50 +179,41 @@ def apply_cards(source: Path, cards: list[Card], out: Path, resolution: tuple[in
                      f"fade=t=out:st={length - fade:.3f}:d={fade:.3f}:alpha=1,setpts=PTS-STARTPTS+{a:.3f}/TB[c{n}]")
         chain.append(f"{last}[c{n}]overlay=eof_action=pass:enable='between(t,{a:.3f},{a + length:.3f})'[v{n}]")
         last = f"[v{n}]"
-    if not chain:
+    after = [c for c in cards if c.after]
+    if not chain and not after:
         shutil.copy2(source, out)
         return out
     script = work / "cards.filter.txt"
-    script.write_text(";\n".join(chain) + f";\n{last}format=yuv420p[vout]", encoding="utf-8")
-    ffmpeg.run([*inputs, "-filter_complex_script", str(script), "-map", "[vout]", "-map", "0:a?",
-                *ffmpeg.VIDEO_ENCODE, "-c:a", "copy", "-t", f"{total:.6f}", str(out)])
-    script.unlink()
-    return out
-
-
-def append_cards(source: Path, cards: list[Card], out: Path, resolution: tuple[int, int], fps: int,
-                 card_dir: Path | None = None, log: Callable[[str], None] = print) -> Path:
-    """Add each card after `source`'s last frame: the card on black for length_s, fading in and out, with silence;
-    picture and sound re-encoded once, so the film and the cards play as one file."""
-    work = out.parent / f".{out.stem}"
-    card_dir = card_dir or work / "cards"
-    for d in (work, card_dir):
-        d.mkdir(parents=True, exist_ok=True)
-    total = ffmpeg.frame_count(source) / fps            # the picture's own length, frame-exact
+    if not after:
+        script.write_text(";\n".join(chain) + f";\n{last}format=yuv420p[vout]", encoding="utf-8")
+        ffmpeg.run([*inputs, "-filter_complex_script", str(script), "-map", "[vout]", "-map", "0:a?",
+                    *ffmpeg.VIDEO_ENCODE, "-c:a", "copy", "-t", f"{total:.6f}", str(out)])
+        script.unlink()
+        return out
+    picture = ffmpeg.frame_count(source) / fps          # the picture's own length, frame-exact
     w, h = resolution
-    inputs = ["-i", str(source)]
-    filters = [f"[0:v]fps={fps},scale={w}:{h},format=yuv420p,setsar=1[fv]",       # the film as the cards are made
-               f"[0:a]aformat=sample_rates={ffmpeg.SAMPLE_RATE}:channel_layouts=stereo,apad,"
-               f"atrim=0:{total:.6f}[fa]"]                                     # its sound exactly as long as its picture
+    chain += [f"{last}fps={fps},scale={w}:{h},format=yuv420p,setsar=1[fv]",        # the film as the cards are made
+              f"[0:a]aformat=sample_rates={ffmpeg.SAMPLE_RATE}:channel_layouts=stereo,apad,"
+              f"atrim=0:{picture:.6f}[fa]"]                                   # its sound exactly as long as its picture
     joined = "[fv][fa]"
-    for n, card in enumerate(cards, start=1):
-        png = render_card(card, card_dir / f"after_{n:02d}_{card.kind}.png", resolution, log)
-        frame = card_dir / f"after_{n:02d}_{card.kind}_on_black.png"
+    for k, card in enumerate(after, start=1):
+        png = render_card(card, card_dir / f"after_{k:02d}_{card.kind}.png", resolution, log)
+        frame = card_dir / f"after_{k:02d}_{card.kind}_on_black.png"
         art = Image.open(png).convert("RGBA")
         Image.alpha_composite(Image.new("RGBA", art.size, (0, 0, 0, 255)), art).convert("RGB").save(frame)
         length, fade = card.length_s, min(CARD_FADE_S, card.length_s / 3)
+        n = inputs.count("-i")                           # ffmpeg input index of this card's picture; its silence next
         inputs += ["-loop", "1", "-framerate", str(fps), "-t", f"{length:.3f}", "-i", str(frame),
                    "-f", "lavfi", "-t", f"{length:.3f}", "-i", f"anullsrc=r={ffmpeg.SAMPLE_RATE}:cl=stereo"]
-        filters.append(f"[{2 * n - 1}:v]scale={w}:{h},fade=t=in:st=0:d={fade:.3f},"
-                       f"fade=t=out:st={length - fade:.3f}:d={fade:.3f},format=yuv420p,setsar=1[cv{n}]")
-        filters.append(f"[{2 * n}:a]aformat=sample_rates={ffmpeg.SAMPLE_RATE}:channel_layouts=stereo[ca{n}]")
-        joined += f"[cv{n}][ca{n}]"
-    script = work / "append.filter.txt"
-    script.write_text(";\n".join([*filters, f"{joined}concat=n={len(cards) + 1}:v=1:a=1[vout][aout]"]),
+        chain.append(f"[{n}:v]scale={w}:{h},fade=t=in:st=0:d={fade:.3f},"
+                     f"fade=t=out:st={length - fade:.3f}:d={fade:.3f},format=yuv420p,setsar=1[cv{k}]")
+        chain.append(f"[{n + 1}:a]aformat=sample_rates={ffmpeg.SAMPLE_RATE}:channel_layouts=stereo[ca{k}]")
+        joined += f"[cv{k}][ca{k}]"
+    script.write_text(";\n".join([*chain, f"{joined}concat=n={len(after) + 1}:v=1:a=1[vout][aout]"]),
                       encoding="utf-8")
     ffmpeg.run([*inputs, "-filter_complex_script", str(script), "-map", "[vout]", "-map", "[aout]",
                 *ffmpeg.VIDEO_ENCODE, "-r", str(fps), "-c:a", "aac", "-b:a", "256k", "-ar", str(ffmpeg.SAMPLE_RATE),
                 str(out)])
     script.unlink()
-    log(f"  cards after the film: {', '.join(f'{c.kind} ({c.length_s:.1f} s)' for c in cards)}")
+    log(f"  cards after the film: {', '.join(f'{c.kind} ({c.length_s:.1f} s)' for c in after)}")
     return out

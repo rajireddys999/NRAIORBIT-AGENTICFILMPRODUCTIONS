@@ -21,6 +21,9 @@ FONT_CANDIDATES = [
 ]
 
 
+KILLED = (-9, 137)                       # SIGKILL: on the runner, the system stopping ffmpeg when memory runs out
+
+
 class FFmpegError(RuntimeError):
     pass
 
@@ -33,7 +36,8 @@ def run(args: list[str]) -> None:
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
-        raise FFmpegError(f"ffmpeg failed ({proc.returncode}): {' '.join(cmd)}\n{proc.stderr[-2000:]}")
+        why = " (stopped by the system: the machine most likely ran out of memory)" if proc.returncode in KILLED else ""
+        raise FFmpegError(f"ffmpeg failed ({proc.returncode}){why}: {' '.join(cmd)}\n{proc.stderr[-2000:]}")
 
 
 def duration(path: Path) -> float:

@@ -60,6 +60,18 @@ class Store:
         p = self._local(rel)
         return p.read_text(encoding="utf-8") if p.is_file() else default
 
+    def size(self, rel: str) -> int | None:
+        """The object's size in bytes without reading it (a film is never downloaded to be looked at); None when it
+        is not there."""
+        if self.is_gs:
+            try:
+                blob = self.bucket.get_blob(self._key(rel))
+            except Exception:
+                return None
+            return None if blob is None else blob.size
+        p = self._local(rel)
+        return p.stat().st_size if p.is_file() else None
+
     def read_bytes(self, rel: str) -> bytes | None:
         if self.is_gs:
             try:

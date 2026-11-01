@@ -3,7 +3,8 @@
     plan (story bible … shots, cues; a real film's cast reference pictures, a few cents each, under the cap)
     →  cost (the paid stages priced against the cap, approved before any of them is paid)  →  faces (first
     frames, checked before video is paid)  →  render (picture, voices, music, lip-sync under the cap)  →
-    assemble, trailer  →  QA (lip-sync sheets, film check)  →  deliver (720p, bucket, links)  →
+    assemble, trailer  →  QA (lip-sync sheets, film check)  →  cards (the title and end cards from the owner's
+    words, looked at before they ship)  →  deliver (720p, bucket, links)  →
     publish (YouTube, approved first; private by default)  →  backup
 
 `policy` in the project's pipeline.yaml says how far it goes on its own:
@@ -35,7 +36,7 @@ from ..costing import BudgetExceeded, SpendLedger
 from ..pipeline import CutDoesNotMatch, GatePending, LinesTooLong, Pipeline, PipelineBlocked
 from .queue import GATES as GATE_ORDER
 
-RUNNER_GATES = ("cost", "faces", "publish")          # raised here, between pipeline runs, not inside a stage
+RUNNER_GATES = ("cost", "faces", "cards", "publish")     # raised here, between pipeline runs, not inside a stage
 OWNER_GATES = ("cost", "publish")                    # money and a release: the owner's under every policy
 COST_GROWTH = 0.10                                   # an approved estimate that grows by more than this is asked again
 
@@ -716,6 +717,19 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
             except OSError:
                 pass
 
+    # 4b. the title and end cards: from the owner's words, around the film (never into it), looked at before they
+    #     ship; under ask the step waits for the words, then for the look (post/titlecards)
+    step("cards")
+    try:
+        from ..post import titlecards
+        outcome, said = titlecards.step(pipeline, pol, log)
+    except Exception as exc:
+        report["steps"]["cards"] = f"failed: {type(exc).__name__}: {str(exc)[:160]}"
+        return finish("blocked:cards")
+    report["steps"]["cards"] = said
+    if outcome == "awaiting":
+        return finish(f"awaiting:{titlecards.GATE}")
+
     # 5. deliverables and links
     step("deliver")
     try:
@@ -829,13 +843,17 @@ def publish_youtube(root: Path, privacy: str, bucket: str | None = None) -> dict
             from ..ops import backup
             backup.put_report(root, bucket, done_path.name)
 
-    meta = youtube.build_metadata(bible, outline, privacy=privacy)
-    captions = {lang: master / f"subs_{lang}.srt" for lang in ("te", "en") if (master / f"subs_{lang}.srt").exists()}
+    from ..post import titlecards
+    cards = titlecards.release(root)                      # the film with its title and end cards, when it has them
+    film = cards["film"] if cards else master / "movie.mp4"
+    meta = youtube.build_metadata(bible, outline, privacy=privacy,
+                                  **({"offset_s": cards["opening_s"]} if cards else {}))   # chapters move with the cards
+    captions = cards["captions"] if cards else {
+        lang: master / f"subs_{lang}.srt" for lang in ("te", "en") if (master / f"subs_{lang}.srt").exists()}
     thumb = master / "thumbnail.png"
-    if not uploaded_already(out, "film", master / "movie.mp4"):
-        video_id = youtube.upload(master / "movie.mp4", meta, creds, captions=captions,
-                                  thumbnail=thumb if thumb.exists() else None)
-        out["film"] = {"id": video_id, "file": fingerprint(master / "movie.mp4"), "privacy": privacy}
+    if not uploaded_already(out, "film", film):
+        video_id = youtube.upload(film, meta, creds, captions=captions, thumbnail=thumb if thumb.exists() else None)
+        out["film"] = {"id": video_id, "file": fingerprint(film), "privacy": privacy, "cards": bool(cards)}
         record()
     if (master / "trailer.mp4").exists() and not uploaded_already(out, "trailer", master / "trailer.mp4"):
         tmeta = youtube.build_metadata(bible, outline, privacy=privacy)
@@ -859,6 +877,7 @@ def fingerprint(path: Path) -> dict:
 def published_already(root: Path) -> bool:
     """Whether this very film (and its trailer, when there is one) is on YouTube already (reports/youtube.json): a
     run over a finished film (to make its reels, say) does not ask for the upload again. A new cut is asked for."""
+    from ..post import titlecards
     master = root / "11_master"
     try:
         record = json.loads((root / "reports" / "youtube.json").read_text(encoding="utf-8"))
@@ -866,7 +885,8 @@ def published_already(root: Path) -> bool:
         return False
     if not isinstance(record, dict) or not (master / "movie.mp4").exists():
         return False
-    return uploaded_already(record, "film", master / "movie.mp4") and (
+    cards = titlecards.release(root)                      # with cards, the file that went up is the film with them
+    return uploaded_already(record, "film", cards["film"] if cards else master / "movie.mp4") and (
         not (master / "trailer.mp4").exists() or uploaded_already(record, "trailer", master / "trailer.mp4"))
 
 

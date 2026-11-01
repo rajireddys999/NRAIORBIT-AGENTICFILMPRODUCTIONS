@@ -255,6 +255,28 @@ def _scene_id(task: str) -> str:
     return m.group(0)
 
 
+# the title and end cards the card writer returns for the demo, whatever the owner's words
+CARD_DECK = {
+    "style": "gold", "backdrop": "film", "why": "The studio line, the title and one line about the story before the "
+    "film; the cast and THE END after, as the owner asked.",
+    "slides": [
+        {"where": "before", "kind": "studio", "seconds": 3.0,
+         "lines": [{"text_te": "", "text_en": "NRAIORBIT Agentic Film Productions presents", "size": "large"}]},
+        {"where": "before", "kind": "title", "seconds": 4.0,
+         "lines": [{"text_te": "గోదావరి సింహం", "text_en": "Godavari Simham", "size": "title"}]},
+        {"where": "before", "kind": "about", "seconds": 4.0,
+         "lines": [{"text_te": "", "text_en": "A quiet man must face the river boss who killed his father.",
+                    "size": "small"}]},
+        {"where": "after", "kind": "cast", "seconds": 5.0,
+         "lines": [{"text_te": "అర్జున్", "text_en": "Arjun", "size": "medium"},
+                   {"text_te": "మీరా", "text_en": "Meera", "size": "medium"},
+                   {"text_te": "భైరవ", "text_en": "Bhairava", "size": "medium"}]},
+        {"where": "after", "kind": "end", "seconds": 3.0,
+         "lines": [{"text_te": "శుభం", "text_en": "THE END", "size": "large"}]},
+    ],
+}
+
+
 def demo_llm() -> ReplayLLM:
     return ReplayLLM({
         "StoryBible": STORY_BIBLE,
@@ -270,4 +292,5 @@ def demo_llm() -> ReplayLLM:
         "Critique": {"score": 9, "issues": [], "revision_instructions": []},
         "ShotList": lambda task: {"scene_id": (sid := _scene_id(task)), "shots": SHOTS[sid]},
         "CueRevisions": CUE_REVISIONS,
+        "CardDeck": CARD_DECK,
     })

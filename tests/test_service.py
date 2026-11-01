@@ -332,3 +332,35 @@ def test_references_are_watched_by_a_model_the_project_can_use(tmp_path, monkeyp
     row = json.loads((tmp_path / "refs" / "ledger.jsonl").read_text().splitlines()[-1])
     assert row["item"] == "broken_zzz999yyy" and row["tokens_out"] == 500 and row["failed"].startswith("ValidationError")
     assert not (tmp_path / "refs" / "broken_zzz999yyy").exists()
+
+
+def test_the_owners_words_for_the_title_cards_reach_the_project_every_tick(tmp_path):
+    """The control room saves them beside the story; the tick copies the latest into the project, where the cards
+    step reads them. Nothing is applied once-and-deleted: a new cut gets its cards again from the same words."""
+    from nraiorbit.post import titlecards as tc
+    st, rf = _queues(tmp_path)
+    projects = tmp_path / "projects"
+    (projects / "_template").mkdir(parents=True)
+    (projects / "_template" / "pipeline.yaml").write_text("film: {runtime_minutes: 10}\n")
+    seen = []
+
+    def produce_fn(root, bucket):
+        seen.append(tc.read_request(root))
+        return {"state": "awaiting:cards", "steps": {}}
+    queue.tick(st, rf, projects, bucket=None, produce_fn=produce_fn, learn_fn=None, log=lambda *_: None)
+    assert seen == [None]                                                        # nothing asked for yet
+    assert queue.title_cards_uri(str(tmp_path / "rain.md")) == str(tmp_path / "rain.title_cards.json")
+    assert queue.title_cards_uri("gs://b/stories/rain.md") == "gs://b/stories/rain.title_cards.json"
+    (tmp_path / "rain.title_cards.json").write_text(json.dumps({"id": "r1", "brief": "the title, THE END", "none": False}))
+    rows = queue.load(st, queue.STORY_COLUMNS)
+    (projects / "rain" / "reviews").mkdir(parents=True)
+    (projects / "rain" / "reviews" / "cards.pending").write_text("x")
+    rows[0]["state"] = "approved"
+    queue.save(st, rows, queue.STORY_COLUMNS)
+    queue.tick(st, rf, projects, bucket=None, produce_fn=produce_fn, learn_fn=None, log=lambda *_: None)
+    assert seen[-1]["id"] == "r1" and seen[-1]["brief"] == "the title, THE END"
+    assert (projects / "rain" / "reviews" / "cards.approved").exists()          # the words came with an approval
+    rows[0]["state"] = "retry"
+    queue.save(st, rows, queue.STORY_COLUMNS)
+    queue.tick(st, rf, projects, bucket=None, produce_fn=produce_fn, learn_fn=None, log=lambda *_: None)
+    assert seen[-1]["id"] == "r1"                                                # still there on the next run

@@ -20,7 +20,7 @@ import numpy as np
 import yaml
 from pydantic import BaseModel
 
-from .agents import CastingAgent, DialogueCritic, Director, Editor, MusicDirector, Screenwriter, StoryAnalyst
+from .agents import CardWriter, CastingAgent, DialogueCritic, Director, Editor, MusicDirector, Screenwriter, StoryAnalyst
 from .agents.production import least_shots, most_shots, shots_fit
 from .concurrency import ordered_map, workers
 from .config import REPO_ROOT, load_navarasa, load_pipeline_config
@@ -36,6 +36,7 @@ from .planning.runtime import (
     validate_outline,
 )
 from .post import assemble, facelock, ffmpeg
+from .post import titlecards
 from .post.cards import Card, apply_cards
 from .post.speech import clarify_dialogue, level_gain_db
 from .post.subtitles import write_srt
@@ -187,6 +188,7 @@ class ProjectPaths:
             "assemble": [self.master / "movie.mp4", self.edit / "film_dialogue.mp4", self.edit / "scenes",
                          self.master / "stems", self.edit / "movie_nocards.mp4", self.edit / "cards.json",
                          self.edit / "cards", self.master / "deliver",      # a new cut never ships an old 720p copy
+                         self.master / titlecards.FOLDER, self.master / titlecards.RELEASE,   # nor old title cards
                          self.reports / "sound_plan.json"],                 # and its sound is planned again
             "trailer": [self.master / "trailer.mp4", self.edit / "trailer_plan.json"],
         }[stage]
@@ -215,6 +217,7 @@ class Pipeline:
         self.director = Director(llm, self.cfg)
         self.music_director = MusicDirector(llm, self.cfg)
         self.editor = Editor(llm, self.cfg)            # the owner's rejection of the cut or the trailer (service/triage)
+        self.card_writer = CardWriter(llm, self.cfg)   # the owner's words for the title and end cards (post/titlecards)
         for agent in (self.story_analyst, self.screenwriter, self.critic, self.casting, self.director,
                       self.music_director, self.editor):  # references matched to the film, from its story
             agent.film_categories = self._film_categories
@@ -409,7 +412,7 @@ class Pipeline:
             remover(gone)
         # the runner's own gates (service/produce) answer for what follows: a replan or a re-render needs the cost
         # and the first frames approved again; a new cut needs the upload approved again
-        for name, upto in (("cost", "render"), ("faces", "render"), ("publish", "trailer")):
+        for name, upto in (("cost", "render"), ("faces", "render"), ("publish", "trailer"), ("cards", "trailer")):
             if STAGES.index(stage) <= STAGES.index(upto):
                 for suffix in ("approved", "pending"):
                     (self.p.reviews / f"{name}.{suffix}").unlink(missing_ok=True)

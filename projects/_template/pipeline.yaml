@@ -55,6 +55,8 @@ review_gates:                      # every step waits for a look in the control 
   pacing: {auto_approve: false}
   final_cut: {auto_approve: false}
   trailer: {auto_approve: false}
+  cards: {auto_approve: false}     # the title and end cards: the run waits for your words (or your "no cards"),
+                                   # then for a look at the film with them, before delivery
 
 policy:                            # for `nraiorbit produce` and the service runner
   gates: ask                       # ask: stop at every gate above, plus the cost, first-frames and YouTube gates

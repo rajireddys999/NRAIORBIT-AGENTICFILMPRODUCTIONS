@@ -20,8 +20,8 @@ only when it is green: nothing in GitHub enforces that yet.
 - Agent and LLM tests use `nraiorbit.llm.ReplayLLM` fixtures. Never call a real API in a test.
 - The runner and the control room are deployed separately and briefly run different versions. The queue sheets
   (`queue/stories.csv`, `queue/references.csv`) only ever gain columns, and the request files the control room
-  writes for the runner (`stories/<slug>.rework.json`, `stories/<slug>.voices.yaml`) must stay readable by both the
-  old and the new code.
+  writes for the runner (`stories/<slug>.rework.json`, `stories/<slug>.voices.yaml`,
+  `stories/<slug>.title_cards.json`) must stay readable by both the old and the new code.
 - Money and releases are the owner's: never auto-approve the `cost` or `publish` gates
   (`service/produce.OWNER_GATES`), and keep paid media (`inbox/`, `cache/`, `06_keyframes/`) out of anything that
   deletes.

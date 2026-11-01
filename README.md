@@ -84,7 +84,7 @@ nraiorbit publish my-film --dry-run      # show YouTube metadata; uploads defaul
 ```bash
 nraiorbit new rain-film --story stories/rain.md       # copies projects/_template: Veo 3.1, Gemini images, ElevenLabs
                                                       # voices, Lyria, sync.so sync-3; set budget.max_usd and voice.cast
-nraiorbit produce rain-film --max-spend 150           # plan → faces → render → QA → deliver → (YouTube) → backup,
+nraiorbit produce rain-film --max-spend 150           # plan → faces → render → QA → cards → deliver → (YouTube) → backup,
                                                       # stopping at each review gate; --gates auto approves all but cost and the upload
 nraiorbit approve rain-film faces && nraiorbit produce rain-film
 nraiorbit qa lipsync rain-film                        # frame strips and metrics for every speaking shot

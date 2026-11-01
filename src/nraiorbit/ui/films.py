@@ -21,17 +21,18 @@ from .store import Store
 STAGES = [
     ("story", "Story bible"), ("outline", "Outline"), ("scenes", "Scenes & dialogue"), ("cast", "Cast"),
     ("shots", "Shot lists"), ("cost", "Cost"), ("faces", "First frames"), ("render", "Picture, voices, music, lips"),
-    ("assemble", "Film & trailer"), ("qa", "QA"), ("deliver", "Delivery"), ("publish", "YouTube"),
+    ("assemble", "Film & trailer"), ("qa", "QA"), ("cards", "Title & end cards"), ("deliver", "Delivery"),
+    ("publish", "YouTube"),
 ]
 GATES = {"story": "story", "outline": "outline", "scenes": "scenes", "cast": "cast", "shots": "shots", "cost": "cost",
          "faces": "faces", "render": "render", "pacing": "assemble", "final_cut": "assemble", "trailer": "assemble",
-         "publish": "publish"}
+         "cards": "cards", "publish": "publish"}
 # the runner's phase names (pipeline stages and produce steps) -> the stage the page draws them on; restore, backup
 # and the library phases have no stage and show in the headers only
 PHASES = {"story_bible": "story", "outline": "outline", "scenes": "scenes", "cast": "cast", "shots": "shots",
           "music_plan": "render", "render": "render", "assemble": "assemble", "trailer": "assemble", "cost": "cost",
-          "faces": "faces", "qa": "qa", "deliver": "deliver", "publish": "publish", "voices": "render",
-          "reels": "assemble"}
+          "faces": "faces", "qa": "qa", "cards": "cards", "deliver": "deliver", "publish": "publish",
+          "voices": "render", "reels": "assemble"}
 # the steps Send back can name (service.produce.REWORK_STAGES has the same keys), and the step a waiting gate or a
 # stop points at by default
 REWORK_STEPS = [("story", "Story bible"), ("outline", "Outline"), ("scenes", "Scenes & dialogue"), ("cast", "Cast"),
@@ -39,7 +40,8 @@ REWORK_STEPS = [("story", "Story bible"), ("outline", "Outline"), ("scenes", "Sc
                 ("trailer", "Trailer")]
 REWORK_DEFAULT = {"story": "story", "outline": "outline", "scenes": "scenes", "cast": "cast", "shots": "shots",
                   "cost": "shots", "faces": "render", "render": "render", "pacing": "assemble",
-                  "final_cut": "assemble", "trailer": "trailer", "publish": "assemble", "assemble": "assemble"}
+                  "final_cut": "assemble", "trailer": "trailer", "cards": "assemble", "publish": "assemble",
+                  "assemble": "assemble"}
 # where Reject is offered (the film-cut and trailer reviews, the upload, and a finished film): the AI editor in the
 # runner (service/triage) decides what to redo from the owner's note
 REJECT_GATES = ("pacing", "final_cut", "trailer", "publish")
@@ -66,6 +68,9 @@ GATE_HELP = {
                   "#assemble", "Watch the film"),
     "trailer": ("Approve the trailer", "Watch the trailer. After this come the reels, the checks and the downloads.",
                 "#assemble", "Watch the trailer"),
+    "cards": ("Add the title and end cards", "Cards before and after the film: its name, the cast, a few words about "
+              "the story, THE END. Say what they should show and press Make the cards; once made, watch the film with "
+              "them and approve, or change the words. Or go on without cards.", "#cards", "Write the cards"),
     "publish": ("Approve the YouTube upload", "Uploads the film and the trailer to your channel. Watch them first.",
                 "#assemble", "Watch the film and trailer"),
 }
@@ -88,6 +93,7 @@ PHASE_WORDS = {
     "trailer": ("Cutting the trailer", "Cut the trailer"),
     "reels": ("Cutting the 5-second reels", "Cut the reels"),
     "qa": ("Checking the finished film", "Checked the finished film"),
+    "cards": ("Making the title and end cards", "Made the title and end cards"),
     "deliver": ("Preparing the downloads", "Prepared the downloads"),
     "publish": ("At the YouTube step", "Passed the YouTube step"),
     "backup": ("Saving everything to storage", "Saved everything to storage"),
@@ -157,7 +163,7 @@ ROUTE_LABELS = {"reshoot_shots": "Remake shots", "trailer": "Cut the trailer aga
                 "cast": "Cast again", "outline": "Outline again", "story": "Story bible again"}
 RUNNING = {"new", "approved", "retry", "producing"}       # row states in which the runner is, or is about to be, on it
 SETTLED = {"done", "skipped", "held"}                     # statuses that let the next step count
-REMADE = ("render", "assemble", "qa")                   # what a run makes again after the step it is on
+REMADE = ("render", "assemble", "qa", "cards")          # what a run makes again after the step it is on
 ADVISORY = {"qa"}                                         # steps that never stop the run: no later step waits on them
 PLANNED = "planned (the template's choices; the first tick writes the film's own config)"
 
@@ -581,6 +587,46 @@ def summary(store: Store, slug: str, row: dict | None) -> dict:
     }
 
 
+def cards_view(store: Store, slug: str, bible: dict, master: list[str], produce: dict | None,
+               delivered: bool = False) -> dict:
+    """The title and end cards as the page shows them: the owner's words (theirs, or a suggestion to start from),
+    what was made (each card's picture, the film with them), and the stage's status, read from the last run's report
+    (its cards step says none, awaiting, kept or what it made) so a film finished before the step existed never shows
+    as waiting on it."""
+    from ..post import titlecards as tc
+    said = str(((produce or {}).get("steps") or {}).get("cards") or "")
+    asked = _json(store, f"stories/{slug}{tc.SUFFIX}")
+    asked = asked if isinstance(asked, dict) and asked.get("id") else None
+    rec = _json(store, f"{slug}/11_master/{tc.FOLDER}/{tc.RECORD}")
+    rec = rec if isinstance(rec, dict) and rec.get("request_id") else None
+    film = f"{slug}/11_master/{tc.RELEASE}"
+    same_cut = rec is None or rec.get("film_bytes") is None or \
+        store.size(f"{slug}/11_master/movie.mp4") == rec.get("film_bytes")     # by size: the film is never downloaded
+    made = rec is not None and film in master and same_cut and (asked is None or rec["request_id"] == asked["id"])
+    pictures = [{"url": store.url(f"{slug}/11_master/{tc.FOLDER}/{c['file']}"), "where": c.get("where"),
+                 "kind": c.get("kind"), "seconds": c.get("seconds"),
+                 "text": " / ".join(t for ln in c.get("lines") or [] for t in (ln.get("text_te"), ln.get("text_en")) if t)}
+                for c in (rec or {}).get("slides") or [] if isinstance(c, dict) and c.get("file")] if made else []
+    none = bool(asked and asked.get("none"))
+    if made:
+        status, text = "done", tc.words(rec)
+    elif asked and not none:
+        status, text = "todo", "your words are saved; the cards are made on the next run"
+    elif none or said.startswith("none"):
+        status, text = "skipped", "no cards: the film goes out as cut"
+    elif said.startswith("failed"):
+        status, text = "blocked", said[:160]
+    elif not said and delivered:                     # finished by a runner from before this step
+        status, text = "skipped", "no cards: the film was made before this step existed"
+    else:
+        status, text = "todo", ""
+    return {"status": status, "text": text, "made": made, "pictures": pictures, "none": none,
+            "brief": (asked or {}).get("brief") or (rec or {}).get("brief") or tc.suggested_brief(bible, slug),
+            "asked": asked, "record": rec if made else None, "film": store.url(film) if made else None,
+            "stale": rec is not None and not made and not none,       # cards from earlier words or an earlier cut
+            "why": (rec or {}).get("why") if made else None, "max": tc.BRIEF_MAX}
+
+
 def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> dict:
     """Everything the film page shows. `running` is the set of execution names Cloud Run reports as running: the
     runner's progress record counts as live only while its execution is among them."""
@@ -626,6 +672,7 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
     delivery = _json(store, f"{slug}/11_master/deliver/delivery.json")
     if isinstance(delivery, dict):                    # deliver() writes {"date", "files": [...]}; older ones a list
         delivery = delivery.get("files") if isinstance(delivery.get("files"), list) else None
+    cards = cards_view(store, slug, bible, master, produce, delivered=bool(delivery))
     gates = pending_gates(store, slug, produce, row)
     steps = (produce or {}).get("steps") or {}
     cash = money(store, slug, cfg, row, produce)
@@ -742,6 +789,7 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
     else:
         qa_status = "todo"
     put("qa", qa_status, "; ".join(qa_bits))                  # in_order marks it stale while an earlier step is open
+    put("cards", cards["status"], cards["text"])
     put("deliver", "done" if delivery else "todo",
         f"{len(delivery)} files" if isinstance(delivery, list) else ("" if not delivery else "delivered"))
     pub = steps.get("publish")
@@ -963,7 +1011,7 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         "shorts_waiting": shorts_waiting,
         "shorts_mode": shorts_mode(store, slug, resolved), "shorts_count": shorts_count(store, slug, resolved),
         "shorts_max": reels_mod.MAX_COUNT, "reels_asked": (made_reels.get("plan") or {}).get("count"),
-        "delivery": deliver_links,
+        "delivery": deliver_links, "cards": cards,
         "title": bible.get("title_en") or slug, "title_te": bible.get("title_te"),
         "state": state,
         "hint": explain_note((row or {}).get("note") or (row or {}).get("state")),

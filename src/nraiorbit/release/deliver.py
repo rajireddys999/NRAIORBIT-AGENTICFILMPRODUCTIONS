@@ -60,11 +60,15 @@ def deliver(project_root: Path, bucket: str | None = None, *, prefix: str = "fin
             tag: str = "", days: int = 7, parts: int = 0, upload: bool = True, log=print) -> list[dict]:
     """Make the deliverables and (unless upload=False) put them in gs://<bucket>/<slug>/<prefix>/ with signed links.
     Returns one record per file: local path, remote name, size, url."""
+    from ..post import titlecards
     project_root = Path(project_root)
     master = project_root / "11_master" / "movie.mp4"
     trailer = project_root / "11_master" / "trailer.mp4"
     if not master.exists():
         raise FileNotFoundError(f"{master} is missing: run the pipeline to the assemble stage first")
+    cards = titlecards.release(project_root)              # the film with its title and end cards, when it has them
+    if cards:                                             # (made for this very cut; stale cards never ship)
+        master = cards["film"]
     out_dir = project_root / "11_master" / "deliver"
     bucket = bucket if (bucket or not upload) else gcs.default_bucket()
     from ..post.reels import film_mark

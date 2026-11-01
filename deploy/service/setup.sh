@@ -27,9 +27,10 @@ done
 SECRETS="ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,SYNC_API_KEY=SYNC_API_KEY:latest,ELEVENLABS_API_KEY=ELEVENLABS_API_KEY:latest,GOOGLE_APPLICATION_CREDENTIALS_JSON=GOOGLE_APPLICATION_CREDENTIALS_JSON:latest"
 ENV="GOOGLE_CLOUD_PROJECT=$PROJECT,GOOGLE_CLOUD_LOCATION=$REGION${ANTHROPIC_WORKSPACE_ID:+,ANTHROPIC_WORKSPACE_ID=$ANTHROPIC_WORKSPACE_ID}"
 
-# 4. the job: 4 vCPU, 8 GiB, up to 6 hours per tick, one task
+# 4. the job: 4 vCPU, 16 GiB (its files live in memory too: 8 GiB ran out on a 12-minute film), up to 6 hours per
+#    tick, one task
 gcloud run jobs deploy nraiorbit-runner --project "$PROJECT" --region "$REGION" --image "$IMAGE" \
-  --service-account "$SA" --cpu 4 --memory 8Gi --task-timeout 6h --max-retries 0 --tasks 1 \
+  --service-account "$SA" --cpu 4 --memory 16Gi --task-timeout 6h --max-retries 0 --tasks 1 \
   --set-env-vars "$ENV" \
   --set-secrets "$SECRETS" \
   --args="--stories,gs://$BUCKET/queue/stories.csv,--references,gs://$BUCKET/queue/references.csv,--bucket,$BUCKET"

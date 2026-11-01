@@ -117,6 +117,32 @@ def test_cards_overlay_live_picture_and_keep_length_and_sound(tmp_path):
     assert len(list((tmp_path / ".carded" / "cards").glob("*.png"))) == 2
 
 
+@needs_ffmpeg
+def test_laid_and_after_cards_are_one_pass_and_one_copy(tmp_path, monkeypatch):
+    """The title over the picture and THE END after its last frame in one encode: no second copy of the film (the
+    runner's files live in memory, and that copy of a 12-minute film once ran it out)."""
+    clean = _movie(tmp_path / "clean.mp4")
+    out = tmp_path / "carded.mp4"
+    passes, real = [], ffmpeg.run
+    monkeypatch.setattr(ffmpeg, "run", lambda args: (passes.append(args), real(args))[1])
+    apply_cards(clean, [Card("end", 0.0, 2.0, "శుభం", "THE END", after=True), TITLE], out, (320, 180), FPS)
+    assert len(passes) == 1                                             # the film encoded once, no copy in between
+
+    assert ffmpeg.frame_count(out) == ffmpeg.frame_count(clean) + 2 * FPS
+    assert abs(ffmpeg.duration(out) - (ffmpeg.duration(clean) + 2.0)) <= 2 / FPS
+    inside, before = _frame(out, 2.0).astype(float), _frame(clean, 2.0).astype(float)
+    assert inside.mean() < before.mean() * 0.8 and _gold(inside.astype(np.uint8)).sum() > 50     # the title, laid
+    assert np.abs(_frame(out, 4.5).astype(float) - _frame(clean, 4.5).astype(float)).mean() < 3.0  # the film as it was
+    end = _frame(out, 7.0)                                              # past its last frame: THE END on black
+    assert _gold(end).sum() > 50 and np.median(end) < 20
+
+
+def test_ffmpeg_stopped_by_the_system_says_memory(monkeypatch):
+    monkeypatch.setattr(ffmpeg.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, -9, "", ""))
+    with pytest.raises(ffmpeg.FFmpegError, match=r"failed \(-9\) \(stopped by the system: .*ran out of memory\)"):
+        ffmpeg.run(["-i", "film.mp4", "out.mp4"])
+
+
 def _pipeline(tmp_path, card_list):
     root = tmp_path / "godavari"
     root.mkdir(exist_ok=True)

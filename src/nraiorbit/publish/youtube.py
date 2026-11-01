@@ -29,21 +29,22 @@ def _clock(seconds: float) -> str:
     return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60:02d}:{s % 60:02d}"
 
 
-def chapters(outline: Outline) -> list[tuple[float, str]]:
-    """YouTube chapters: first at 00:00, at least 3, each at least 10 s long."""
+def chapters(outline: Outline, offset_s: float = 0.0) -> list[tuple[float, str]]:
+    """YouTube chapters: first at 00:00, at least 3, each at least 10 s long. `offset_s` is what plays before the
+    film itself (its title cards): every scene mark moves later by it."""
     starts = scene_start_times(outline)
     marks = [(0.0, "Opening")]
     for sc in outline.scenes:
         label = CHAPTER_LABELS.get(sc.set_piece)
-        if label and starts[sc.scene_id] - marks[-1][0] >= 10:
-            marks.append((starts[sc.scene_id], label))
+        if label and starts[sc.scene_id] + offset_s - marks[-1][0] >= 10:
+            marks.append((starts[sc.scene_id] + offset_s, label))
     return marks if len(marks) >= 3 else []
 
 
 def build_metadata(bible: StoryBible, outline: Outline, *, privacy: str = "private",
-                   extra_tags: list[str] | None = None) -> dict:
+                   extra_tags: list[str] | None = None, offset_s: float = 0.0) -> dict:
     lines = [f"{bible.title_te} | {bible.title_en}", "", bible.logline, ""]
-    chaps = chapters(outline)
+    chaps = chapters(outline, offset_s)
     if chaps:
         lines += [f"{_clock(t)} {label}" for t, label in chaps] + [""]
     lines.append("This film was made with AI-generated visuals, voices and music.")

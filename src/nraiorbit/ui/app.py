@@ -1081,6 +1081,58 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                 f"every step from {steps[stage]} on is redone, following your notes")
         return back(f"/film/{slug}", f"Sent back: {what}; the gates ask again. " + tick_now("the rework is under way"))
 
+    @app.post("/film/{slug}/cards")
+    def title_cards(slug: str, email: str = Depends(guard), brief: str = Form(""), action: str = Form("make")):
+        """The owner's words for the title and end cards (or their choice of none): saved beside the story as
+        stories/<slug>.title_cards.json, which every tick copies into the project; the runner's cards step makes the
+        cards from them (one Claude call, cents) and holds for a look. A film waiting at the cards gate goes straight
+        on; any other settled film is run again, which reaches the cards step with everything else kept. Never over a
+        run under way."""
+        from ..post import titlecards as tc
+        if not SLUG_RE.match(slug):
+            raise HTTPException(404)
+        none = action == "none"
+        brief = "" if none else brief.strip()[:tc.BRIEF_MAX]
+        if not none and not brief:
+            return back(f"/film/{slug}", "Write what the cards should show, or choose to go on without them; "
+                                         "nothing changed.")
+        if not any(n.endswith("/movie.mp4") for n in store.list(f"{slug}/11_master/")):
+            return back(f"/film/{slug}", "The film is not cut yet: the cards come after the film and trailer are "
+                                         "approved. Nothing changed.")
+        current = next((r for r in load_rows(store, STORIES, queue.STORY_COLUMNS) if r["slug"] == slug), None)
+        if current is None:
+            return back(f"/film/{slug}", "Only films in the queue get title and end cards here; nothing changed.")
+        if current["state"].split(":")[0] in films.RUNNING:
+            return back(f"/film/{slug}", f"the runner is on it ({current['state']}); write the cards when it stops. "
+                                         "Nothing changed")
+        ask = f"stories/{slug}{tc.SUFFIX}"
+        before = store.read_text(ask) or ""
+        store.write_text(ask, json.dumps({"id": f"{queue.now()}-{os.urandom(3).hex()}", "brief": brief, "none": none,
+                                          "by": email, "at": queue.now()}, ensure_ascii=False), "application/json")
+        refused: dict = {}
+
+        def change(row: dict):
+            head = row["state"].split(":")[0]
+            if head in films.RUNNING:
+                refused["msg"] = (f"the runner is on it ({row['state']}); write the cards when it stops. "
+                                  "Nothing changed")
+                return False
+            waiting = row["state"] == f"awaiting:{tc.GATE}"
+            what = "no title or end cards" if none else "title and end cards asked for"
+            row.update(state="approved" if waiting else "retry", note=f"{what} by {email}"[:200], updated=queue.now())
+        try:
+            edit_row(store, slug, change)
+        except HTTPException:
+            store.write_text(ask, before, "application/json")
+            raise
+        if refused:
+            store.write_text(ask, before, "application/json")
+            return back(f"/film/{slug}", refused["msg"])
+        if none:
+            return back(f"/film/{slug}", "No cards: the film goes out as cut; " + tick_now("it goes on to delivery"))
+        return back(f"/film/{slug}", "Cards asked for; " + tick_now(
+            "they are made now (one Claude call, cents) and the film waits for your look"))
+
     @app.post("/film/{slug}/shorts")
     def shorts(slug: str, email: str = Depends(guard), privacy: str = Form("private")):
         """Upload the film's reels to YouTube as Shorts, apart from the film's own upload and its approval: saved as

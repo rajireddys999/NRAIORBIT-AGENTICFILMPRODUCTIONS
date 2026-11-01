@@ -271,6 +271,40 @@ class SaferShot(BaseModel):
     motion_prompt: str = Field(description="What moves during the shot")
 
 
+# ---------------------------------------------------------------- Title and end cards (post/titlecards.py)
+
+class CardLine(BaseModel):
+    """One line of a card, Telugu over English."""
+
+    text_te: str = Field(description="The line in Telugu script; empty when the line is English only (a studio name, "
+                                     "or a name exactly as the owner wrote it)")
+    text_en: str = Field(description="The line in English; empty when the line is Telugu only")
+    size: Literal["title", "large", "medium", "small"] = Field(
+        description="title: the film's name only; large: a heading (THE END, a studio name); medium: names and "
+                    "credits; small: a sentence about the story")
+
+
+class CardSlide(BaseModel):
+    """One card shown before or after the film, on its own, with silence."""
+
+    where: Literal["before", "after"]
+    kind: Literal["studio", "title", "about", "cast", "credit", "end"]
+    lines: list[CardLine] = Field(description="1 to 6 lines, top to bottom")
+    seconds: float = Field(description="How long the card stays, 2 to 10 seconds; longer for more lines")
+
+
+class CardDeck(BaseModel):
+    """The title and end cards of a film, written from the owner's own words."""
+
+    style: Literal["gold", "ivory", "crimson", "royal"] = Field(
+        description="gold lettering on black (the usual), ivory on black, gold on deep crimson, gold on royal blue")
+    backdrop: Literal["black", "film"] = Field(
+        description="film: the title card sits over a blurred, darkened still from the film; black: plain")
+    slides: list[CardSlide] = Field(description="Every card in order: the ones before the film first, then the ones "
+                                                "after; at most 4 before and 8 after")
+    why: str = Field(description="How the deck follows the owner's words, in plain English, one or two sentences")
+
+
 # ---------------------------------------------------------------- Music (S12)
 
 class Cue(BaseModel):

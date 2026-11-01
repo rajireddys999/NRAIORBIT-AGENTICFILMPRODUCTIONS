@@ -387,7 +387,7 @@ def test_the_pipeline_flow_shows_the_gates_and_the_step_under_way(client, root, 
     set_state("awaiting:cost", {"cost": "awaiting:cost"})
     html = client.get("/film/demo").text
     assert 'name="gate" value="cost"' in html and "Approve $12.50" in html and "needs you" in html
-    assert html.count('class="arrow"') == 11
+    assert html.count('class="arrow"') == 12                                  # one between each of the 13 steps
     (proj / "reviews" / "cost.pending").unlink()
     (proj / "reviews" / "publish.pending").write_text("x")
     (proj / "11_master" / "deliver").mkdir(parents=True)
@@ -1988,3 +1988,98 @@ def test_after_the_cast_is_approved_the_gallery_shows_each_characters_face_in_th
     assert f"/file/library/characters/{hero}_x/refs/face/01_front.png" in gallery
     assert "Use as final face" not in gallery and "Remove" not in gallery
     assert "each character's face in the film is marked Final face" in gallery
+
+
+# ------------------------------------------------------------------ title and end cards
+
+def _cards_made(root, rid="r1", brief="the title and THE END"):
+    """Cards made for the demo film from the owner's words `rid`, as the runner leaves them."""
+    from nraiorbit.post import titlecards as tc
+    from nraiorbit.post.reels import film_mark
+    folder = root / "demo" / "11_master" / tc.FOLDER
+    folder.mkdir(parents=True, exist_ok=True)
+    for name in ("01_before_title.png", "02_after_end.png"):
+        (folder / name).write_bytes(png())
+    (root / "demo" / "11_master" / tc.RELEASE).write_bytes(b"film with cards")
+    (folder / tc.RECORD).write_text(json.dumps({
+        "request_id": rid, "brief": brief, "film": film_mark(root / "demo" / "11_master" / "movie.mp4"),
+        "film_bytes": (root / "demo" / "11_master" / "movie.mp4").stat().st_size, "opening_s": 4.0, "closing_s": 3.0,
+        "style": "gold", "backdrop": "film", "why": "As asked.",
+        "slides": [{"file": "01_before_title.png", "where": "before", "kind": "title", "seconds": 4.0,
+                    "lines": [{"text_te": "గోదావరి సింహం", "text_en": "Godavari Simham", "size": "title"}]},
+                   {"file": "02_after_end.png", "where": "after", "kind": "end", "seconds": 3.0,
+                    "lines": [{"text_te": "శుభం", "text_en": "THE END", "size": "large"}]}]}, ensure_ascii=False))
+    (root / "stories").mkdir(exist_ok=True)
+    (root / "stories" / f"demo{tc.SUFFIX}").write_text(json.dumps({
+        "id": rid, "brief": brief, "none": False, "by": "owner@example.com", "at": "2026-11-01T10:00:00+00:00"}))
+
+
+def test_the_cards_step_sits_between_qa_and_delivery_and_waits_for_a_cut_film(client, root):
+    html = client.get("/film/demo").text
+    keys = [k for k, _ in films.STAGES]
+    assert keys.index("qa") < keys.index("cards") < keys.index("deliver")
+    assert "Title &amp; end cards" in html and 'id="cards"' in html and 'action="/film/demo/cards"' in html
+    assert "Godavari Simham" in html and "THE END" in html                         # the suggested words, to start from
+    r = client.post("/film/demo/cards", data={"brief": "the title", "action": "make"}, follow_redirects=True)
+    assert "not cut yet" in r.text and not (root / "stories" / "demo.title_cards.json").exists()
+    assert rows(root)[0]["state"] == "awaiting:faces"
+
+
+def test_the_owners_words_for_the_cards_go_beside_the_story_and_the_row_moves(client, root):
+    _at_review(root, "cards")
+    html = client.get("/film/demo").text
+    assert "Add the title and end cards" in html and "Write the cards" in html and "Go on without cards" in html
+    r = client.post("/film/demo/cards", data={"brief": "   ", "action": "make"}, follow_redirects=True)
+    assert "Write what the cards should show" in r.text and rows(root)[0]["state"] == "awaiting:cards"
+    r = client.post("/film/demo/cards", data={"brief": " Title: Rain Ferry. Then the cast and THE END. ", "action": "make"},
+                    follow_redirects=True)
+    assert "Cards asked for" in r.text
+    ask = json.loads((root / "stories" / "demo.title_cards.json").read_text())
+    assert ask["brief"] == "Title: Rain Ferry. Then the cast and THE END." and ask["none"] is False
+    assert ask["id"] and ask["by"] == "owner@example.com"
+    row = rows(root)[0]
+    assert row["state"] == "approved" and row["note"].startswith("title and end cards asked for by owner@")
+    r = client.post("/film/demo/cards", data={"brief": "again", "action": "make"}, follow_redirects=True)
+    assert "the runner is on it" in r.text                                          # approved: a tick takes it
+    assert json.loads((root / "stories" / "demo.title_cards.json").read_text()) == ask   # the first words stay
+    _at_review(root, "cards")
+    r = client.post("/film/demo/cards", data={"action": "none"}, follow_redirects=True)
+    assert "No cards" in r.text and json.loads((root / "stories" / "demo.title_cards.json").read_text())["none"] is True
+    assert rows(root)[0]["note"].startswith("no title or end cards by owner@")
+    _at_review(root, None, state="done")                                            # a finished film: run again
+    client.post("/film/demo/cards", data={"brief": "after all, the title", "action": "make"}, follow_redirects=True)
+    assert rows(root)[0]["state"] == "retry"
+    assert client.post("/film/demo/approve", data={"gate": "cards"}, follow_redirects=True).status_code == 200
+
+
+def test_made_cards_show_their_pictures_and_the_film_with_them_and_offer_approval(client, root):
+    _at_review(root, "cards")
+    _cards_made(root)
+    d = films.detail(Store(str(root)), "demo", rows(root)[0])
+    assert d["stages"]["cards"]["status"] == "awaiting" and d["cards"]["made"]
+    assert d["cards"]["text"] == "2 cards: 4 s before the film, 3 s after" and len(d["cards"]["pictures"]) == 2
+    assert d["cards"]["pictures"][0]["text"] == "గోదావరి సింహం / Godavari Simham"
+    assert d["cards"]["brief"] == "the title and THE END"                           # their words, to edit
+    html = client.get("/film/demo").text
+    assert "Approve the cards" in html and "View the film with cards" in html and "/title_cards/01_before_title.png" in html
+    assert "Make the cards again" in html
+    (root / "demo" / "11_master" / "movie.mp4").write_bytes(b"a new cut")           # the cards are for the old cut
+    d = films.detail(Store(str(root)), "demo", rows(root)[0])
+    assert not d["cards"]["made"] and d["cards"]["stale"] and "Approve the cards" not in client.get("/film/demo").text
+
+
+def test_a_film_finished_before_the_cards_step_never_waits_on_it(client, root):
+    _at_review(root, None, state="done")
+    (root / "demo" / "11_master" / "deliver").mkdir(parents=True, exist_ok=True)
+    (root / "demo" / "11_master" / "deliver" / "delivery.json").write_text(json.dumps({"date": "2026-10-22", "files": [
+        {"name": "Rain_720p.mp4", "gs": "gs://b/demo/final/Rain_720p.mp4", "url": "https://x", "mb": 120.5}]}))
+    report = json.loads((root / "demo" / "reports" / "produce.json").read_text())
+    report.update(state="done", steps={**report["steps"], "render": "done", "deliver": {"files": ["Rain_720p.mp4"]}})
+    (root / "demo" / "reports" / "produce.json").write_text(json.dumps(report))
+    d = films.detail(Store(str(root)), "demo", rows(root)[0])
+    assert d["stages"]["cards"]["status"] == "skipped" and "before this step" in d["stages"]["cards"]["text"]
+    assert d["stages"]["deliver"]["status"] == "done"                               # not stale behind an open step
+    report["steps"]["cards"] = "none: no cards asked for; the film goes out as cut"   # the new runner's word
+    (root / "demo" / "reports" / "produce.json").write_text(json.dumps(report))
+    d = films.detail(Store(str(root)), "demo", rows(root)[0])
+    assert d["stages"]["cards"] == {"status": "skipped", "text": "no cards: the film goes out as cut"}

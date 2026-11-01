@@ -44,7 +44,7 @@ from .progress import Tracker
 STORY_COLUMNS = ["slug", "story_uri", "budget_usd", "gates", "publish", "state", "note", "updated"]
 REFERENCE_COLUMNS = ["url", "title", "learn", "minutes", "state", "profile_uri", "note", "updated", "approved_usd"]
 MAX_APPROVE_USD = 25.0                                # the most one watch may be approved for, whatever the sheet says
-GATES = ["story", "outline", "scenes", "cast", "shots", "cost", "faces", "render", "pacing", "final_cut", "trailer",
+GATES = ["story", "outline", "scenes", "cast", "shots", "cost", "faces", "render", "pacing", "final_cut", "trailer", "cards",
          "publish"]                                   # every gate a run can stop at, in order; what approve accepts
 CLAIM_HOURS = 6.0                                     # a producing row is another tick's for this long (the job's limit)
 TRACKER_FACTORY = Tracker                             # the execution's running record; tests inject a fake
@@ -443,6 +443,13 @@ def rework_uri(story_uri: str) -> str:
     return overrides_uri(story_uri).replace(".overrides.yaml", ".rework.json")
 
 
+def title_cards_uri(story_uri: str) -> str:
+    """<story>.title_cards.json next to the story: the owner's words for the title and end cards (post/titlecards),
+    copied into the project every tick; the latest words win."""
+    from ..post.titlecards import SUFFIX
+    return overrides_uri(story_uri).replace(".overrides.yaml", SUFFIX)
+
+
 def voices_uri(story_uri: str) -> str:
     """<story>.voices.yaml next to the story (character: ElevenLabs voice id), written by the control room."""
     return overrides_uri(story_uri).replace(".overrides.yaml", ".voices.yaml")
@@ -726,6 +733,12 @@ def _tick(stories_uri, references_uri, projects_dir, *, bucket, produce_fn, lear
                 (root / MODE_FILE).write_text(picked, encoding="utf-8")
             else:
                 (root / MODE_FILE).unlink(missing_ok=True)
+            from ..post.titlecards import REQUEST, SUFFIX
+            cards = fetch_story(f"gs://{bucket}/stories/{s['slug']}{SUFFIX}") if bucket else ""   # the owner's words
+            if not cards.strip() and s.get("story_uri"):                        # for the title and end cards, as
+                cards = fetch_story(title_cards_uri(s["story_uri"]))            # last saved; the step reads them
+            if cards.strip():
+                (root / REQUEST).write_text(cards, encoding="utf-8")
             ask = fetch_story(f"gs://{bucket}/stories/{s['slug']}.rework.json") if bucket else ""   # Send back, as
             if not ask.strip() and s.get("story_uri"):                          # the control room saved it; produce
                 ask = fetch_story(rework_uri(s["story_uri"]))                   # applies it once, by its id

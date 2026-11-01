@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime
 import json
 
+from ..post import titlecards
 from ..schemas import Outline, SceneScript, ShotList, StoryBible
 from .queue import GATES as GATE_ORDER
 
@@ -184,6 +185,11 @@ def rehearse(pipeline) -> dict:
                 waiting.append(gate)
             continue
         if gate in STEP_GATES and gate not in gates:      # as Pipeline.gate: a step gate the project never asked for
+            continue
+        if gate == titlecards.GATE:                       # as the cards step: words asked for where the project lists
+            if (titlecards.asks_for_words(cfg) and not approved(pipeline, gate)) or (   # it, a look where some
+                    titlecards.read_request(p.root) is not None and not approved(pipeline, gate)):  # were given
+                waiting.append(gate)
             continue
         g = gates.get(gate) or {}
         if g.get("enabled", True) and not g.get("auto_approve", False):

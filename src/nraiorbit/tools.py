@@ -269,6 +269,9 @@ def stage_tools(cfg: dict, planned: bool = False, shots=None) -> dict[str, list[
         "qa": [_tool("ffmpeg + numpy (no model)", model="ffmpeg", detail="film check", paid=False, phase="qa")]
               + ([_tool("MediaPipe face mesh", model="mediapipe", detail="lip-sync review", paid=False, phase="qa")]
                  if prov.get("lipsync", "none") != "none" else []),
+        "cards": [_claude(cfg, "card_writer", "cards", " · the title and end cards from your words", label="card writer"),
+                  _tool("Pillow + ffmpeg (stream copy)", model="ffmpeg", detail="cards drawn and joined around the film",
+                        paid=False, phase="cards")],
         "deliver": [_tool(f"ffmpeg 720p · GCS signed links ({pol.get('deliver_days') or 7} days)", model="ffmpeg",
                           detail="delivery files", paid=False, phase="deliver")],
         "publish": [_tool(f"YouTube Data API v3 ({publish})", model="youtube", paid=False, phase="publish",
@@ -317,7 +320,7 @@ def render_note(cfg: dict) -> str | None:
 
 
 _LLM_STAGE = {"story_analyst": "story", "casting": "cast", "director": "shots", "music_director": "render",
-              "dialogue_critic": "scenes"}
+              "dialogue_critic": "scenes", "card_writer": "cards"}
 _COST_RENDER = {"veo", "elevenlabs", "gemini_tts", "lyria", "sync_so", "lipsync"}
 
 

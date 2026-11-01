@@ -38,7 +38,7 @@ def test_runner_gates_leave_the_same_marker_and_read_the_approval(tmp_path):
     produce.approve(p, "cost")
     assert produce.approved(p, "cost") and not (tmp_path / "reviews" / "cost.pending").exists()
     assert produce.GATE_ORDER[:6] == ["story", "outline", "scenes", "cast", "shots", "cost"]
-    assert produce.GATE_ORDER[-1] == "publish" and set(produce.RUNNER_GATES) == {"cost", "faces", "publish"}
+    assert produce.GATE_ORDER[-2:] == ["cards", "publish"] and set(produce.RUNNER_GATES) == {"cost", "faces", "cards", "publish"}
 
 
 def test_the_queue_approves_the_gate_the_run_stopped_at_never_a_spent_marker(tmp_path):

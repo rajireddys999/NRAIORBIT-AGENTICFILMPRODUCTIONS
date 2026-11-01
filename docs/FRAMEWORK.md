@@ -35,7 +35,7 @@ src/nraiorbit/
 ```
 story.md ──> story_bible ──> outline ──> scenes ──> cast ──> shots ──> music_plan ──> render ──> assemble ──> trailer
                  │gate:story             │gate:cast     │gate:faces   (paid: images, Veo, voices, music, lip-sync)
-                                                                        └─> qa ──> release ──> publish(YouTube) ──> backup
+                                                                        └─> qa ──> cards ──> release ──> publish(YouTube) ──> backup
 ```
 
 | Step | Command | Human gate | Paid |
@@ -46,6 +46,7 @@ story.md ──> story_bible ──> outline ──> scenes ──> cast ──>
 | Voices | `providers.tts: elevenlabs` with `voice.cast` | lines approved | characters on the plan |
 | Picture, music, lip-sync | `nraiorbit run <slug> --yes --max-spend N` | cost preview, cap | Veo, Lyria, sync.so |
 | QA | `nraiorbit qa lipsync <slug>`, `nraiorbit qa film <slug>` | fixes go to `lipsync.shots` | |
+| Title & end cards | the control room's text box (`stories/<slug>.title_cards.json`), made by the runner | **the owner's words, then a look** | Claude, cents |
 | Deliver | `nraiorbit release deliver <slug>` | | storage pennies |
 | Publish | `nraiorbit release youtube <slug> [--trailer] [--privacy private]` | the owner flips private to public in YouTube Studio | |
 | Keep | `nraiorbit backup <slug>` | | storage pennies |

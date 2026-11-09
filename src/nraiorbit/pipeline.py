@@ -58,6 +58,15 @@ STAGE_GATES = {"story_bible": "story", "outline": "outline", "scenes": "scenes",
                "render": "render", "assemble": "pacing", "trailer": "trailer"}
 
 
+def fan_out(pipeline, n: int) -> int:
+    """Threads for n shot-list calls at once: every one of them when the director's calls go to Claude as one
+    Message Batch (llm.batch.agents: they must all be in the window together), else llm.concurrency."""
+    llm = getattr(getattr(pipeline, "director", None), "llm", None)
+    if "director" in (getattr(llm, "batch_agents", None) or ()):
+        return max(1, n)
+    return workers(getattr(pipeline, "cfg", None) or {})
+
+
 def gates_of(stage: str) -> tuple[str, ...]:
     """Every review gate a stage can raise: the cut is `pacing` for an animatic and `final_cut` for a film."""
     if stage == "assemble":
@@ -853,7 +862,7 @@ class Pipeline:
             self.log(f"  kept out of frame (the video model shows no one under 18): {', '.join(off_screen.values())}")
         plans = {}
         for i, out in ordered_map(lambda p: self.director.shots(bible, lock, p.sc, p.script, p.actions, p.camera, **kw),
-                                  prepared, workers(self.cfg), warm_first=True):
+                                  prepared, fan_out(self, len(prepared)), warm_first=True):
             if out.error is not None:
                 error = error or out.error
                 continue
@@ -868,7 +877,7 @@ class Pipeline:
                     f"{n} shots, but a {p.sc.target_seconds} s scene takes between "
                     f"{least_shots(p.sc.target_seconds, lengths)} and {most_shots(p.sc.target_seconds, lengths)} clips "
                     f"of {min(lengths)} to {max(lengths)} s."))
-            for j, out in ordered_map(again, off, workers(self.cfg)):
+            for j, out in ordered_map(again, off, fan_out(self, len(off))):
                 if out.error is None:
                     plans[off[j]] = out.value
                 else:
@@ -885,7 +894,7 @@ class Pipeline:
                 return self.director.shots(bible, lock, p.sc, p.script, p.actions, p.camera, **kw, issue=(
                     f"it put {', '.join(off_screen[c] for c in seen[i])} in frame, and the video model will not "
                     "show them."))
-            for j, out in ordered_map(without, shown, workers(self.cfg)):
+            for j, out in ordered_map(without, shown, fan_out(self, len(shown))):
                 i = shown[j]
                 if out.error is None and not any(c in off_screen for s in out.value.shots
                                                  for c in s.characters_in_frame):
@@ -909,7 +918,7 @@ class Pipeline:
             return self.director.shots(bible, lock, p.sc, p.script, p.actions, p.camera, **kw, issue=(
                 "its dialogue does not fit its shots, so voices would play over the wrong faces: "
                 + "; ".join(unfit[i][:8])))
-        for j, out in ordered_map(refit, list(unfit), workers(self.cfg)):
+        for j, out in ordered_map(refit, list(unfit), fan_out(self, len(unfit))):
             i = list(unfit)[j]
             better = out.error is None and not any(c in (off_screen or {}) for s in out.value.shots
                                                    for c in s.characters_in_frame)

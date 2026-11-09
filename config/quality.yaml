@@ -39,3 +39,7 @@ sd:
         casting: claude-sonnet-5-5
         music_director: claude-sonnet-5-5
         card_writer: claude-sonnet-5-5
+      batch:
+        agents: [director]           # the shot lists (one call per scene, all at once) go as one Message Batch at
+                                     # half price; a batch takes minutes, sometimes an hour, which the runner can
+                                     # afford; one not done within llm.batch.wait_minutes runs one by one instead

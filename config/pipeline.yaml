@@ -58,6 +58,15 @@ llm:
     casting: medium
     editor: high                   # reads the owner's rejection and decides what to redo (service/triage.py)
     card_writer: medium            # the title and end cards from the owner's words (post/titlecards.py)
+  models: {}                       # per agent, a model other than llm.model, e.g. {director: claude-sonnet-5-5}
+                                   # (the sd tool set in config/quality.yaml does this); unlisted agents use llm.model
+  batch:                           # calls that can wait go to Claude as one Message Batch at half price
+    agents: []                     # which agents: the shot lists are the case (director: one call per scene, all at
+                                   # once; the sd set turns it on). A batch takes minutes, sometimes an hour.
+    quiet_seconds: 3               # calls arriving within this long of each other form one batch
+    min_calls: 2                   # fewer than this in a window run one by one, as without batch
+    wait_minutes: 60               # a batch not ended by then is cancelled and its calls run one by one
+    poll_seconds: 20
   critique_rounds: 2
   critique_pass_score: 8
   concurrency: 2                   # independent Claude calls at once (shot lists per scene). 1 = one at a time, as before. Each call gets the same inputs as in the one-at-a-time order

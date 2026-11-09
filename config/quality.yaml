@@ -1,0 +1,41 @@
+# Two named tool sets. A film picks one in the control room (the New film page, or the Money card of its page; the
+# queue sheet's `quality` column carries it), and its `quality:` fills in the tools the film does not name itself:
+#
+#     config/pipeline.yaml  <  the set's settings below  <  the film's own pipeline.yaml
+#
+# so a tool named in a film's own pipeline.yaml always wins over the set (a hand-picked lipsync.model stays). A film
+# with no quality at all (the defaults, projects made by hand) runs as its files say. The "about" figures are what a
+# 10-minute film costs per minute of finished film, from the last film's ledger and the lip-sync look test of
+# 2026-11-07; the cost step prices the real plan, shot by shot, before anything is paid.
+
+hd:
+  label: HD
+  about: "Today's set: Veo 3.1 Fast for every shot, sync.so sync-3 for the lips, Claude Opus for every agent."
+  about_usd_per_minute: 13           # "Rise, Son of Kunti" (2026-11-02): $157 for 12 minutes, Claude included
+  settings:
+    providers: {lipsync: sync_so}
+    lipsync: {model: sync-3}
+    google: {veo_model: veo-3.1-fast-generate-001, veo_tier: fast, veo_resolution: 720p}
+    llm: {models: {}}
+
+sd:
+  label: SD
+  about: "The low-price set: Veo 3.1 Lite for every shot, LatentSync on your own Google Cloud GPU for the lips, Claude Sonnet for the shot lists, critic, casting, music and cards; Opus still writes the story and the script."
+  about_usd_per_minute: 5            # Lite $18 + GPU lip-sync ~$10 + Claude ~$9 + first frames $7 + music, voices and
+                                     # retakes ~$6 for 10 minutes; the look test measured ~1 GPU-minute per second of shot
+  settings:
+    providers: {lipsync: latentsync_cloudrun}
+    lipsync:
+      runner: vertex_endpoint        # the route that works in this project today (Cloud Run GPU jobs need a quota grant)
+      image_tag: v2                  # the worker image registered in Vertex AI as nraiorbit-lipsync-v2 (LatentSync 1.6)
+      batch_max_shots: 24            # shots per GPU batch, so one batch (~1 GPU-minute a second of shot, plus the deploy
+                                     # wait) always fits the runner's 6-hour tick; the next tick takes the rest
+      on_failure: keep_original      # a shot the model cannot do keeps its clip, logged, and the film goes on
+    google: {veo_model: veo-3.1-lite-generate-001, veo_tier: lite, veo_resolution: 720p}
+    llm:
+      models:                        # per agent; agents not listed use llm.model (Claude Opus 5.5)
+        director: claude-sonnet-5-5
+        dialogue_critic: claude-sonnet-5-5
+        casting: claude-sonnet-5-5
+        music_director: claude-sonnet-5-5
+        card_writer: claude-sonnet-5-5

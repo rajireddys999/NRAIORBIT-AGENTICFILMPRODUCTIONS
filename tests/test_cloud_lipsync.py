@@ -300,3 +300,85 @@ def test_keep_original_remembers_failures_and_does_not_resend(tmp_path):
     jobs.fail_keys.clear()
     sync.retry_failed = True                                       # lipsync.retry_failed: try it once more
     assert sync.apply_many([(v2, a2, tmp_path / "o2.mp4")])[0].exists() and len(jobs.runs) == runs + 1
+
+
+def test_batches_share_one_endpoint_and_the_image_tag_picks_the_build(tmp_path, monkeypatch):
+    import time as _time
+
+    monkeypatch.setattr(_time, "sleep", lambda s: None)
+    storage = FakeStorage()
+    session = FakeEndpointSession(storage)
+    cfg = {"lipsync": {"project": "film-proj", "bucket": "film-media", "runner": "vertex_endpoint", "poll_seconds": 0,
+                       "image_tag": "v2", "batch_max_shots": 2}}
+    ledger = SpendLedger(tmp_path / "reports" / "cost.jsonl", None)
+    sync = CloudRunLipSync(tmp_path, cfg, {"vertex_endpoint_gpu": {"per_hour": 1.0, "startup_minutes": 30,
+                                                                   "minutes_per_clip": 5}}, ledger, storage, session)
+    assert sync.image.endswith("/nraiorbit/latentsync:v2") and sync.batch_max == 2
+    shots = [_clip(tmp_path, n, c) for n, c in (("a", "red"), ("b", "blue"), ("c", "green"))]
+    outs = sync.apply_many([(v, a, tmp_path / "out" / f"{v.stem}.mp4") for v, a in shots])
+    assert all(o is not None and o.exists() for o in outs)
+    kinds = [u.rsplit("/", 1)[-1] for m, u in session.calls if m != "GET"]
+    assert kinds.count("5:deployModel") == 1 and kinds.count("5:predict") == 2       # two batches, one deploy
+    assert kinds.count("5:undeployModel") == 1 and kinds.count("5") == 1 and session.deployed == []
+    assert len(session.worker.runs) == 2 and [r["shots"] for r in ledger.records()] == [2, 1]
+    # the next batch of the same call is checked without the start-up wait, the first with it
+    assert [r["usd"] >= 0 for r in ledger.records()] == [True, True]
+
+
+class StoppedJobs(FakeJobs):
+    """A worker that finishes the first shot, then is stopped before writing the status file."""
+
+    def run_job(self, request):
+        name = request.name if hasattr(request, "name") else request["name"]
+        uri = request.overrides.container_overrides[0].env[0].value if hasattr(request, "overrides") \
+            else request["manifest"]
+        path = uri.removeprefix("gs://")
+        manifest = json.loads(self.storage.store[path])
+        first = manifest["items"][0]
+        self.storage.store[first["out"].removeprefix("gs://")] = self.storage.store[first["video"].removeprefix("gs://")]
+        self.runs.append((name, uri))
+        raise TimeoutError("the run timed out")
+
+
+def test_a_run_cut_short_keeps_the_finished_shots(tmp_path):
+    storage = FakeStorage()
+    jobs = StoppedJobs(storage)
+    sync, ledger = _provider(tmp_path, storage, jobs)
+    v1, a1 = _clip(tmp_path, "a", "red")
+    v2, a2 = _clip(tmp_path, "b", "blue")
+    with pytest.raises(GoogleAPIError, match=r"1 of 2 shots of this batch were finished and kept"):
+        sync.apply_many([(v1, a1, tmp_path / "o1.mp4"), (v2, a2, tmp_path / "o2.mp4")])
+    assert sync.cached(v1, a1) is not None and sync.cached(v2, a2) is None
+    assert [r.get("note") for r in ledger.records()] == ["run failed"]              # the GPU time still counts
+    good = FakeJobs(storage)
+    again, _ = _provider(tmp_path, storage, good)
+    outs = again.apply_many([(v1, a1, tmp_path / "o1.mp4"), (v2, a2, tmp_path / "o2.mp4")])
+    assert all(o.exists() for o in outs) and len(good.runs) == 1
+    manifest = json.loads(storage.store[good.runs[0][1].removeprefix("gs://")])
+    assert [i["key"] for i in manifest["items"]] == [again.key(v2, a2)]             # only the shot still missing
+
+
+class LeftUpSession(FakeEndpointSession):
+    """Vertex lists an endpoint of ours from days ago that nobody closed."""
+
+    def get(self, url):
+        if url.endswith("/endpoints"):
+            self.calls.append(("GET", url))
+            return self._resp(body={"endpoints": [{"name": "projects/1/locations/us-central1/endpoints/9",
+                                                   "displayName": "nraiorbit-lipsync-1760000000",
+                                                   "createTime": "2026-10-01T00:00:00Z"}]})
+        return super().get(url)
+
+
+def test_an_endpoint_left_up_stops_the_run_before_spending(tmp_path, monkeypatch):
+    import time as _time
+
+    monkeypatch.setattr(_time, "sleep", lambda s: None)
+    storage = FakeStorage()
+    session = LeftUpSession(storage)
+    sync = _endpoint_provider(tmp_path, storage, session)
+    v, a = _clip(tmp_path, "a", "red")
+    with pytest.raises(GoogleAPIError, match=r"still up from an earlier run.*endpoints/9.*Delete it"):
+        sync.apply(v, a, tmp_path / "o.mp4")
+    posts = [u.rsplit("/", 1)[-1] for m, u in session.calls if m == "POST"]
+    assert posts == [] and not any(m == "DELETE" for m, _ in session.calls)       # nothing made, nothing deleted

@@ -34,7 +34,7 @@ def test_preview_counts_sync_so_seconds_for_shots_with_a_speaker_in_frame(tmp_pa
     assert pre["total_usd"] == pytest.approx(plain["total_usd"] + pre["lipsync_usd"], abs=0.01)
     # cheaper model, cheaper estimate; offline: nothing new is paid
     cheap = preview_run(root, deep_merge(cfg, {"lipsync": {"model": "lipsync-2"}}), pricing)
-    assert cheap["lipsync_usd"] == pytest.approx(pre["lipsync_seconds"] * 0.04, abs=0.01)
+    assert cheap["lipsync_usd"] == pytest.approx(pre["lipsync_seconds"] * 0.05, abs=0.01)   # sync.so, 2026-11-06
     assert preview_run(root, deep_merge(cfg, {"lipsync": {"offline": True}}), pricing)["lipsync_usd"] == 0.0
     # a shot with a synced clip on disk is not counted again (a re-run after a stop)
     first = sorted(speaking)[0]

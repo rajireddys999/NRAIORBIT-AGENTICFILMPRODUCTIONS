@@ -47,6 +47,7 @@ class LLM(Protocol):
         task: str,
         effort: str = "high",
         agent: str = "agent",
+        model: str | None = None,
     ) -> T: ...
 
 
@@ -86,7 +87,8 @@ class ClaudeClient:
                     default_headers={"anthropic-workspace-id": workspace} if workspace else None, max_retries=6)
             return self._client
 
-    def generate(self, *, schema, system, context, task, effort="high", agent="agent"):
+    def generate(self, *, schema, system, context, task, effort="high", agent="agent", model=None):
+        """`model`: this call's model (llm.models per agent), else the client's."""
         content: list[dict] = []
         if context:
             content.append({"type": "text", "text": context, "cache_control": {"type": "ephemeral"}})
@@ -94,7 +96,7 @@ class ClaudeClient:
 
         started = time.time()
         with self.client.beta.messages.stream(
-            model=self.model,
+            model=model or self.model,
             max_tokens=self.max_tokens,
             system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": content}],
@@ -164,12 +166,14 @@ class ReplayLLM:
     def __init__(self, fixtures: dict[str, Fixture]):
         self.fixtures = fixtures
         self.calls: list[tuple[str, str]] = []
+        self.models: list[tuple[str, str | None]] = []   # (agent, the model it asked for; None = the default)
         self._lock = threading.Lock()
 
-    def generate(self, *, schema, system, context, task, effort="high", agent="agent"):
+    def generate(self, *, schema, system, context, task, effort="high", agent="agent", model=None):
         name = schema.__name__
         with self._lock:
             self.calls.append((agent, name))
+            self.models.append((agent, model))
         if name not in self.fixtures:
             raise LLMError(f"ReplayLLM has no fixture for {name} (agent={agent})")
         fixture = self.fixtures[name]

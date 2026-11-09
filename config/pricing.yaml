@@ -17,6 +17,10 @@ claude:                      # Anthropic API, per million tokens
   cache_write: 5.00          # ~1.25x input (5-minute cache)
   cache_read: 0.20
   thinking_multiplier: 1.5   # extra output tokens spent on adaptive thinking (assumption)
+  models:                    # the other models an agent may be put on (llm.models, the sd tool set); a logged call is
+                             # priced at its own model's rates. platform.claude.com/docs/en/about-claude/pricing, 2026-11-06
+    claude-sonnet-5-5: {input: 2.00, output: 10.00, cache_write: 2.50, cache_read: 0.10}
+    claude-haiku-5-5: {input: 0.10, output: 0.50, cache_write: 0.125, cache_read: 0.01}
 
 veo:
   durations_s: [4, 6, 8]     # clip lengths Veo can generate; a shot is billed at the next one up
@@ -97,12 +101,13 @@ elevenlabs:               # Telugu voices through ElevenLabs (providers.tts: ele
                           # credits a sound (11-20 a second when its length is set): about $0.02-0.03 on most plans
 
 sync_so:                  # lip-sync through sync.so's API (providers.lipsync: sync_so), per second of output at 25 fps
-  per_second:             # sync.so/pricing, 2026-10-16 (base rates; subscription tiers discount 5-20 %)
+  per_second:             # sync.so/pricing, Creator plan column, re-read 2026-11-06 (Growth takes 5 % off, Scale 20 %)
     sync-3: 0.133         # 4K native, opens silent lips, obstruction handling
     lipsync-2-pro: 0.083  # diffusion super-resolution for teeth/beards; needs speaking motion in the source
-    lipsync-2: 0.04
+    lipsync-2: 0.05       # was 0.04 here, which is the Scale-plan price
 
 vertex_endpoint_gpu:      # lip-sync on a temporary Vertex AI endpoint (g2-standard-8 + 1x L4), billed while deployed
   per_hour: 0.98181       # Vertex AI prediction g2-standard-8 incl. 1x L4, us-central1 (verified 2026-10-14)
-  startup_minutes: 25     # register + create + deploy (measured ~30 min end to end for 2 shots)
-  minutes_per_clip: 10.0  # measured ~9.7 min per 6-8 s 1080p shot (2 runs, 7 shots)
+  startup_minutes: 55     # create + deploy before the first shot; measured 54 min on 2026-11-07 (~30 min on 2026-10-14)
+  minutes_per_clip: 6.5   # LatentSync 1.6 on the speaker crops the pipeline sends: 4.4-6.6 min for 4-6 s shots
+                          # (2026-11-07, about 1.05 GPU-minutes a second of shot); 9.7 min on 1080p whole frames (2026-10)

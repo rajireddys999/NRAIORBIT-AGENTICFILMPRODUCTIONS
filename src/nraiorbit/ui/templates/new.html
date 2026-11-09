@@ -14,6 +14,10 @@ textarea.story { min-height:300px; font-size:16px; font-family:var(--te); border
 .chips button.quiet.on { border-color:rgba(242,181,68,.6); background:var(--gold-soft); color:var(--gold) }
 .prefix { position:relative } .prefix input { padding-left:36px } .prefix > span { position:absolute; left:14px; top:50%; transform:translateY(-50%); color:var(--dim); font-family:var(--mono) }
 .toggle-row { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 16px; border-radius:14px; background:var(--well); border:1px solid var(--line); flex-wrap:wrap; margin-top:14px }
+.sets { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:10px; margin-top:8px }
+.set { position:relative; display:flex; flex-direction:column; gap:6px; padding:12px 14px; border:1px solid var(--line); border-radius:14px; background:var(--well); cursor:pointer; margin:0 }
+.set.on { border-color:rgba(242,181,68,.6); background:var(--gold-soft) } .set input { position:absolute; opacity:0; width:0; height:0 }
+.set .set-head { display:flex; justify-content:space-between; align-items:baseline; gap:10px } .set .set-head b { font-size:15px; letter-spacing:.08em } .set.on .set-head b, .set.on .price { color:var(--gold) }
 .slate { flex:1 1 380px; max-width:440px; min-width:0; border-radius:22px; overflow:hidden; border:1px solid var(--line2); background:var(--card); box-shadow:0 30px 80px rgba(0,0,0,.45) }
 .slate .clap { height:26px; background:repeating-linear-gradient(135deg,#EEF0F6 0 18px,#0B0C12 18px 36px) }
 .slate .inner { padding:22px 24px 24px; display:flex; flex-direction:column; gap:16px }
@@ -72,6 +76,17 @@ textarea.story { min-height:300px; font-size:16px; font-family:var(--te); border
           <button type="button" class="quiet on" data-v="10">10 min</button><button type="button" class="quiet" data-v="20">20 min</button><button type="button" class="quiet" data-v="45">45 min</button>
         </div>
       </div>
+      <label style="margin-top:14px">Tools · HD or SD</label>
+      <div class="sets" role="radiogroup" aria-label="Tool set">
+        {% for s in sets %}
+        <label class="set {% if form.quality == s.key %}on{% endif %}">
+          <input type="radio" name="quality" value="{{ s.key }}" {% if form.quality == s.key %}checked{% endif %} data-label="{{ s.label }}" data-per-minute="{{ s.per_minute }}">
+          <span class="set-head"><b>{{ s.label }}</b><span class="mono tiny price" data-price></span></span>
+          <span class="small muted">{{ s.about }}</span>
+        </label>
+        {% endfor %}
+      </div>
+      <div class="field-note">The figures are what the last films cost per minute of finished film. The cost step prices this film shot by shot before anything is paid, and the set can still be changed on the film's page until then.</div>
     </section>
 
     <section class="card" aria-labelledby="s-runner">
@@ -103,6 +118,7 @@ textarea.story { min-height:300px; font-size:16px; font-family:var(--te); border
         <div class="box"><span class="label">Cap</span><div class="v" id="sl-budget">$150</div></div>
         <div class="box"><span class="label">Gates</span><div class="v" id="sl-gates">ask</div></div>
         <div class="box"><span class="label">YouTube</span><div class="v" id="sl-publish">private</div></div>
+        <div class="box" style="grid-column:1 / -1"><span class="label">Tools</span><div class="v" id="sl-set">HD</div></div>
       </div>
       <div>
         <span class="label">What the runner will do</span>
@@ -129,7 +145,18 @@ textarea.story { min-height:300px; font-size:16px; font-family:var(--te); border
 (function () {
   var $ = function (id) { return document.getElementById(id); };
   var slug = $('slug'), runtime = $('runtime'), budget = $('budget'), gates = $('gates'), publish = $('publish'), story = $('story');
+  var sets = Array.prototype.slice.call(document.querySelectorAll('input[name=quality]'));
   function money(v) { var n = parseFloat(v); return isNaN(n) ? '$—' : '$' + n.toLocaleString('en-US', {maximumFractionDigits: 2}); }
+  function setPrices() {
+    var minutes = parseFloat(runtime.value) || 0, chosen = null;
+    sets.forEach(function (r) {
+      var per = parseFloat(r.dataset.perMinute) || 0, card = r.closest('.set');
+      card.classList.toggle('on', r.checked);
+      card.querySelector('[data-price]').textContent = per && minutes ? 'about ' + money(Math.round(per * minutes)) + ' for ' + minutes + ' min' : '';
+      if (r.checked) { chosen = r.dataset.label + (per && minutes ? ' · about ' + money(Math.round(per * minutes)) : ''); }
+    });
+    if ($('sl-set')) { $('sl-set').textContent = chosen || '—'; }
+  }
   function slugify(t) {
     var plain = (t || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 41).replace(/-+$/g, '');
     return plain.length >= 2 ? plain : '';
@@ -148,11 +175,12 @@ textarea.story { min-height:300px; font-size:16px; font-family:var(--te); border
     document.querySelectorAll('.chips[data-for=runtime] button').forEach(function (b) { b.classList.toggle('on', b.dataset.v === runtime.value); });
     var words = (story.value.trim().match(/\S+/g) || []).length;
     $('story-count').textContent = words + (words === 1 ? ' word' : ' words') + (story.value.trim().length < 40 && words ? ' · a little more' : '');
+    setPrices();
   }
   document.querySelectorAll('.chips[data-for=runtime] button').forEach(function (b) {
     b.addEventListener('click', function () { runtime.value = b.dataset.v; sync(); });
   });
-  [slug, runtime, budget, gates, publish, story].forEach(function (el) { el.addEventListener('input', sync); el.addEventListener('change', sync); });
+  [slug, runtime, budget, gates, publish, story].concat(sets).forEach(function (el) { el.addEventListener('input', sync); el.addEventListener('change', sync); });
   sync();
 })();
 </script>

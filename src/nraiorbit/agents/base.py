@@ -39,6 +39,8 @@ class Agent:
         self.llm = llm
         self.cfg = cfg
         self.effort = cfg.get("llm", {}).get("effort", {}).get(self.name, "high")
+        # llm.models: this agent's own model (the sd set puts the shot lists on Sonnet); unset: the client's
+        self.model = ((cfg.get("llm") or {}).get("models") or {}).get(self.name) or None
         self.system = load_prompt(SHARED_PROMPT) + "\n\n" + load_prompt(self.prompt_name or self.name)
     notes: str = ""                                    # the owner's notes when the film was sent back for rework
     film_categories = staticmethod(lambda: ())         # set by the pipeline: the film's categories, once it has a story
@@ -57,7 +59,7 @@ class Agent:
                      f"touch this step:\n<owner_notes>\n{self.notes}\n</owner_notes>")
         return self.llm.generate(
             schema=schema, system=self.system, context=context, task=task,
-            effort=self.effort, agent=self.name,
+            effort=self.effort, agent=self.name, **({"model": self.model} if self.model else {}),
         )
 
 

@@ -584,6 +584,7 @@ def summary(store: Store, slug: str, row: dict | None) -> dict:
         "note": (row or {}).get("note"), "produce": produce,
         "hint": explain_note((row or {}).get("note") or (row or {}).get("state")),
         "render_note": tools.render_note(resolved), "tools_line_render": tools.line(render), "tools_planned": planned,
+        "quality": tools.quality_set(resolved),
     }
 
 
@@ -1022,4 +1023,5 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         "tools": stage_tools, "tools_line": {k: tools.line(v) for k, v in stage_tools.items()},
         "tools_planned": planned, "render_note": tools.render_note(resolved),
         "used": tools.used(_jsonl(store, f"{slug}/reports/llm_usage.jsonl"), cash["rows"], resolved),
+        "quality": tools.quality_set(resolved), "quality_menu": tools.quality_menu(),
     }

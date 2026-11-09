@@ -41,7 +41,9 @@ import yaml
 
 from .progress import Tracker
 
-STORY_COLUMNS = ["slug", "story_uri", "budget_usd", "gates", "publish", "state", "note", "updated"]
+STORY_COLUMNS = ["slug", "story_uri", "budget_usd", "gates", "publish", "state", "note", "updated",
+                 "quality"]                           # quality (hd | sd, config/quality.yaml) came last: an older
+                                                      # sheet has no such column and reads as "" (the project's own)
 REFERENCE_COLUMNS = ["url", "title", "learn", "minutes", "state", "profile_uri", "note", "updated", "approved_usd"]
 MAX_APPROVE_USD = 25.0                                # the most one watch may be approved for, whatever the sheet says
 GATES = ["story", "outline", "scenes", "cast", "shots", "cost", "faces", "render", "pacing", "final_cut", "trailer", "cards",
@@ -411,7 +413,10 @@ def make_project(projects_dir: Path, template: Path, row: dict, story_text: str,
 
 
 def apply_row(root: Path, row: dict) -> bool:
-    """The row's budget_usd, gates and publish into the project's pipeline.yaml; True when something changed."""
+    """The row's budget_usd, gates, publish and quality (the tool set) into the project's pipeline.yaml; True when
+    something changed."""
+    from ..config import quality_key, quality_names
+
     cfg_path = root / "pipeline.yaml"
     cfg = (yaml.safe_load(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}) or {}
     before = yaml.safe_dump(cfg, sort_keys=True)
@@ -425,6 +430,9 @@ def apply_row(root: Path, row: dict) -> bool:
         pol["gates"] = row["gates"]
     if row.get("publish"):
         pol["publish"] = row["publish"]
+    quality = quality_key(row.get("quality"))
+    if quality in quality_names():                             # a word that is not a set is left to the owner
+        cfg["quality"] = quality
     changed = yaml.safe_dump(cfg, sort_keys=True) != before
     if changed or not cfg_path.exists():
         cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")

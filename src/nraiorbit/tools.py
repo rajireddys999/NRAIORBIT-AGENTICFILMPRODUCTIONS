@@ -15,7 +15,8 @@ import re
 from collections import Counter, defaultdict
 from functools import lru_cache
 
-from .config import DEFAULT_CONFIG_DIR, REPO_ROOT, deep_merge, load_yaml
+from .config import (DEFAULT_CONFIG_DIR, REPO_ROOT, UnknownQuality, deep_merge, load_yaml, quality_key,
+                     quality_sets, with_quality)
 from .costing import VEO_TIER_NAMES
 
 MOCK = "mock (no paid call)"
@@ -53,21 +54,50 @@ def _sec(cfg: dict, key: str) -> dict:
 
 
 def resolve(raw, *, overrides=None, row=None, use_template=True) -> tuple[dict, bool]:
-    """(config, planned). A film with its own pipeline.yaml is that file over the defaults, exactly what the runner's
-    Pipeline sees. A queued film before its first tick has none yet: it is shown as the runner will make it
-    (queue.make_project, then apply_row): the template, the story's overrides, then the row's cap and policy."""
+    """(config, planned). A film with its own pipeline.yaml is that file over its tool set over the defaults,
+    exactly what the runner's Pipeline sees (config.load_pipeline_config). A queued film before its first tick has
+    none yet: it is shown as the runner will make it (queue.make_project, then apply_row): the template, the story's
+    overrides, then the row's cap, policy and quality. The row's quality is what the next tick writes into the
+    project, so it is shown at once; a word that is not a set shows the film as its files say."""
+    row = row or {}
     if isinstance(raw, dict) and raw:
-        cfg, planned = deep_merge(defaults(), raw), False
+        own, planned = dict(raw), False
     else:
-        cfg, planned = defaults(), True
-        if use_template:
-            cfg = deep_merge(cfg, template())
+        own, planned = (template() if use_template else {}), True
         if isinstance(overrides, dict):
-            cfg = deep_merge(cfg, overrides)
-        _apply_row(cfg, row or {})
+            own = deep_merge(own, overrides)
+    chosen = quality_key(row.get("quality"))
+    if chosen in quality_sets():
+        own["quality"] = chosen
+    try:
+        cfg = with_quality(defaults(), own)
+    except UnknownQuality:
+        cfg = deep_merge(defaults(), own)
+    if planned:
+        _apply_row(cfg, row)
     if not isinstance(cfg.get("providers"), dict):         # an empty providers: block names none
         cfg["providers"] = defaults()["providers"]
     return cfg, planned
+
+
+def quality_menu() -> list[dict]:
+    """The tool sets a film can pick, for the control room's forms: key, label, what it is, dollars a minute."""
+    out = []
+    for key, s in quality_sets().items():
+        s = s if isinstance(s, dict) else {}
+        out.append({"key": key, "label": str(s.get("label") or key.upper()), "about": str(s.get("about") or ""),
+                    "per_minute": float(s.get("about_usd_per_minute") or 0)})
+    return out
+
+
+def quality_set(cfg: dict) -> dict | None:
+    """The tool set a resolved config is on ({key, label, about, per_minute}), None when it names none (or one that
+    is not a set, which the page shows as written)."""
+    key = quality_key(cfg.get("quality"))
+    if key is None:
+        return None
+    hit = next((q for q in quality_menu() if q["key"] == key), None)
+    return hit or {"key": key, "label": key.upper(), "about": "not a set in config/quality.yaml", "per_minute": 0.0}
 
 
 def _apply_row(cfg: dict, row: dict) -> None:
@@ -121,8 +151,9 @@ def _claude(cfg: dict, agent: str, phase: str, extra: str = "", label: str = "")
     """One agent's Claude call; `label` tells two agents apart where they share a stage."""
     llm = _sec(cfg, "llm")
     effort = _sec(llm, "effort").get(agent, "high")       # agents/base.py's default
-    name = model_name(llm.get("model")) or "Claude"
-    return _tool(f"{name} ({label})" if label else name, model=f"{llm.get('model')} ({agent})",
+    model = _sec(llm, "models").get(agent) or llm.get("model")   # llm.models: this agent's own model (the sd set)
+    name = model_name(model) or "Claude"
+    return _tool(f"{name} ({label})" if label else name, model=f"{model} ({agent})",
                  detail=f"effort {effort}{extra}", phase=phase)
 
 
@@ -194,8 +225,11 @@ def _lips(cfg: dict) -> list[dict]:
         return [_tool(f"sync.so {model}", model=model, detail="cache only" if offline else "lip-sync API",
                       paid=not offline, phase="render")] + lock
     if name == "latentsync_cloudrun":
-        return [_tool("LatentSync (Cloud Run L4)", model=ls.get("job") or "nraiorbit-lipsync",
-                      detail="cache only" if offline else "your GPU job", paid=not offline, phase="render")] + lock
+        where = {"vertex_endpoint": "your Vertex AI L4", "vertex": "your Vertex AI job, L4"}.get(
+            ls.get("runner") or "cloudrun", "your Cloud Run L4")
+        return [_tool(f"LatentSync ({where})", model=ls.get("job") or "nraiorbit-lipsync",
+                      detail="cache only" if offline else "open model on your own GPU", paid=not offline,
+                      phase="render")] + lock
     if name == "mock":
         return [_mock("lips", "placeholder")]
     if name == "none":

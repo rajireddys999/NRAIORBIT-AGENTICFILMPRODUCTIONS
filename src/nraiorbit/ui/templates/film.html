@@ -292,6 +292,7 @@
   <div class="card money" id="money">
     <div class="section-head"><h2>Money{{ run_badge('cost', quiet=True) }}</h2><span class="mono tiny dim">reports/cost.jsonl · {{ m['items'] }} paid calls</span></div>
     {{ tools_head('cost') }}
+    {% if f.quality %}<p class="small" id="tool-set"><b>{{ f.quality.label }}</b> tools · {{ f.quality.about }}</p>{% endif %}
     <p><span class="big gold">{{ m.spent|money }}<small>spent</small></span>{% if m.cap %} <span class="muted">of the <b>{{ m.cap|money }}</b> cap ({{ m.left|money }} left)</span>{% else %} · <b class="bad">no cap: nothing paid until one is set</b>{% endif %}</p>
     {% if m.cap %}<div class="bar {% if m.spent > m.cap %}over{% endif %}" style="margin:12px 0"><span style="width:{{ [100, (100 * m.spent / m.cap)|round]|min }}%"></span></div>{% endif %}
     {% if m.estimate %}<p class="small">Next paid run, one attempt per shot: about <b>{{ m.estimate.total_usd|money }}</b>
@@ -302,6 +303,7 @@
       <input name="budget" type="number" min="1" step="1" value="{{ f.row.budget_usd }}" style="width:120px" title="cap" aria-label="Budget cap"> <span class="small muted">cap</span>
       <select name="gates" aria-label="Gates"><option value="">gates: {{ f.row.gates or f.policy.gates or 'ask' }}</option><option value="ask">ask: every step waits</option><option value="auto">auto: waits only at cost and YouTube</option></select>
       <select name="publish" aria-label="YouTube"><option value="">YouTube: {{ f.row.publish or f.policy.publish or 'none' }}</option>{% for p in ['none','private','unlisted','public'] %}<option value="{{ p }}">{{ p }}</option>{% endfor %}</select>
+      <select name="quality" aria-label="Tool set" title="HD or SD tools; the next tick writes it into the project. Shots already made keep their clips; the rest use the new tools."><option value="">tools: {{ f.quality.label if f.quality else 'as the film says' }}</option>{% for s in f.quality_menu %}<option value="{{ s.key }}">{{ s.label }}</option>{% endfor %}</select>
       <button class="quiet">Save</button>
     </form>{% endif %}
   </div>

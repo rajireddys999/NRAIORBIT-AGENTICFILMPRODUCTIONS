@@ -13,6 +13,21 @@ licence and terms before commercial use. Several popular open models have
 service or model, read from the film's resolved config, and a capability left on a mock
 says "mock (no paid call)" (docs/FRAMEWORK.md §10). This catalog is the wider menu.
 
+**Two tool sets, HD and SD** (`config/quality.yaml`). A film picks one on the New film
+page or in the Money card of its page (the queue sheet's `quality` column carries it), and
+the set fills in the tools the film's own `pipeline.yaml` does not name:
+
+| | HD (today's set) | SD (the low-price set) |
+|---|---|---|
+| Picture | Veo 3.1 Fast 720p, every shot | Veo 3.1 Lite 720p, every shot (a shot's `video_tier` still wins) |
+| Lips | sync.so sync-3 | LatentSync 1.6 on your own Google Cloud GPU (Vertex AI L4, in batches) |
+| Claude | Opus 5.5 for every agent | Sonnet 5.5 for the shot lists, critic, casting, music and cards; Opus for the story and the script |
+| About, a minute of film | $13 | $5 |
+
+The figures are from the last film's ledger and the lip-sync look test of 2026-11-07; the
+cost step prices every film shot by shot before anything is paid. A tool named in the
+film's own file beats the set, so a hand-picked `lipsync.model` stays.
+
 ---
 
 ## 1. Reasoning and language

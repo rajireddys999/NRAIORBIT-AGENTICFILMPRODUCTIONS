@@ -239,15 +239,35 @@ def claude_api_estimate(stats: PlanStats, pricing: dict) -> dict[str, float]:
     return {"low": cost * 0.7, "expected": cost, "high": cost * 1.8}
 
 
+def claude_rates(pricing: dict, model) -> dict:
+    """Per-million-token rates for one model: pricing.claude.models[<model>] when it is listed (by its name, or its
+    name without a snapshot date), else pricing.claude's own (the default model's)."""
+    p = pricing["claude"]
+    name = str(model or "")
+    for key, rates in (p.get("models") or {}).items():
+        if name == key or name.startswith(f"{key}-"):
+            return {**p, **(rates or {})}
+    return p
+
+
+def gpu_price(pricing: dict, runner: str = "cloudrun") -> dict:
+    """What a minute of your own lip-sync GPU costs (pricing.yaml cloud_run_gpu, or vertex_endpoint_gpu for the
+    Vertex endpoint runner): dollars an hour, start-up minutes per batch, minutes per shot."""
+    p = (pricing.get("vertex_endpoint_gpu") if runner == "vertex_endpoint" else None) or pricing.get("cloud_run_gpu") or {}
+    return {"per_hour": p.get("per_hour", 1.10), "startup_minutes": p.get("startup_minutes", 6.0),
+            "minutes_per_clip": p.get("minutes_per_clip", 10.0)}
+
+
 def claude_actual(project_dir: Path | None, pricing: dict) -> tuple[float, int] | None:
     if project_dir is None:
         return None
     log = project_dir / "reports" / "llm_usage.jsonl"
     if not log.exists():
         return None
-    p, total, calls = pricing["claude"], 0.0, 0
+    total, calls = 0.0, 0
     for line in log.read_text(encoding="utf-8").splitlines():
         r = json.loads(line)
+        p = claude_rates(pricing, r.get("model"))
         total += (r["input_tokens"] * p["input"] + r["output_tokens"] * p["output"]
                   + (r.get("cache_read_input_tokens") or 0) * p["cache_read"]
                   + (r.get("cache_creation_input_tokens") or 0) * p["cache_write"]) / 1e6
@@ -485,14 +505,23 @@ def preview_run(root: Path, cfg: dict, pricing: dict) -> dict:
         out["music_usd"] = out["cues"] * lyria_price(pricing, music_model(g))
     ls = cfg.get("lipsync") or {}
     out["lipsync_seconds"], out["lipsync_usd"], out["cached_lipsync_shots"] = 0.0, 0.0, 0
-    if prov.get("lipsync") == "sync_so" and not ls.get("offline"):
-        rate = float(((pricing.get("sync_so") or {}).get("per_second") or {}).get(ls.get("model", "sync-3"), 0.133))
+    lips = prov.get("lipsync") if not ls.get("offline") else None
+    if lips in ("sync_so", "latentsync_cloudrun"):
         speaking = speaking_shots(root, only)
         done = {sid for sid in speaking if any((root / "07_video" / sid).glob("*_lipsync.mp4"))}   # synced already
         done |= lipsynced_before(root, speaking, cfg)     # a fresh container has no such file: the run records say
         out["cached_lipsync_shots"] = len(done)
-        out["lipsync_seconds"] = round(sum(sec for sid, sec in speaking.items() if sid not in done), 1)
-        out["lipsync_usd"] = round(out["lipsync_seconds"] * rate, 2)
+        left = {sid: sec for sid, sec in speaking.items() if sid not in done}
+        out["lipsync_seconds"] = round(sum(left.values()), 1)
+        if lips == "sync_so":                             # billed by the second of video
+            rate = float(((pricing.get("sync_so") or {}).get("per_second") or {}).get(ls.get("model", "sync-3"), 0.133))
+            out["lipsync_usd"] = round(out["lipsync_seconds"] * rate, 2)
+        else:                                             # your own GPU: minutes of L4, a start-up wait per batch
+            p = gpu_price(pricing, ls.get("runner") or "cloudrun")
+            per_batch = int(ls.get("batch_max_shots") or 0)
+            batches = (math.ceil(len(left) / per_batch) if per_batch else 1) if left else 0
+            minutes = batches * p["startup_minutes"] + len(left) * p["minutes_per_clip"]
+            out["lipsync_usd"] = round(p["per_hour"] * minutes / 60, 2)
     out["total_usd"] = out["video_usd"] + out["keyframe_usd"] + out["tts_usd"] + out["music_usd"] + out["lipsync_usd"]
     return out
 

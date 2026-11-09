@@ -147,7 +147,7 @@
         </div>
         {% if f.logline %}<p class="logline">{{ f.logline }}</p>{% endif %}
         <div>{{ money_line(f.money) }}</div>
-        {% if f.tools_line_render %}<p class="tiny muted"{% if f.render_note %} title="{{ f.render_note }}"{% endif %}>Render: {% if f.tools_planned %}<i>{{ f.tools_line_render }}</i>{% else %}{{ f.tools_line_render }}{% endif %}</p>{% endif %}
+        {% if f.tools_line_render %}<p class="tiny muted"{% if f.render_note %} title="{{ f.render_note }}"{% endif %}>{% if f.quality %}<b>{{ f.quality.label }}</b> · {% endif %}Render: {% if f.tools_planned %}<i>{{ f.tools_line_render }}</i>{% else %}{{ f.tools_line_render }}{% endif %}</p>{% endif %}
         <div class="meta">
           {% if f.render_note and 'mock' in f.render_note %}<span class="badge held" title="{{ f.render_note }}">mock</span>{% endif %}
           {% if f.tools_planned %}<span class="badge plain" title="the template's choices; the first tick writes the film's own config">planned</span>{% endif %}

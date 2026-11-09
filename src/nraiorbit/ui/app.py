@@ -17,6 +17,8 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Red
 from fastapi.templating import Jinja2Templates
 
 from .. import looks as looks_mod
+from .. import tools
+from ..config import quality_key, quality_names
 from ..service import feed as feed_mod
 from ..service import queue
 from . import films
@@ -556,23 +558,27 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                     doings=doings, dupes=duplicates(panel["executions"], doings))
 
     FORM_DEFAULTS = {"slug": "", "story": "", "budget": "150", "runtime": "10", "gates": "ask", "publish": "private",
-                     "start": "1"}
+                     "start": "1", "quality": "hd"}
 
     @app.get("/new", response_class=HTMLResponse)
     def new_form(request: Request, email: str = Depends(guard)):
-        return page("new.html", request, email, form=dict(FORM_DEFAULTS), error=None)
+        return page("new.html", request, email, form=dict(FORM_DEFAULTS), error=None, sets=tools.quality_menu())
 
     @app.post("/new")
     def new_story(request: Request, email: str = Depends(guard), slug: str = Form(""), story: str = Form(""),
                   budget: str = Form(""), runtime: str = Form("10"), gates: str = Form("ask"),
-                  publish: str = Form("private"), start: str = Form("")):
+                  publish: str = Form("private"), start: str = Form(""), quality: str = Form("hd")):
         form = {"slug": slug, "story": story, "budget": budget, "runtime": runtime, "gates": gates,
-                "publish": publish, "start": start}
+                "publish": publish, "start": start, "quality": quality}
 
         def again(error: str):
-            resp = page("new.html", request, email, form=form, error=error)
+            resp = page("new.html", request, email, form=form, error=error, sets=tools.quality_menu())
             resp.status_code = 400
             return resp
+
+        tool_set = quality_key(quality)
+        if tool_set not in quality_names():
+            return again("The tool set must be one of " + ", ".join(s.upper() for s in quality_names()) + ".")
 
         if len(story.strip()) < 40:
             return again("The story is too short to plan a film from. A paragraph is the least; a page is better.")
@@ -594,14 +600,15 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                          or store.exists(f"{s}/project/01_story_bible.json") or store.exists(f"stories/{s}.md"))
         store.write_text(f"stories/{slug}.md", story.strip() + "\n", "text/markdown")
         store.write_text(f"stories/{slug}.overrides.yaml",
-                         yaml.safe_dump({"film": {"runtime_minutes": minutes}}), "text/yaml")
+                         yaml.safe_dump({"film": {"runtime_minutes": minutes}, "quality": tool_set}), "text/yaml")
 
         def add(text: str) -> str:                        # under the precondition: a tick's claim lands beside it
             rows = queue.rows_of(text, queue.STORY_COLUMNS)
             if any(r["slug"] == slug for r in rows):
                 raise HTTPException(400, f"{slug} exists already; pick another slug")
             rows.append({"slug": slug, "story_uri": store.uri(f"stories/{slug}.md"), "budget_usd": money_text(cap),
-                         "gates": gates, "publish": publish, "state": "new", "note": "", "updated": queue.now()})
+                         "gates": gates, "publish": publish, "state": "new", "note": "", "updated": queue.now(),
+                         "quality": tool_set})
             return queue.csv_of(rows, queue.STORY_COLUMNS)
         store.update_text(STORIES, add, "text/csv")
         msg = f"{slug} queued; the runner picks it up within 15 minutes"
@@ -1002,7 +1009,7 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
 
     @app.post("/film/{slug}/row")
     def save_row(slug: str, email: str = Depends(guard), budget: str = Form(""), gates: str = Form(""),
-                 publish: str = Form("")):
+                 publish: str = Form(""), quality: str = Form("")):
         if budget:
             try:
                 cap = float(budget)
@@ -1010,6 +1017,9 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                     raise ValueError
             except ValueError:
                 raise HTTPException(400, "the budget cap must be a real number above zero") from None
+        tool_set = quality_key(quality)
+        if tool_set is not None and tool_set not in quality_names():
+            raise HTTPException(400, "the tool set must be one of " + ", ".join(s.upper() for s in quality_names()))
 
         def change(row: dict):
             if budget:
@@ -1018,6 +1028,8 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                 row["gates"] = gates
             if publish in ("none", "private", "unlisted", "public"):
                 row["publish"] = publish
+            if tool_set:
+                row["quality"] = tool_set
             if row["state"] != "producing":                   # a producing row's time names the run's claim: kept
                 row["updated"] = queue.now()
         edit_row(store, slug, change)

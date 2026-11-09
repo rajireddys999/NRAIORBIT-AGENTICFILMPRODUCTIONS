@@ -1,5 +1,12 @@
-# Choices for this film. Anything not set here comes from config/pipeline.yaml.
-# The values below are the ones Godavari Simham settled on (docs/PROJECT_STATUS.md); change what this story needs.
+# Choices for this film. Anything not set here comes from the film's tool set (config/quality.yaml), then from
+# config/pipeline.yaml. The values below are the ones Godavari Simham settled on (docs/PROJECT_STATUS.md); change
+# what this story needs.
+
+quality: hd                        # the tool set: hd (Veo 3.1 Fast, sync.so sync-3, Claude Opus for every agent) or
+                                   # sd (Veo 3.1 Lite, LatentSync on your own GPU, Claude Sonnet for the shot lists,
+                                   # critic, casting, music and cards). config/quality.yaml says what each one sets;
+                                   # a tool named in this file wins over the set. The control room changes it per
+                                   # film (the queue sheet's quality column), and the next tick writes it here.
 
 film:
   runtime_minutes: 10              # the agents plan to this length (the defaults say 105: a feature)
@@ -7,10 +14,10 @@ film:
   trailer_seconds: 45
 
 providers:
-  video: veo                       # Veo 3.1 on Vertex AI; tiers per shot kind under google.video_tiers
+  video: veo                       # Veo 3.1 on Vertex AI; the set picks the tier, google.video_tiers per shot
   tts: inbox                       # inbox/dialogue/<line_id>.wav first, then voice.inbox_fallback
   music: lyria
-  lipsync: sync_so                 # sync.so sync-3 through the speaker lock (needs SYNC_API_KEY)
+  # lipsync: from the set (sync_so on hd, latentsync_cloudrun on sd), always through the speaker lock
 
 voice:
   animals_speak: false             # an animal's lines are its sounds, written as action; true (all) or [ids] talk
@@ -25,8 +32,7 @@ google:
   vertex: true
   veo_mode: keyframe               # animate an approved first frame; faces are checked before video is paid
 
-lipsync:
-  model: sync-3
+lipsync:                           # the model comes from the set: sync-3 on hd, LatentSync 1.6 (runner, image) on sd
   concurrency: 1
   on_failure: keep_original
   speaker_lock: true

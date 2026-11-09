@@ -207,6 +207,16 @@ def test_approve_retry_and_row_edits_write_only_the_sheet(client, root):
     row = rows(root)[0]
     assert row["budget_usd"] == "75" and row["publish"] == "unlisted" and row["gates"] == "ask"
     assert client.post("/film/demo/row", data={"budget": "-5"}).status_code == 400
+    # the tool set: a film made by hand names none; the sheet's column puts it on SD, shown at once, and the board too
+    html = client.get("/film/demo").text
+    assert "tools: as the film says" in html and 'id="tool-set"' not in html
+    client.post("/film/demo/row", data={"quality": "sd"})
+    assert rows(root)[0]["quality"] == "sd" and rows(root)[0]["publish"] == "unlisted"
+    html = client.get("/film/demo").text
+    assert "<b>SD</b> tools" in html and "LatentSync (your Vertex AI L4)" in html
+    assert "<b>SD</b> · Render:" in client.get("/").text
+    assert client.post("/film/demo/row", data={"quality": "ultra"}).status_code == 400
+    assert rows(root)[0]["quality"] == "sd"
     from urllib.parse import unquote
     r = client.post("/film/demo/retry", follow_redirects=False)                 # approved: a retry would lose it
     assert "already on it (approved)" in unquote(r.headers["location"]) and rows(root)[0]["state"] == "approved"
@@ -418,11 +428,24 @@ def test_new_story_writes_the_story_the_overrides_and_the_row(client, root):
                                   "publish": "private", "start": "1"}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"].startswith("/film/rain-ferry")
     assert (root / "stories" / "rain-ferry.md").read_text(encoding="utf-8").strip() == story.strip()
-    assert yaml.safe_load((root / "stories" / "rain-ferry.overrides.yaml").read_text()) == {"film": {"runtime_minutes": 5}}
+    assert yaml.safe_load((root / "stories" / "rain-ferry.overrides.yaml").read_text()) == {
+        "film": {"runtime_minutes": 5}, "quality": "hd"}                        # HD tools unless asked otherwise
     new = rows(root)[-1]
     assert new["slug"] == "rain-ferry" and new["state"] == "new" and new["budget_usd"] == "120"
     assert new["story_uri"].endswith("stories/rain-ferry.md") and client.started == ["nraiorbit-runner"]
-    assert client.get("/film/rain-ferry").status_code == 200                    # a queued film with no plan yet
+    assert new["quality"] == "hd"
+    html = client.get("/film/rain-ferry").text                                  # a queued film with no plan yet
+    assert "<b>HD</b> tools" in html and "sync.so sync-3" in html
+    r = client.post("/new", data={"slug": "cheap-ferry", "story": story, "budget": "60", "quality": "SD"},
+                    follow_redirects=False)
+    assert r.status_code == 303 and rows(root)[-1]["quality"] == "sd"
+    assert yaml.safe_load((root / "stories" / "cheap-ferry.overrides.yaml").read_text())["quality"] == "sd"
+    html = client.get("/film/cheap-ferry").text
+    assert "<b>SD</b> tools" in html and "LatentSync (your Vertex AI L4)" in html and "Veo 3.1 Lite" in html
+    r = client.post("/new", data={"slug": "ultra", "story": story, "budget": "60", "quality": "ultra"})
+    assert r.status_code == 400 and "tool set must be one of HD, SD" in r.text
+    form = client.get("/new").text                                               # both sets, with their price a minute
+    assert 'name="quality" value="sd"' in form and 'data-per-minute="5.0"' in form and "Tools · HD or SD" in form
     # any name works: it is turned into the folder name; a taken name gets -2; an empty one comes from the story
     r = client.post("/new", data={"slug": "Rain Ferry!", "story": story, "budget": "10"}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"].startswith("/film/rain-ferry-2")

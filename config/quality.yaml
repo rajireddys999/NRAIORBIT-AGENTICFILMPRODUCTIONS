@@ -20,16 +20,18 @@ hd:
 
 sd:
   label: SD
-  about: "The low-price set: Veo 3.1 Lite for every shot, LatentSync on your own Google Cloud GPU for the lips, Claude Sonnet for the shot lists, critic, casting, music and cards; Opus still writes the story and the script."
-  about_usd_per_minute: 5            # Lite $18 + GPU lip-sync ~$10 + Claude ~$9 + first frames $7 + music, voices and
-                                     # retakes ~$6 for 10 minutes; the look test measured ~1 GPU-minute per second of shot
+  about: "The low-price set: Veo 3.1 Lite for every shot, MuseTalk on your own Google Cloud GPU for the lips, Claude Sonnet for the shot lists, critic, casting, music and cards; Opus still writes the story and the script."
+  about_usd_per_minute: 4            # Lite $18 + GPU lip-sync ~$2 (MuseTalk: about a minute an L4 a shot plus the
+                                     # deploy wait; LatentSync was ~$10) + Claude ~$9 + first frames $7 + music, voices
+                                     # and retakes ~$6 for 10 minutes; until the first SD film's ledger says otherwise
   settings:
-    providers: {lipsync: latentsync_cloudrun}
+    providers: {lipsync: musetalk_cloudrun}   # latentsync_cloudrun (image_tag v2) is the slower, sharper engine
     lipsync:
       runner: vertex_endpoint        # the route that works in this project today (Cloud Run GPU jobs need a quota grant)
-      image_tag: v2                  # the worker image registered in Vertex AI as nraiorbit-lipsync-v2 (LatentSync 1.6)
-      batch_max_shots: 24            # shots per GPU batch, so one batch (~1 GPU-minute a second of shot, plus the deploy
-                                     # wait) always fits the runner's 6-hour tick; the next tick takes the rest
+      image_tag: v1                  # the MuseTalk worker image (deploy/musetalk), registered in Vertex AI as
+                                     # nraiorbit-lipsync-musetalk-v1 the first time it runs
+      batch_max_shots: 24            # shots per GPU batch, so one batch (about a minute a shot, plus the deploy wait)
+                                     # always fits the runner's 6-hour tick; the next tick takes the rest
       on_failure: keep_original      # a shot the model cannot do keeps its clip, logged, and the film goes on
     google: {veo_model: veo-3.1-lite-generate-001, veo_tier: lite, veo_resolution: 720p}
     llm:

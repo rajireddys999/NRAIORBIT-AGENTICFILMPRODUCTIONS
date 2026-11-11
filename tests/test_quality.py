@@ -24,8 +24,8 @@ def test_a_set_fills_in_what_a_film_does_not_say(tmp_path):
     hd, sd = with_quality(base, {"quality": "hd"}), with_quality(base, {"quality": " SD "})
     assert hd["providers"]["lipsync"] == "sync_so" and hd["lipsync"]["model"] == "sync-3"
     assert hd["google"]["veo_tier"] == "fast" and hd["llm"]["models"] == {} and hd["quality"] == "hd"
-    assert sd["providers"]["lipsync"] == "latentsync_cloudrun" and sd["lipsync"]["runner"] == "vertex_endpoint"
-    assert sd["lipsync"]["image_tag"] == "v2" and sd["lipsync"]["batch_max_shots"] == 24
+    assert sd["providers"]["lipsync"] == "musetalk_cloudrun" and sd["lipsync"]["runner"] == "vertex_endpoint"
+    assert sd["lipsync"]["image_tag"] == "v1" and sd["lipsync"]["batch_max_shots"] == 24
     assert sd["google"]["veo_model"] == "veo-3.1-lite-generate-001" and sd["google"]["veo_tier"] == "lite"
     assert sd["llm"]["models"]["director"] == "claude-sonnet-5-5" and "screenwriter" not in sd["llm"]["models"]
     assert sd["quality"] == "sd"
@@ -41,7 +41,7 @@ def test_a_set_fills_in_what_a_film_does_not_say(tmp_path):
         with_quality(base, {"quality": "ultra"})
     (tmp_path / "pipeline.yaml").write_text(yaml.safe_dump({"quality": "sd", "film": {"runtime_minutes": 3}}))
     cfg = load_pipeline_config(tmp_path)
-    assert cfg["providers"]["lipsync"] == "latentsync_cloudrun" and cfg["film"]["runtime_minutes"] == 3
+    assert cfg["providers"]["lipsync"] == "musetalk_cloudrun" and cfg["film"]["runtime_minutes"] == 3
 
 
 def test_the_template_is_on_hd_and_a_row_puts_a_film_on_sd():
@@ -51,13 +51,16 @@ def test_the_template_is_on_hd_and_a_row_puts_a_film_on_sd():
     cfg, _ = tools.resolve(None, row={"quality": "sd"})
     st = tools.stage_tools(cfg)
     render = tools.line(st["render"])
-    assert "LatentSync (your Vertex AI L4)" in render and "Veo 3.1 Lite 720p" in render and "sync.so" not in render
+    assert "MuseTalk (your Vertex AI L4)" in render and "Veo 3.1 Lite 720p" in render and "sync.so" not in render
+    # the slower, sharper engine stays a film's choice away
+    own = tools.resolve({"quality": "sd", "providers": {"lipsync": "latentsync_cloudrun"}})[0]
+    assert "LatentSync (your Vertex AI L4)" in tools.line(tools.stage_tools(own)["render"])
     assert st["shots"][0]["name"] == "Claude Sonnet 5.5" and st["shots"][0]["model"] == "claude-sonnet-5-5 (director)"
     assert st["story"][0]["name"] == "Claude Opus 5.5" and st["outline"][0]["name"] == "Claude Opus 5.5"
-    assert tools.quality_set(cfg)["label"] == "SD" and tools.quality_set(cfg)["per_minute"] == 5.0
+    assert tools.quality_set(cfg)["label"] == "SD" and tools.quality_set(cfg)["per_minute"] == 4.0
     # a film with its own config: the row's set wins (the next tick writes it into the project)
     cfg, planned = tools.resolve({"quality": "hd", "providers": {"video": "veo"}}, row={"quality": "sd"})
-    assert not planned and cfg["providers"]["lipsync"] == "latentsync_cloudrun" and cfg["quality"] == "sd"
+    assert not planned and cfg["providers"]["lipsync"] == "musetalk_cloudrun" and cfg["quality"] == "sd"
     # a word that is not a set shows the film as its files say, named as written
     cfg, _ = tools.resolve({"quality": "ultra", "providers": {"video": "veo"}})
     assert cfg["providers"]["lipsync"] == "none" and tools.quality_set(cfg)["about"].startswith("not a set")
@@ -129,7 +132,8 @@ def test_the_cost_step_prices_gpu_lip_sync_and_claude_by_model(tmp_path):
     assert paid["lipsync_usd"] == pytest.approx(paid["lipsync_seconds"] * 0.133, abs=0.01)
     n = len(speaking_shots(tmp_path, []))                                        # shots with a speaker in frame
     assert n >= 2
-    p = gpu_price(pricing, "vertex_endpoint")
+    p = gpu_price(pricing, "vertex_endpoint", "musetalk")                       # the SD set's engine
+    assert p["minutes_per_clip"] < gpu_price(pricing, "vertex_endpoint")["minutes_per_clip"]   # faster than LatentSync
     batches = -(-n // 2)                                                         # batch_max_shots: 2
     assert gpu["lipsync_usd"] == pytest.approx(p["per_hour"] * (batches * p["startup_minutes"]
                                                                 + n * p["minutes_per_clip"]) / 60, abs=0.01)

@@ -1,11 +1,14 @@
-"""Lip sync on your own Google Cloud GPU: LatentSync as a Cloud Run job with one NVIDIA L4 (deploy/lipsync/), or
-the same worker image on Vertex AI (lipsync.runner: vertex_endpoint, the route this project uses today).
+"""Lip sync on your own Google Cloud GPU, with one of two open engines, each its own worker image: LatentSync 1.6
+(deploy/lipsync/, providers.lipsync: latentsync_cloudrun) or MuseTalk 1.5 (deploy/musetalk/, providers.lipsync:
+musetalk_cloudrun; several times faster on an L4, so the cheap set's lips cost a few dollars a film). Either runs as
+a Cloud Run job with one NVIDIA L4, or on Vertex AI (lipsync.runner: vertex_endpoint, the route this project uses).
 
-    providers.lipsync: latentsync_cloudrun
-    lipsync: {job: nraiorbit-lipsync, region: us-central1, bucket: <project>-media, steps: 20, guidance: 1.5,
-              runner: vertex_endpoint, image_tag: v2, batch_max_shots: 24}
+    providers.lipsync: musetalk_cloudrun            # or latentsync_cloudrun
+    lipsync: {job: nraiorbit-lipsync, region: us-central1, bucket: <project>-media, runner: vertex_endpoint,
+              image_tag: v1, batch_max_shots: 24, fp16: true}        # LatentSync also reads steps and guidance
 
-The shots of a render go to the GPU in batches (lipsync.batch_max_shots a batch; 0 = all at once): clips and their
+The two engines never mix: each has its own image (nraiorbit/<engine>:<tag>), its own Vertex model and its own
+cache keys. The shots of a render go to the GPU in batches (lipsync.batch_max_shots a batch; 0 = all at once): clips and their
 dialogue audio are staged in your private bucket under lipsync/<run>/, the worker writes the synced clips back with a
 status file, and each batch's results are cached in cache/lipsync/ by content as soon as it is done, so a run that
 ends early keeps what it paid for and a re-render never pays twice. On the Vertex endpoint runner one endpoint serves
@@ -32,7 +35,8 @@ from .google_ai import GoogleAPIError
 
 STORAGE_FACTORY = None          # tests inject fakes here
 JOBS_FACTORY = None
-__all__ = ["CloudRunLipSync", "gpu_price"]
+ENGINES = {"latentsync": "LatentSync", "musetalk": "MuseTalk"}      # worker image name -> how the owner sees it
+__all__ = ["CloudRunLipSync", "MuseTalkCloud", "ENGINES", "gpu_price"]
 
 
 def _credentials():
@@ -48,9 +52,15 @@ def _credentials():
 
 @register("lipsync", "latentsync_cloudrun")
 class CloudRunLipSync:
+    ENGINE = "latentsync"                                # the worker image this provider name runs (lipsync.engine overrides)
+
     def __init__(self, project_root: Path, cfg: dict, pricing: dict, ledger: SpendLedger,
                  storage_client=None, jobs_client=None):
         ls = cfg.get("lipsync") or {}
+        self.engine = str(ls.get("engine") or self.ENGINE)
+        if self.engine not in ENGINES:
+            raise GoogleAPIError(f"lip-sync: lipsync.engine must be one of {', '.join(ENGINES)}, not {self.engine!r}.")
+        self.label = ENGINES[self.engine]
         self.project = ls.get("project") or os.environ.get("GOOGLE_CLOUD_PROJECT")
         if not self.project:
             raise GoogleAPIError("lip-sync: set GOOGLE_CLOUD_PROJECT (or lipsync.project) for the Cloud Run job.")
@@ -63,8 +73,9 @@ class CloudRunLipSync:
         # needs custom-training GPU quota) or vertex_endpoint (a temporary Vertex AI endpoint on one L4; uses the
         # custom-model-serving GPU quota new projects have). All run the same worker image.
         self.runner = ls.get("runner", "cloudrun")
-        tag = str(ls.get("image_tag") or "v1")               # which build of the worker image (deploy/lipsync)
-        self.image = ls.get("image") or (f"{self.region}-docker.pkg.dev/{self.project}/nraiorbit/latentsync:{tag}")
+        tag = str(ls.get("image_tag") or "v1")               # which build of the engine's worker image (deploy/<engine>)
+        self.image = ls.get("image") or (f"{self.region}-docker.pkg.dev/{self.project}/nraiorbit/{self.engine}:{tag}")
+        self.fp16 = bool(ls.get("fp16", True))               # MuseTalk in half precision (faster; LatentSync ignores it)
         self.machine = ls.get("machine_type", "g2-standard-8")
         self.batch_max = max(0, int(ls.get("batch_max_shots") or 0))   # shots per GPU batch; 0 = all in one
         self._shared: dict | None = None                     # a Vertex endpoint kept up across one call's batches
@@ -75,7 +86,7 @@ class CloudRunLipSync:
         # (lipsync.retry_failed: true sends it again)
         self.on_failure = ls.get("on_failure", "stop")
         self.retry_failed = bool(ls.get("retry_failed", False))
-        self.price = gpu_price(pricing, ls.get("runner", "cloudrun"))
+        self.price = gpu_price(pricing, self.runner, self.engine)
         self.cache = project_root / "cache" / "lipsync"
         self.ledger = ledger
         self._storage, self._jobs = storage_client, jobs_client
@@ -105,7 +116,10 @@ class CloudRunLipSync:
     # -- provider API
 
     def key(self, video: Path, audio: Path) -> str:
-        h = hashlib.sha1(json.dumps(["latentsync", self.steps, self.guidance]).encode())
+        """Content key of one shot's result: the engine and what it was run with, then the clip and the audio, so a
+        MuseTalk result is never served for LatentSync or the other way round."""
+        what = ["latentsync", self.steps, self.guidance] if self.engine == "latentsync" else ["musetalk", "1.5", self.fp16]
+        h = hashlib.sha1(json.dumps(what).encode())
         h.update(video.read_bytes())
         h.update(audio.read_bytes())
         return h.hexdigest()[:16]
@@ -119,12 +133,12 @@ class CloudRunLipSync:
         return path if path.exists() else None
 
     def failure(self, video: Path, audio: Path) -> str | None:
-        """Why LatentSync could not do this shot (remembered under on_failure: keep_original), else None."""
+        """Why the engine could not do this shot (remembered under on_failure: keep_original), else None."""
         marker = self.cache / f"{self.key(video, audio)}.failed.json"
         return json.loads(marker.read_text(encoding="utf-8")).get("error") if marker.exists() else None
 
     def apply_many(self, items: list[tuple[Path, Path, Path]]) -> list[Path | None]:
-        """Synced clips in order; None for a shot LatentSync could not do when on_failure is keep_original."""
+        """Synced clips in order; None for a shot the engine could not do when on_failure is keep_original."""
         keys = [self.key(v, a) for v, a, _ in items]
         known_bad = set() if self.retry_failed else {k for k in keys if (self.cache / f"{k}.failed.json").exists()}
         todo = {k: (v, a) for k, (v, a, _) in zip(keys, items)
@@ -160,11 +174,11 @@ class CloudRunLipSync:
         p = self.price
         startup = 0.0 if self._shared and not self._shared.get("start") else p["startup_minutes"]
         estimate = p["per_hour"] * (startup + p["minutes_per_clip"] * len(todo)) / 60
-        self.ledger.check(estimate, f"lip-sync of {len(todo)} shots on your L4 GPU ({self.runner})")
+        self.ledger.check(estimate, f"{self.label} lip-sync of {len(todo)} shots on your L4 GPU ({self.runner})")
         run = f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
         prefix = f"lipsync/{run}"
         bucket = self.storage().bucket(self.bucket)
-        manifest = {"steps": self.steps, "guidance": self.guidance, "items": []}
+        manifest = {"engine": self.engine, "steps": self.steps, "guidance": self.guidance, "fp16": self.fp16, "items": []}
         for k, (video, audio) in todo.items():
             bucket.blob(f"{prefix}/{k}/video.mp4").upload_from_filename(str(video), content_type="video/mp4")
             bucket.blob(f"{prefix}/{k}/audio.wav").upload_from_filename(str(audio), content_type="audio/wav")
@@ -203,7 +217,7 @@ class CloudRunLipSync:
                     {"error": r.get("error", "")[-3000:], "version": status.get("version"), "run": run}),
                     encoding="utf-8")
         elif failed:
-            raise GoogleAPIError(f"lip-sync failed for {len(failed)} of {len(todo)} shots (LatentSync "
+            raise GoogleAPIError(f"lip-sync failed for {len(failed)} of {len(todo)} shots ({self.label} "
                                  f"{status.get('version', '?')}). First error:\n{failed[0].get('error', '')[-1200:]}")
 
     def _keep(self, bucket, prefix: str, key: str) -> None:
@@ -250,7 +264,7 @@ class CloudRunLipSync:
             if isinstance(e, GoogleAPIError):
                 raise
             raise GoogleAPIError(f"lip-sync job {name}: {type(e).__name__}: {e}\nIs the job set up "
-                                 "(bash deploy/lipsync/setup.sh)? Re-run to resume.") from None
+                                 f"(bash deploy/{self.engine}/setup.sh)? Re-run to resume.") from None
 
 
     def _session(self):
@@ -299,12 +313,25 @@ class CloudRunLipSync:
     # -- Vertex AI endpoint: uses the "custom model serving" GPU quota, which new projects have (training has none)
 
     def _wait_op(self, session, op: dict, what: str, limit_s: float) -> dict:
-        deadline = time.time() + limit_s
+        """Poll a long-running operation until it is done. A poll that fails on the way there (a timed-out read, a
+        dropped connection: seen on 2026-11-09 twelve minutes into a model upload) is tried again, up to five in a
+        row, so one bad moment of network never throws away an hour of deploy time."""
+        deadline, failures = time.time() + limit_s, 0
         while not op.get("done"):
             if time.time() > deadline:
                 raise GoogleAPIError(f"lip-sync: {what} did not finish in {limit_s / 60:.0f} min ({op.get('name')})")
             time.sleep(self.poll_s)
-            op = session.get(f"https://{self.region}-aiplatform.googleapis.com/v1/{op['name']}").json()
+            try:
+                op = {**op, **session.get(f"https://{self.region}-aiplatform.googleapis.com/v1/{op['name']}").json()}
+                failures = 0
+            except GoogleAPIError:
+                raise
+            except Exception as e:                       # the poll itself failed; the operation goes on regardless
+                failures += 1
+                if failures >= 5:
+                    raise GoogleAPIError(f"lip-sync: could not reach Vertex AI while {what} ({type(e).__name__}: "
+                                         f"{str(e)[:200]}); the operation {op.get('name')} may still finish. Re-run "
+                                         "to continue.") from None
         if op.get("error"):
             raise GoogleAPIError(f"lip-sync: {what} failed: {op['error'].get('message', op['error'])}")
         return op.get("response", {})
@@ -316,8 +343,10 @@ class CloudRunLipSync:
         return resp.json() if resp.text else {}
 
     def _model(self, session, base: str) -> str:
-        """The worker image registered once as a Vertex model (serving mode); reused on every run."""
-        display = f"{self.job}-{self.image.rsplit(':', 1)[-1]}"
+        """The worker image registered once as a Vertex model (serving mode); reused on every run. LatentSync keeps
+        the name it was registered under (<job>-<tag>); every other engine's name carries the engine."""
+        tag = self.image.rsplit(":", 1)[-1]
+        display = f"{self.job}-{tag}" if self.engine == "latentsync" else f"{self.job}-{self.engine}-{tag}"
         found = session.get(f'{base}/models?filter=display_name="{display}"').json().get("models", [])
         if found:
             return found[0]["name"]
@@ -443,6 +472,15 @@ class CloudRunLipSync:
         if problems:
             raise GoogleAPIError(f"lip-sync: could not shut down endpoint {endpoint}; delete it in the Vertex AI "
                                  f"console (Online prediction > Endpoints) so it stops billing. " + " | ".join(problems))
+
+
+@register("lipsync", "musetalk_cloudrun")
+class MuseTalkCloud(CloudRunLipSync):
+    """The same GPU route running MuseTalk 1.5 (deploy/musetalk/): about five times faster than LatentSync on an L4,
+    so the cheap set's lips cost a few dollars a film, with a slightly softer mouth. Its own image
+    (nraiorbit/musetalk:<tag>), Vertex model (<job>-musetalk-<tag>) and cache keys."""
+
+    ENGINE = "musetalk"
 
 
 def _now():

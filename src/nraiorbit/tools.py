@@ -17,7 +17,7 @@ from functools import lru_cache
 
 from .config import (DEFAULT_CONFIG_DIR, REPO_ROOT, UnknownQuality, deep_merge, load_yaml, quality_key,
                      quality_sets, with_quality)
-from .costing import VEO_TIER_NAMES
+from .costing import GPU_LIPSYNC, VEO_TIER_NAMES
 
 MOCK = "mock (no paid call)"
 MOCKS = ("mock", "none")
@@ -224,10 +224,11 @@ def _lips(cfg: dict) -> list[dict]:
         model = ls.get("model") or "sync-3"
         return [_tool(f"sync.so {model}", model=model, detail="cache only" if offline else "lip-sync API",
                       paid=not offline, phase="render")] + lock
-    if name == "latentsync_cloudrun":
+    if name in GPU_LIPSYNC:
         where = {"vertex_endpoint": "your Vertex AI L4", "vertex": "your Vertex AI job, L4"}.get(
             ls.get("runner") or "cloudrun", "your Cloud Run L4")
-        return [_tool(f"LatentSync ({where})", model=ls.get("job") or "nraiorbit-lipsync",
+        engine = {"latentsync_cloudrun": "LatentSync", "musetalk_cloudrun": "MuseTalk"}.get(name, name)
+        return [_tool(f"{engine} ({where})", model=ls.get("job") or "nraiorbit-lipsync",
                       detail="cache only" if offline else "open model on your own GPU", paid=not offline,
                       phase="render")] + lock
     if name == "mock":

@@ -32,7 +32,7 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
-from ..costing import BudgetExceeded, SpendLedger
+from ..costing import PAID_LIPSYNC, BudgetExceeded, SpendLedger
 from ..pipeline import CutDoesNotMatch, GatePending, LinesTooLong, Pipeline, PipelineBlocked
 from .queue import GATES as GATE_ORDER
 
@@ -797,7 +797,7 @@ def cost_gate(pipeline: Pipeline) -> tuple[dict | None, dict | None]:
     voice, ls = cfg.get("voice", {}), cfg.get("lipsync") or {}
     paid = (prov.get("video") == "veo" or prov.get("tts") in ("gemini", "elevenlabs") or prov.get("music") == "lyria"
             or (prov.get("tts") == "inbox" and voice.get("inbox_fallback") in ("gemini", "elevenlabs"))
-            or (prov.get("lipsync") in ("sync_so", "latentsync_cloudrun") and not ls.get("offline")))
+            or (prov.get("lipsync") in PAID_LIPSYNC and not ls.get("offline")))
     if not paid or not (pipeline.p.root / "04_shots").exists():
         return None, None
     preview = preview_run(pipeline.p.root, cfg, pipeline.pricing)

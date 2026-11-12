@@ -213,7 +213,7 @@ def test_approve_retry_and_row_edits_write_only_the_sheet(client, root):
     client.post("/film/demo/row", data={"quality": "sd"})
     assert rows(root)[0]["quality"] == "sd" and rows(root)[0]["publish"] == "unlisted"
     html = client.get("/film/demo").text
-    assert "<b>SD</b> tools" in html and "LatentSync (your Vertex AI L4)" in html
+    assert "<b>SD</b> tools" in html and "MuseTalk (your Vertex AI L4)" in html
     assert "<b>SD</b> · Render:" in client.get("/").text
     assert client.post("/film/demo/row", data={"quality": "ultra"}).status_code == 400
     assert rows(root)[0]["quality"] == "sd"
@@ -441,11 +441,11 @@ def test_new_story_writes_the_story_the_overrides_and_the_row(client, root):
     assert r.status_code == 303 and rows(root)[-1]["quality"] == "sd"
     assert yaml.safe_load((root / "stories" / "cheap-ferry.overrides.yaml").read_text())["quality"] == "sd"
     html = client.get("/film/cheap-ferry").text
-    assert "<b>SD</b> tools" in html and "LatentSync (your Vertex AI L4)" in html and "Veo 3.1 Lite" in html
+    assert "<b>SD</b> tools" in html and "MuseTalk (your Vertex AI L4)" in html and "Veo 3.1 Lite" in html
     r = client.post("/new", data={"slug": "ultra", "story": story, "budget": "60", "quality": "ultra"})
     assert r.status_code == 400 and "tool set must be one of HD, SD" in r.text
     form = client.get("/new").text                                               # both sets, with their price a minute
-    assert 'name="quality" value="sd"' in form and 'data-per-minute="5.0"' in form and "Tools · HD or SD" in form
+    assert 'name="quality" value="sd"' in form and 'data-per-minute="4.0"' in form and "Tools · HD or SD" in form
     # any name works: it is turned into the folder name; a taken name gets -2; an empty one comes from the story
     r = client.post("/new", data={"slug": "Rain Ferry!", "story": story, "budget": "10"}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"].startswith("/film/rain-ferry-2")

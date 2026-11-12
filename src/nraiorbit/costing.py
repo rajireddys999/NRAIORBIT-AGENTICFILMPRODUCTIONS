@@ -23,6 +23,9 @@ SCENE_S = 90
 LINES_PER_SHOT = 0.25
 VEO_MB_PER_S = 1.5        # 720p clip size, for storage
 VEO_TIER_NAMES = {"standard": "Veo 3.1", "fast": "Veo 3.1 Fast", "lite": "Veo 3.1 Lite"}
+LIPSYNC_ENGINE = {"latentsync_cloudrun": "latentsync", "musetalk_cloudrun": "musetalk"}   # provider -> worker image
+GPU_LIPSYNC = tuple(LIPSYNC_ENGINE)                        # lip-sync on your own GPU, priced by the minute of L4
+PAID_LIPSYNC = ("sync_so", *GPU_LIPSYNC)                   # every lip-sync provider that costs money
 
 
 class BudgetExceeded(RuntimeError):
@@ -250,12 +253,15 @@ def claude_rates(pricing: dict, model) -> dict:
     return p
 
 
-def gpu_price(pricing: dict, runner: str = "cloudrun") -> dict:
+def gpu_price(pricing: dict, runner: str = "cloudrun", engine: str = "latentsync") -> dict:
     """What a minute of your own lip-sync GPU costs (pricing.yaml cloud_run_gpu, or vertex_endpoint_gpu for the
-    Vertex endpoint runner): dollars an hour, start-up minutes per batch, minutes per shot."""
+    Vertex endpoint runner): dollars an hour, start-up minutes per batch, minutes per shot. An engine's own figures
+    under that block's `engines:` (MuseTalk is several times faster than LatentSync) win over the block's."""
     p = (pricing.get("vertex_endpoint_gpu") if runner == "vertex_endpoint" else None) or pricing.get("cloud_run_gpu") or {}
-    return {"per_hour": p.get("per_hour", 1.10), "startup_minutes": p.get("startup_minutes", 6.0),
-            "minutes_per_clip": p.get("minutes_per_clip", 10.0)}
+    own = (p.get("engines") or {}).get(engine) or {}
+    return {"per_hour": own.get("per_hour", p.get("per_hour", 1.10)),
+            "startup_minutes": own.get("startup_minutes", p.get("startup_minutes", 6.0)),
+            "minutes_per_clip": own.get("minutes_per_clip", p.get("minutes_per_clip", 10.0))}
 
 
 def claude_actual(project_dir: Path | None, pricing: dict) -> tuple[float, int] | None:
@@ -507,7 +513,7 @@ def preview_run(root: Path, cfg: dict, pricing: dict) -> dict:
     ls = cfg.get("lipsync") or {}
     out["lipsync_seconds"], out["lipsync_usd"], out["cached_lipsync_shots"] = 0.0, 0.0, 0
     lips = prov.get("lipsync") if not ls.get("offline") else None
-    if lips in ("sync_so", "latentsync_cloudrun"):
+    if lips in PAID_LIPSYNC:
         speaking = speaking_shots(root, only)
         done = {sid for sid in speaking if any((root / "07_video" / sid).glob("*_lipsync.mp4"))}   # synced already
         done |= lipsynced_before(root, speaking, cfg)     # a fresh container has no such file: the run records say
@@ -518,7 +524,7 @@ def preview_run(root: Path, cfg: dict, pricing: dict) -> dict:
             rate = float(((pricing.get("sync_so") or {}).get("per_second") or {}).get(ls.get("model", "sync-3"), 0.133))
             out["lipsync_usd"] = round(out["lipsync_seconds"] * rate, 2)
         else:                                             # your own GPU: minutes of L4, a start-up wait per batch
-            p = gpu_price(pricing, ls.get("runner") or "cloudrun")
+            p = gpu_price(pricing, ls.get("runner") or "cloudrun", LIPSYNC_ENGINE.get(lips, "latentsync"))
             per_batch = int(ls.get("batch_max_shots") or 0)
             batches = (math.ceil(len(left) / per_batch) if per_batch else 1) if left else 0
             minutes = batches * p["startup_minutes"] + len(left) * p["minutes_per_clip"]

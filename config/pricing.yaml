@@ -87,6 +87,8 @@ cloud_run_gpu:            # lip-sync worker (deploy/lipsync): Cloud Run job, 1x 
   per_hour: 1.10          # UNVERIFIED estimate (L4 ~$0.67/h + CPU/memory ~$0.37/h); check cloud.google.com/run/pricing
   startup_minutes: 6      # image pull + model load, once per job execution
   minutes_per_clip: 10.0  # LatentSync 1.6 on a 6-8 s 1080p shot (measured ~9.7 min on an L4, 2026-10-14)
+  engines:                # an engine's own figures over the block's (one worker image each, under deploy/)
+    musetalk: {minutes_per_clip: 1.0}   # MuseTalk 1.5 (deploy/musetalk): 24-92 s a crop on an L4, see below
 
 gemini_video:             # watching a public film for craft notes (nraiorbit learn youtube): gemini-3.1-pro-preview
   input_per_1m: 2.00      # planning numbers, Gemini 3 Pro preview list price per 1M input tokens up to 200k per
@@ -111,3 +113,8 @@ vertex_endpoint_gpu:      # lip-sync on a temporary Vertex AI endpoint (g2-stand
   startup_minutes: 55     # create + deploy before the first shot; measured 54 min on 2026-11-07 (~30 min on 2026-10-14)
   minutes_per_clip: 6.5   # LatentSync 1.6 on the speaker crops the pipeline sends: 4.4-6.6 min for 4-6 s shots
                           # (2026-11-07, about 1.05 GPU-minutes a second of shot); 9.7 min on 1080p whole frames (2026-10)
+  engines:
+    musetalk: {minutes_per_clip: 1.0}   # MuseTalk 1.5 on the same speaker crops, measured 2026-11-10 on an L4
+                                        # (us-west1, half precision): 24 s, 29 s and 92 s for 4-6 s speaker crops
+                                        # (the slow one 918x1024 and first of the batch), 0.8 min on average;
+                                        # about six times faster than LatentSync

@@ -20,9 +20,9 @@ the set fills in the tools the film's own `pipeline.yaml` does not name:
 | | HD (today's set) | SD (the low-price set) |
 |---|---|---|
 | Picture | Veo 3.1 Fast 720p, every shot | Veo 3.1 Lite 720p, every shot (a shot's `video_tier` still wins) |
-| Lips | sync.so sync-3 | LatentSync 1.6 on your own Google Cloud GPU (Vertex AI L4, in batches) |
+| Lips | sync.so sync-3 | MuseTalk 1.5 on your own Google Cloud GPU (Vertex AI L4, in batches); LatentSync 1.6 stays available as `latentsync_cloudrun` |
 | Claude | Opus 5.5 for every agent | Sonnet 5.5 for the shot lists, critic, casting, music and cards; Opus for the story and the script |
-| About, a minute of film | $13 | $5 |
+| About, a minute of film | $13 | $4 |
 
 The figures are from the last film's ledger and the lip-sync look test of 2026-11-07; the
 cost step prices every film shot by shot before anything is paid. A tool named in the

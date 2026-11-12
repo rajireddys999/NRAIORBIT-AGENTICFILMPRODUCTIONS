@@ -213,7 +213,7 @@ class FakeEndpointSession:
 
     def __init__(self, storage, predict_fails=False):
         self.worker, self.predict_fails, self.calls = FakeJobs(storage), predict_fails, []
-        self.deployed, self.pending = [], {}
+        self.deployed, self.pending, self.bodies = [], {}, []
 
     def _resp(self, code=200, body=None):
         return SimpleNamespace(status_code=code, text=json.dumps(body or {}), json=lambda: body or {})
@@ -228,6 +228,7 @@ class FakeEndpointSession:
 
     def post(self, url, json=None):
         self.calls.append(("POST", url))
+        self.bodies.append((url, json))
         if url.endswith("/models:upload"):
             return self._resp(body={"done": True, "response": {"model": "projects/1/locations/us-central1/models/9"}})
         if url.endswith("/endpoints"):
@@ -382,3 +383,90 @@ def test_an_endpoint_left_up_stops_the_run_before_spending(tmp_path, monkeypatch
         sync.apply(v, a, tmp_path / "o.mp4")
     posts = [u.rsplit("/", 1)[-1] for m, u in session.calls if m == "POST"]
     assert posts == [] and not any(m == "DELETE" for m, _ in session.calls)       # nothing made, nothing deleted
+
+
+def test_musetalk_is_a_second_engine_that_never_mixes_with_latentsync(tmp_path, monkeypatch):
+    import time as _time
+
+    from nraiorbit.providers.base import get_provider
+    from nraiorbit.providers.cloud_lipsync import MuseTalkCloud
+
+    monkeypatch.setattr(_time, "sleep", lambda s: None)
+    storage = FakeStorage()
+    session = FakeEndpointSession(storage)
+    cfg = {"lipsync": {"project": "film-proj", "bucket": "film-media", "runner": "vertex_endpoint", "poll_seconds": 0,
+                       "image_tag": "v1"}}
+    pricing = {"vertex_endpoint_gpu": {"per_hour": 1.0, "startup_minutes": 50, "minutes_per_clip": 6.5,
+                                       "engines": {"musetalk": {"minutes_per_clip": 1.5}}}}
+    ledger = SpendLedger(tmp_path / "reports" / "cost.jsonl", None)
+    sync = get_provider("lipsync", "musetalk_cloudrun", project_root=tmp_path, cfg=cfg, pricing=pricing, ledger=ledger,
+                        storage_client=storage, jobs_client=session)
+    assert isinstance(sync, MuseTalkCloud) and sync.engine == "musetalk" and sync.label == "MuseTalk"
+    assert sync.image.endswith("/nraiorbit/musetalk:v1") and sync.price["minutes_per_clip"] == 1.5
+    latent = CloudRunLipSync(tmp_path, cfg, pricing, ledger, storage, session)
+    assert latent.image.endswith("/nraiorbit/latentsync:v1") and latent.price["minutes_per_clip"] == 6.5
+    v, a = _clip(tmp_path, "a", "red")
+    assert sync.key(v, a) != latent.key(v, a)                                   # separate cache entries
+    assert sync.apply(v, a, tmp_path / "o.mp4").read_bytes() == v.read_bytes()
+    assert sync.cached(v, a) is not None and latent.cached(v, a) is None        # a MuseTalk result is never LatentSync's
+    manifest = json.loads(storage.store[session.worker.runs[0][1].removeprefix("gs://")])
+    assert manifest["engine"] == "musetalk" and manifest["fp16"] is True
+    uploads = [b for u, b in session.bodies if u.endswith("/models:upload")]
+    assert uploads[0]["model"]["displayName"] == "nraiorbit-lipsync-musetalk-v1"   # not LatentSync's nraiorbit-lipsync-v2
+    assert uploads[0]["model"]["containerSpec"]["imageUri"].endswith("/nraiorbit/musetalk:v1")
+    v2, a2 = _clip(tmp_path, "b", "blue")
+    session.worker.fail_keys.add(sync.key(v2, a2))
+    with pytest.raises(GoogleAPIError, match=r"lip-sync failed for 1 of 1 shots \(MuseTalk 1.6\)"):
+        sync.apply(v2, a2, tmp_path / "o2.mp4")
+    assert session.deployed == []                                               # the endpoint is closed either way
+    with pytest.raises(GoogleAPIError, match="lipsync.engine must be one of latentsync, musetalk"):
+        CloudRunLipSync(tmp_path, {"lipsync": {**cfg["lipsync"], "engine": "wav2lip"}}, pricing, ledger, storage, session)
+
+
+class FlakySession(FakeEndpointSession):
+    """The network drops twice while the model upload is polled, then comes back."""
+
+    def __init__(self, storage):
+        super().__init__(storage)
+        self.drops = 0
+
+    def post(self, url, json=None):
+        if url.endswith("/models:upload"):                # a pending upload, polled through _wait_op
+            self.calls.append(("POST", url))
+            self.bodies.append((url, json))
+            op = "projects/1/locations/us-central1/operations/41"
+            self.pending[f"https://us-central1-aiplatform.googleapis.com/v1/{op}"] = \
+                {"model": "projects/1/locations/us-central1/models/9"}
+            return self._resp(body={"name": op, "done": False})
+        return super().post(url, json)
+
+    def get(self, url):
+        if "/operations/41" in url and self.drops < 2:
+            self.drops += 1
+            raise TimeoutError("The read operation timed out")
+        return super().get(url)
+
+
+def test_a_dropped_poll_does_not_end_the_run(tmp_path, monkeypatch):
+    import time as _time
+
+    monkeypatch.setattr(_time, "sleep", lambda s: None)
+    storage = FakeStorage()
+    session = FlakySession(storage)
+    sync = _endpoint_provider(tmp_path, storage, session)
+    v, a = _clip(tmp_path, "a", "red")
+    assert sync.apply(v, a, tmp_path / "o.mp4").read_bytes() == v.read_bytes()
+    assert session.drops == 2 and session.deployed == []                        # went on after the drops, closed
+
+    class Dead(FlakySession):
+        def get(self, url):
+            if "/operations/41" in url:
+                raise ConnectionError("no route to host")
+            return super().get(url)
+
+    dead = Dead(storage)
+    sync2 = _endpoint_provider(tmp_path, storage, dead)
+    v2, a2 = _clip(tmp_path, "b", "blue")
+    with pytest.raises(GoogleAPIError, match="could not reach Vertex AI while registering the worker model"):
+        sync2.apply(v2, a2, tmp_path / "o2.mp4")
+    assert not any(m == "POST" and u.endswith("/endpoints") for m, u in dead.calls)   # nothing was opened or billed

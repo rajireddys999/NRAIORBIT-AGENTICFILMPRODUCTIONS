@@ -87,6 +87,8 @@ def test_verified_google_prices():
     assert pricing["lyria"]["per_generation"]["lyria-3-pro-preview"] == pytest.approx(0.08)
     assert gpu_price(pricing, "vertex_endpoint") == {"per_hour": pytest.approx(0.98181), "startup_minutes": 55,
                                                      "minutes_per_clip": 6.5}     # measured 2026-11-07 (look test)
+    assert gpu_price(pricing, "vertex_endpoint", "musetalk")["minutes_per_clip"] == 1.0   # measured 2026-11-10 (3 crops)
+    assert gpu_price(pricing, "vertex_endpoint", "musetalk")["startup_minutes"] == 55     # the same deploy wait
 
 
 def _veo_cfg(root, **google):

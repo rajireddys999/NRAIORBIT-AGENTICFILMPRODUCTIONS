@@ -1,6 +1,7 @@
 """Voices match their pictures: a line is heard over the shots that carry it, never drifting over other faces or past
-the end of the film. Scenes are made long enough for their dialogue (the film may grow to 5/3 of the length asked
-for), shot plans give every line a shot that shows its speaker and is long enough, voiced lines that overrun stop the
+the end of the film. Scenes are made long enough for their dialogue (the film grows to 5/3 of the length asked for,
+then the screenwriter is asked once to shorten, then it grows further: the length asked for is a target, never a
+stop), shot plans give every line a shot that shows its speaker and is long enough, voiced lines that overrun stop the
 run before lip-sync and are shortened by the screenwriter, and the cut is checked line by line before the owner sees
 it. Cards: the film's name over its opening, శుభం / THE END after its last frame."""
 
@@ -386,17 +387,52 @@ def test_new_scenes_are_lengthened_to_hold_their_dialogue(film):
     assert json.loads((film.p.reports / "scene_fit.jsonl").read_text().splitlines()[-1])["lengthened"]
 
 
-def test_a_film_that_cannot_hold_its_dialogue_even_longer_stops_before_the_shots(film):
-    from nraiorbit.pipeline import PipelineBlocked
+def test_a_film_that_cannot_hold_its_dialogue_even_after_shortening_grows_rather_than_stopping(film):
+    """The length asked for is a target: past the cap the screenwriter is asked once to shorten the scenes over,
+    then the film grows to hold whatever talking is left. Nothing stops before the shots (a 3-minute film whose
+    scenes held 8 to 10 lines each used to end here as 'the dialogue does not fit even a 5.0-minute film')."""
     from nraiorbit.schemas import Outline, StoryBible
     film.cfg["film"] = {**film.cfg["film"], "max_runtime_minutes": 0.25}      # 15 s at most
     bible = StoryBible.model_validate_json(film.p.bible.read_text())
     outline = Outline.model_validate_json(film.p.outline.read_text())
     revised = []
     film.screenwriter = N(revise=lambda *a: revised.append(a[3]) or a[2])     # a screenwriter who cuts nothing
-    with pytest.raises(PipelineBlocked, match="does not fit even a 0.2-minute film"):
-        film._fit_scene_lengths(bible, outline)
-    assert "Shorten the dialogue to about" in revised[0].revision_instructions[0]
+    out = film._fit_scene_lengths(bible, outline)
+    assert len(revised) == 1 and "Shorten the dialogue to about" in revised[0].revision_instructions[0]
+    speech = 3 * (fit.speech_seconds("అ" * 60) + fit.DIALOGUE_LEAD_IN_S + fit.DIALOGUE_GAP_S)
+    assert out.scenes[0].target_seconds >= speech / fit.SCENE_SPEECH_SHARE > 15   # past the cap, to hold it all
+    assert Outline.model_validate_json(film.p.outline.read_text()).scenes[0].target_seconds == out.scenes[0].target_seconds
+    records = [json.loads(line) for line in (film.p.reports / "scene_fit.jsonl").read_text().splitlines()]
+    assert records[0]["over_cap"] == {"sc001": pytest.approx(records[0]["over_cap"]["sc001"])} and records[0]["cap_s"] == 15
+    assert records[-1]["lengthened"]["sc001"][1] == out.scenes[0].target_seconds
+
+
+def test_revisions_and_critiques_carry_the_scene_time_budget():
+    """A critic that wanted more flavour used to make the screenwriter add lines a 12-second scene could not hold
+    (a 3-minute film on the SD set grew to 13 scenes of 8 to 10 lines): the revision now carries the scene's speech
+    budget, and so does the critique, told never to ask for more lines. A critic given no length reviews as before."""
+    from nraiorbit.agents import DialogueCritic, Screenwriter
+    from nraiorbit.demo import OUTLINE, SCENES, STORY_BIBLE
+    from nraiorbit.schemas import Critique, Outline, SceneScript, StoryBible
+    bible, outline = StoryBible.model_validate(STORY_BIBLE), Outline.model_validate(OUTLINE)
+    sc = outline.scenes[0]
+    script = SceneScript.model_validate({"scene_id": sc.scene_id, "heading": sc.heading, "synopsis": sc.synopsis,
+                                         "rasa_primary": sc.rasa_primary, "intensity": sc.intensity,
+                                         "blocks": SCENES[sc.scene_id]})
+    seen = []
+
+    class Recorder:
+        def generate(self, *, schema, system, context, task, effort, agent, model=None):
+            seen.append(task)
+            return script if schema is SceneScript else Critique(score=9, issues=[], revision_instructions=[])
+    Screenwriter(Recorder(), {}).revise(bible, outline, script,
+                                        Critique(score=5, issues=["thin"], revision_instructions=["more flavour"]))
+    DialogueCritic(Recorder(), {}).review(bible, script, target_seconds=sc.target_seconds)
+    DialogueCritic(Recorder(), {}).review(bible, script)
+    budget = Screenwriter._speech_budget(sc.target_seconds)
+    assert budget in seen[0] and "never more or longer lines" in seen[0]
+    assert budget in seen[1] and "never ask for more lines" in seen[1]
+    assert "runs about" not in seen[2]
 
 
 def test_a_line_is_rewritten_at_most_twice_and_only_when_its_words_change(film):
@@ -483,3 +519,32 @@ def test_shots_planned_again_after_most_of_the_film_was_paid_for_ask_the_cost_ag
     assert reworked and report["state"] == "awaiting:cost" and not (film.p.reviews / "cost.approved").exists()
     marker = json.loads((film.p.reviews / "cost.pending").read_text())
     assert marker["total_usd"] == 20.0 and marker["spent_usd"] == 38.0      # the next approval knows where it began
+
+
+def test_the_scenes_stage_tells_the_critic_how_long_each_scene_runs(tmp_path):
+    """Through Pipeline._scenes itself: the critic is given the scene's seconds, so its notes stay inside what the
+    scene can hold."""
+    from types import SimpleNamespace
+    from nraiorbit.demo import OUTLINE, SCENES, STORY_BIBLE
+    from nraiorbit.pipeline import Pipeline, ProjectPaths
+    from nraiorbit.schemas import Critique, Outline, SceneScript, StoryBible
+    bible, outline = StoryBible.model_validate(STORY_BIBLE), Outline.model_validate(OUTLINE)
+    paths = ProjectPaths(tmp_path)
+    one = Outline(scenes=[outline.scenes[0]])
+    paths.outline.parent.mkdir(parents=True, exist_ok=True)
+    paths.outline.write_text(one.model_dump_json(), encoding="utf-8")
+    paths.bible.write_text(bible.model_dump_json(), encoding="utf-8")
+    sc = one.scenes[0]
+    script = SceneScript.model_validate({"scene_id": sc.scene_id, "heading": sc.heading, "synopsis": sc.synopsis,
+                                         "rasa_primary": sc.rasa_primary, "intensity": sc.intensity,
+                                         "blocks": SCENES[sc.scene_id]})
+    seen = []
+    p = SimpleNamespace(p=paths, cfg={"llm": {"critique_rounds": 1, "critique_pass_score": 8}}, log=lambda *_: None,
+                        screenwriter=SimpleNamespace(scene=lambda *a: script, revise=lambda *a: script),
+                        critic=SimpleNamespace(review=lambda *a: seen.append(a) or Critique(
+                            score=9, issues=[], revision_instructions=[])),
+                        _report=lambda *a: None, _save=Pipeline._save, _load=Pipeline._load,
+                        _script_problems=Pipeline._script_problems, _fit_scene_lengths=lambda *a: None,
+                        _animal_lines_as_sound=lambda s, b: s)
+    Pipeline._scenes(p)
+    assert len(seen) == 1 and seen[0][2] == sc.target_seconds

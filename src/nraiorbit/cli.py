@@ -150,15 +150,12 @@ def _preflight(root: Path, cfg: dict, assume_yes: bool) -> bool:
 
 
 def cmd_run(args) -> None:
-    from .llm import ClaudeClient
 
     root = _project(args.slug)
     cfg = _apply_run_options(load_pipeline_config(root), args)
     if not _preflight(root, cfg, args.yes):
         return
-    llm = ClaudeClient(model=cfg["llm"]["model"], max_tokens=cfg["llm"]["max_tokens"],
-                       usage_log=root / "reports" / "llm_usage.jsonl")
-    _run(Pipeline(root, llm, cfg=cfg), args.slug, args.until, args.force)
+    _run(Pipeline(root, _claude(root, cfg), cfg=cfg), args.slug, args.until, args.force)
 
 
 def _keep_keyframe(root: Path, shot_id: str, current: int, attempt: int) -> tuple[Path, Path] | None:
@@ -181,7 +178,6 @@ def _keep_keyframe(root: Path, shot_id: str, current: int, attempt: int) -> tupl
 def cmd_retake(args) -> None:
     """Generate another attempt of chosen shots (or pick an earlier attempt with --use) and re-render."""
     from .costing import load_takes
-    from .llm import ClaudeClient
     from .schemas import ShotList
     from .shotpack import clips_for
 
@@ -235,9 +231,7 @@ def cmd_retake(args) -> None:
     if not approved:
         undo()
         return
-    llm = ClaudeClient(model=cfg["llm"]["model"], max_tokens=cfg["llm"]["max_tokens"],
-                       usage_log=root / "reports" / "llm_usage.jsonl")
-    _run(Pipeline(root, llm, cfg=cfg), args.slug)
+    _run(Pipeline(root, _claude(root, cfg), cfg=cfg), args.slug)
 
 
 def cmd_identity(args) -> None:
@@ -282,9 +276,11 @@ def cmd_identity(args) -> None:
 
 
 def _claude(root: Path, cfg: dict):
+    """The Claude client as the film's config sets it: model, output budget, usage log, and llm.batch (the agents
+    whose calls go as one Message Batch at half price)."""
     from .llm import ClaudeClient
     return ClaudeClient(model=cfg["llm"]["model"], max_tokens=cfg["llm"]["max_tokens"],
-                        usage_log=root / "reports" / "llm_usage.jsonl")
+                        usage_log=root / "reports" / "llm_usage.jsonl", batch=cfg["llm"].get("batch"))
 
 
 def cmd_keyframes(args) -> None:
@@ -539,14 +535,11 @@ def cmd_release(args) -> None:
 
 
 def cmd_produce(args) -> None:
-    from .llm import ClaudeClient
     from .service import produce
 
     root = _project(args.slug)
     cfg = _apply_run_options(load_pipeline_config(root), args)
-    llm = ClaudeClient(model=cfg["llm"]["model"], max_tokens=cfg["llm"]["max_tokens"],
-                       usage_log=root / "reports" / "llm_usage.jsonl")
-    report = produce.produce(Pipeline(root, llm, cfg=cfg), bucket=args.bucket, publish=args.publish,
+    report = produce.produce(Pipeline(root, _claude(root, cfg), cfg=cfg), bucket=args.bucket, publish=args.publish,
                              gates=args.gates, keyframes=cmd_keyframes)
     print(f"\n{args.slug}: {report['state']}  (ledger ${report['ledger_usd']:.2f}; report in reports/produce.json)")
     if report["state"].startswith("awaiting:"):
@@ -567,16 +560,12 @@ def cmd_learn(args) -> None:
 def cmd_service(args) -> None:
     from .service import learn, produce, queue
     if args.action == "tick":
-        from .llm import ClaudeClient
-
         print(f"runner version {os.environ.get('NRAIORBIT_VERSION') or 'unknown'}")   # the commit this image was built from
 
         def produce_fn(root: Path, bucket, progress=None):
             cfg = load_pipeline_config(root)
-            llm = ClaudeClient(model=cfg["llm"]["model"], max_tokens=cfg["llm"]["max_tokens"],
-                               usage_log=root / "reports" / "llm_usage.jsonl")
-            return produce.produce(Pipeline(root, llm, cfg=cfg), bucket=bucket, keyframes=cmd_keyframes,
-                                   progress=progress)
+            return produce.produce(Pipeline(root, _claude(root, cfg), cfg=cfg), bucket=bucket,
+                                   keyframes=cmd_keyframes, progress=progress)
 
         def learn_fn(url, title, what, minutes=None, max_usd=1.0):
             from .costing import load_pricing
@@ -589,6 +578,7 @@ def cmd_service(args) -> None:
 
             from .agents.production import MusicDirector
             from .costing import SpendLedger, load_pricing
+            from .llm import ClaudeClient
             from .providers.lyria import LyriaMusic
             from .service import feed
             cfg = studio_config()

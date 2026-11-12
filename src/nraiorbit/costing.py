@@ -268,9 +268,10 @@ def claude_actual(project_dir: Path | None, pricing: dict) -> tuple[float, int] 
     for line in log.read_text(encoding="utf-8").splitlines():
         r = json.loads(line)
         p = claude_rates(pricing, r.get("model"))
-        total += (r["input_tokens"] * p["input"] + r["output_tokens"] * p["output"]
-                  + (r.get("cache_read_input_tokens") or 0) * p["cache_read"]
-                  + (r.get("cache_creation_input_tokens") or 0) * p["cache_write"]) / 1e6
+        half = 0.5 if r.get("batch") else 1.0            # a Message Batch call is billed at half the rates
+        total += half * (r["input_tokens"] * p["input"] + r["output_tokens"] * p["output"]
+                         + (r.get("cache_read_input_tokens") or 0) * p["cache_read"]
+                         + (r.get("cache_creation_input_tokens") or 0) * p["cache_write"]) / 1e6
         calls += 1
     return total, calls
 

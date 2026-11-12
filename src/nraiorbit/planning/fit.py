@@ -4,8 +4,9 @@ breath of OVERRUN_TOL_S into the next shot is fine). Lines never overlap, so a l
 a scene holds more speech than its shots, lines drift off their pictures, voices play over the wrong faces and the
 last lines fall past the end of the film. Everything here is checked before money is spent:
 
-    scene lengths   a scene is made long enough for its lines (SCENE_SPEECH_SHARE), up to film.max_runtime_minutes;
-                    past that the screenwriter shortens them (Pipeline._fit_scene_lengths)
+    scene lengths   a scene is made long enough for its lines (SCENE_SPEECH_SHARE); past film.max_runtime_minutes
+                    the screenwriter is asked once to shorten them, and the film then grows to hold what is left,
+                    never stopping for length (Pipeline._fit_scene_lengths)
     shot plans      every line in a shot long enough for it, with its speaker in frame (Pipeline._shots)
     voiced lines    measured lines that run past their shots stop the run before lip-sync (Pipeline._render), and
                     the screenwriter shortens them (service/produce.fit_dialogue)
@@ -25,7 +26,8 @@ OVERRUN_TOL_S = 0.5           # a line may end this far into the shot after its 
 SPEECH_BASE_S = 0.3           # measured on ElevenLabs Telugu: about 0.09 s a character (median), 0.115 s the slowest
 SPEECH_S_PER_CHAR = 0.095     # tenth; the estimate errs a little long
 SCENE_SPEECH_SHARE = 0.75     # a scene's lines (with lead-ins and breaths) fill at most this share of it
-MAX_RUNTIME_FACTOR = 5 / 3    # without film.max_runtime_minutes: a 3-minute film may grow to 5 to fit its dialogue
+MAX_RUNTIME_FACTOR = 5 / 3    # without film.max_runtime_minutes: a 3-minute film grows to 5 to fit its dialogue
+#                               before the screenwriter is asked to shorten it (and grows further if it must)
 TOO_WIDE = ("EWS", "WS", "aerial")   # a speaker this far away is too small for lip-sync to find
 
 
@@ -53,8 +55,9 @@ def scene_speech(blocks) -> float:
 
 
 def max_runtime_s(film: dict) -> float:
-    """The longest the film may run to fit its dialogue: film.max_runtime_minutes, else MAX_RUNTIME_FACTOR times
-    film.runtime_minutes."""
+    """How long the film may grow to fit its dialogue before the screenwriter is asked to shorten it:
+    film.max_runtime_minutes, else MAX_RUNTIME_FACTOR times film.runtime_minutes. Not a stop: what still does not
+    fit after that, the film grows to hold."""
     if film.get("max_runtime_minutes"):
         return float(film["max_runtime_minutes"]) * 60
     return float(film.get("runtime_minutes") or 0) * 60 * MAX_RUNTIME_FACTOR

@@ -1036,6 +1036,72 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         who = chars[character].get("name_en") or character
         return look_saved(slug, character, f"{who} goes back to the AI's own look")
 
+    @app.post("/film/{slug}/casting")
+    def cast_choice(slug: str, email: str = Depends(guard), character: str = Form(""),
+                    picture: UploadFile | None = File(None), rights: str = Form(""), build: str = Form("")):
+        """The casting window at the top of the film page: one character's own picture and body build, saved in one
+        step. The picture goes into the film's gallery and is the character's final face at once (what Add to the
+        gallery and Use as final face do in two steps); the build is saved with it. Either may be left out; notes
+        and everything else about the look stay as they were."""
+        chars, why = look_of(slug, character)
+        if why:
+            return back(f"/film/{slug}", why)
+        who = chars[character].get("name_en") or character
+        given = picture if picture is not None and picture.filename else None
+        if given is None and not build:
+            return back(f"/film/{slug}", f"Choose a picture or a body build for {who} first; nothing changed.")
+        if build and build != "written" and build not in looks_mod.BUILDS:
+            return back(f"/film/{slug}", f"No body build called {build[:30]!r}; nothing changed.")
+        entry = None
+        if given is not None:
+            if rights not in looks_mod.RIGHTS:
+                return back(f"/film/{slug}", "Say whose picture this is (yours with the person's permission, or "
+                                             "AI-made); nothing changed.")
+            data = given.file.read(looks_mod.MAX_PICTURE + 1)
+            if len(data) > looks_mod.MAX_PICTURE:
+                return back(f"/film/{slug}", "That picture is over 15 MB; nothing changed.")
+            try:
+                png = looks_mod.normalize_picture(data)
+            except ValueError as exc:
+                return back(f"/film/{slug}", str(exc))
+            name, sha = picture_name(character, png)
+            store.write_bytes(f"{looks_mod.film_folder(slug)}/{character}/{name}", png, "image/png")
+            entry = {"file": name, "sha": sha, "source": "yours", "rights": rights, "by": email, "at": queue.now()}
+            into_gallery(slug, character, [entry])
+        said = {}
+        stuck = (films._json(store, f"{slug}/reports/looks_waiting.json") or {}).get(character) or {}
+
+        def change(text: str):
+            data = (yaml.safe_load(text) or {}) if text else {}
+            data = data if isinstance(data, dict) else {}
+            old = data.get(character) if isinstance(data.get(character), dict) else {}
+            old = {} if old.get("removed") else old
+            new = {k: old[k] for k in ("image", "image_sha", "rights", "build", "notes") if old.get(k)}
+            if entry is not None:
+                new.update(image=entry["file"], image_sha=entry["sha"], rights=entry["rights"])
+            if build == "written":
+                new.pop("build", None)
+            elif build:
+                new["build"] = build
+            same = old and looks_mod.fingerprint(new) == looks_mod.fingerprint(old)
+            if same and stuck.get("fp") != looks_mod.fingerprint(old):     # the same again: a try once more only
+                said["msg"] = f"{who} has that picture and build already; nothing changed."   # when it was not taken
+                return None
+            if not any(new.get(k) for k in ("image", "build", "notes")):
+                if not old:
+                    said["msg"] = f"Nothing given for {who}; nothing changed."
+                    return None
+                data[character] = {"removed": True, "by": email, "at": queue.now()}
+            else:
+                data[character] = {**new, "by": email, "at": queue.now()}
+            return yaml.safe_dump(data, sort_keys=True, allow_unicode=True)
+        store.update_text(f"{looks_mod.film_folder(slug)}/{looks_mod.CHOICES}", change, content_type="text/yaml")
+        if said:
+            return back(f"/film/{slug}", said["msg"])
+        what = " and ".join(x for x in ("your picture is the face" if entry is not None else "",
+                                        "the body build is saved" if build else "") if x)
+        return look_saved(slug, character, f"{who}: {what}")
+
     def tick_now(then: str) -> str:
         """Start a tick unless one is running, and say what happened: no fifteen-minute wait after a decision."""
         if not (settings.project and settings.job):

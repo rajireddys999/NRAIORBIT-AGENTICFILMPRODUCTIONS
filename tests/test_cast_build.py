@@ -546,3 +546,33 @@ def test_the_speech_estimate_skips_takes_already_made_and_lines_no_shot_carries(
     tts.cache_dir.mkdir(parents=True)
     (tts.cache_dir / f"el_{tts.cache_key(first)}.wav").write_bytes(b"x")       # already voiced: never priced again
     assert elevenlabs_text(p.p.root, cfg) == (lines - 1, chars - len(first.text_te))
+
+
+def test_the_owners_picture_is_the_first_picture_every_shot_of_the_character_is_drawn_from(tmp_path):
+    """A picture given in the control room is the character's face through the whole film: once the cast step has
+    taken it in, the reference pictures a shot is drawn from (the first frame of every shot the character is in)
+    begin with that very picture, and the other pictures of the character were drawn from it."""
+    import io
+
+    from PIL import Image
+
+    from nraiorbit import looks
+    from nraiorbit.shotpack import _reference_images
+    images = FakeImages()
+    p, paths = cast_step(tmp_path, images, "bhairava_old")
+    p._save = Pipeline._save
+    buf = io.BytesIO()
+    Image.new("RGB", (400, 500), (90, 60, 40)).save(buf, format="PNG")
+    png = looks.normalize_picture(buf.getvalue())
+    looks.sync(paths.root, yaml.safe_dump({"meera": {"image": "meera_1.png", "image_sha": "s", "rights": "own"}}),
+               lambda cid, name: png)
+    Pipeline._take_looks(p)
+    Pipeline._build_cast(p)
+    lock = CastLock.model_validate(yaml.safe_load(paths.lock.read_text()))
+    library = AssetRegistry.load(tmp_path / "library")
+    costume = next(iter(lock.characters["meera"].costumes), None)
+    refs = _reference_images("meera", costume, lock, library)
+    assert refs and refs[0].name == "01_front.png" and refs[0].read_bytes() == png      # her face, as given
+    assert len(refs) >= 2 and all(r.read_bytes() != png for r in refs[1:])              # the rest: drawn from it
+    others = _reference_images("chintu", None, lock, library)
+    assert others and others[0].read_bytes() != png                                      # nobody else gets her face

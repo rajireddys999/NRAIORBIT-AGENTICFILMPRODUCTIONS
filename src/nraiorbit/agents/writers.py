@@ -66,11 +66,17 @@ class Screenwriter(Agent):
                 "own shot: fewer, shorter lines rather than speeches.")
 
     def revise(self, bible: StoryBible, outline: Outline, script: SceneScript, critique: Critique) -> SceneScript:
+        """The scene revised as the critique asks, inside the same speech budget its first draft had: a critique
+        that wants more flavour gets better words, never more or longer lines (revised scenes used to grow past
+        what their seconds could hold)."""
+        scene = next((s for s in outline.scenes if s.scene_id == script.scene_id), None)
+        budget = (self._speech_budget(scene.target_seconds) + " Keep the dialogue inside that budget while "
+                  "revising: better words, never more or longer lines.") if scene is not None else ""
         task = (
             f"Revise scene {script.scene_id} using the critique. Keep block ids stable where the "
             f"block survives.\n<scene_script>\n{script.model_dump_json(indent=1)}\n</scene_script>\n"
             f"<critique>\n{critique.model_dump_json(indent=1)}\n</critique>"
-        ) + self._animals_rule(bible)
+        ) + budget + self._animals_rule(bible)
         return self.ask(SceneScript, context=self._context(bible, outline), task=task)
 
     def _animals_rule(self, bible: StoryBible) -> str:
@@ -91,6 +97,11 @@ class Screenwriter(Agent):
 class DialogueCritic(Agent):
     name = "dialogue_critic"
 
-    def review(self, bible: StoryBible, script: SceneScript) -> Critique:
+    def review(self, bible: StoryBible, script: SceneScript, target_seconds: float | None = None) -> Critique:
+        """`target_seconds`: how long the scene runs on screen; the critic then knows how much talking it can hold
+        and asks for shorter lines where it is over, never for more of them."""
         task = f"Review this scene.\n<scene_script>\n{script.model_dump_json(indent=1)}\n</scene_script>"
+        if target_seconds:
+            task += (Screenwriter._speech_budget(target_seconds) + " Dialogue over that budget is an issue to "
+                     "raise (ask for fewer, shorter lines); never ask for more lines or longer ones.")
         return self.ask(Critique, context=project_context(("story_bible", bible)), task=task)

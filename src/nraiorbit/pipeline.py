@@ -569,7 +569,7 @@ class Pipeline:
             wrote = True
             script = self.screenwriter.scene(bible, outline, sc, previous)
             for _ in range(rounds):
-                critique = self.critic.review(bible, script)
+                critique = self.critic.review(bible, script, sc.target_seconds)   # how much talking it can hold
                 self._report("critiques", {"scene_id": sc.scene_id, **critique.model_dump()})
                 if critique.score >= pass_score:
                     break
@@ -590,10 +590,11 @@ class Pipeline:
             self._fit_scene_lengths(bible, outline)           # this check keeps its scenes (its shots exist)
 
     def _fit_scene_lengths(self, bible: StoryBible, outline: Outline) -> Outline:
-        """Every scene made long enough for its dialogue (planning/fit.lengthen_scenes), the film up to
-        film.max_runtime_minutes (by default 5/3 of the runtime asked for: proper output over the exact length).
-        Past that the screenwriter shortens the dialogue of the scenes over, once; a film that still cannot hold its
-        dialogue stops here, before a shot is planned or anything is paid. Saves the outline's new lengths."""
+        """Every scene made long enough for its dialogue (planning/fit.lengthen_scenes). The runtime asked for is a
+        target, never a stop: up to film.max_runtime_minutes (by default 5/3 of it) the scenes simply grow; past that
+        the screenwriter is asked once to shorten the scenes over, and whatever talking is left after that the film
+        grows to hold, however long that makes it (the cost step prices the longer film before anything is paid).
+        Saves the outline's new lengths."""
         from .planning.fit import chars_for, lengthen_scenes, max_runtime_s, scene_speech
         grid = self._grid_lengths()                   # the same step as the outline: lengths the clips add up to
         cap, step = max_runtime_s(self._film), (math.gcd(*grid) if grid else 1)
@@ -606,11 +607,15 @@ class Pipeline:
             new, cut = lengthen_scenes(lengths, speech, cap, step)
             if not cut:
                 break
-            if attempt == 2:
-                raise PipelineBlocked(
-                    f"the dialogue does not fit even a {cap / 60:.1f}-minute film (film.max_runtime_minutes): "
-                    + "; ".join(f"{sid} has {speech[sid]:.0f} s of talking, {cut[sid]:.0f} s too much" for sid in cut)
-                    + ". Shorten those scenes, or allow a longer film")
+            if attempt == 2:                          # still over after one shortening: the film grows to hold it
+                new, _ = lengthen_scenes(lengths, speech, math.inf, step)
+                total = sum(int(v) for v in new.values())
+                self._report("scene_fit", {"over_cap": {sid: round(cut[sid], 1) for sid in cut}, "cap_s": cap,
+                                           "film_seconds": total})
+                self.log(f"  the dialogue needs more than the {cap / 60:.1f} minutes allowed ("
+                         + "; ".join(f"{sid} {speech[sid]:.0f} s of talking" for sid in cut)
+                         + f"): the film grows to {total // 60}:{total % 60:02d} rather than stopping")
+                break
             for sid, seconds in cut.items():
                 keep = max(2.0, speech[sid] - seconds)
                 fix = Critique(score=0, issues=[f"The dialogue takes about {speech[sid]:.0f} s to say, but the scene "

@@ -64,10 +64,12 @@ def rehearse(pipeline) -> dict:
     # 2. the cast's reference pictures (a film that makes first frames or video needs one set per character)
     makes_pictures = any(prov.get(k, "mock") not in ("mock", "none") for k in ("keyframe", "video"))
     if lock is not None and makes_pictures:
-        new = [c for c, e in lock.characters.items() if e.character_asset.endswith("@pending")]
+        from ..characters import minors_off_screen
+        unseen = minors_off_screen(specs.values(), cfg)   # kept out of every shot: the cast step draws none of them
+        new = [c for c, e in lock.characters.items() if e.character_asset.endswith("@pending") and c not in unseen]
         bare = []
         for cid, entry in lock.characters.items():
-            if entry.character_asset.endswith("@pending"):
+            if entry.character_asset.endswith("@pending") or cid in unseen:
                 continue
             try:
                 if not _front_of(pipeline.library, pipeline.library.resolve(entry.character_asset)).exists():

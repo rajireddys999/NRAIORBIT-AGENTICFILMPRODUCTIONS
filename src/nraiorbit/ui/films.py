@@ -269,6 +269,22 @@ def _yaml(store: Store, rel: str):
         return None
 
 
+def off_screen_ids(bible: dict, resolved: dict) -> set[str]:
+    """The characters this film's video model never shows (characters.minors_off_screen, read from the story bible as
+    the page has it): the cast step makes no picture of them, and their card says why."""
+    from types import SimpleNamespace
+
+    from ..characters import minors_off_screen
+    people = [SimpleNamespace(id=c.get("id"), name_en=c.get("name_en") or c.get("id"),
+                              physical=c.get("physical") if isinstance(c.get("physical"), dict) else {},
+                              silent_animal=bool(c.get("silent_animal")))
+              for c in bible.get("characters", []) if isinstance(c, dict) and c.get("id")]
+    try:
+        return set(minors_off_screen(people, resolved))
+    except (AttributeError, TypeError):                   # a half-written config: the page still renders
+        return set()
+
+
 def _config(store: Store, slug: str) -> dict:
     """The film's own pipeline.yaml; {} when it is missing, not YAML, or not a mapping (a half-written upload), so the
     page still renders."""
@@ -880,6 +896,7 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         return ("No voice yet: the runner picks one at the cast step, or set one below." if vcfg.get("auto_cast")
                 else "No voice yet: set one below; the film stops before its cost gate until every speaker has one.")
     cast_cards = []
+    unseen = off_screen_ids(bible, resolved)
     for cid, entry in (cast.get("characters") or {}).items():
         spec = names.get(cid, {})
         asset = entry.get("character_asset") if isinstance(entry, dict) else None
@@ -892,14 +909,14 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
                            "personality": spec.get("personality"), "arc": spec.get("arc"), "voice": spec.get("voice"),
                            "voice_asset": locked.get("voice_asset"), "costumes": locked.get("costumes"),
                            "images": [img(r) for r in refs[:4]], "el_voice": el_voice(cid),
-                           "voice_note": voice_note(cid, spec), "_files": set(refs)})
+                           "voice_note": voice_note(cid, spec), "_files": set(refs), "off_screen": cid in unseen})
     for cid, spec in names.items():                       # characters not locked yet still show from the bible
         if not any(c["id"] == cid for c in cast_cards):
             cast_cards.append({"id": cid, "name": spec.get("name_en", cid), "name_te": spec.get("name_te"),
                                "role": spec.get("role"), "physical": spec.get("physical"),
                                "personality": spec.get("personality"), "arc": spec.get("arc"), "voice": spec.get("voice"),
                                "voice_asset": None, "costumes": None, "images": [], "el_voice": el_voice(cid),
-                               "voice_note": voice_note(cid, spec)})
+                               "voice_note": voice_note(cid, spec), "off_screen": cid in unseen})
     from ..looks import BUILDS, CHOICES, RIGHTS, film_folder, fingerprint, in_film, waiting
     folder = film_folder(slug)
     given = _yaml(store, f"{folder}/{CHOICES}")

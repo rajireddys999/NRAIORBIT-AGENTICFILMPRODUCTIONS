@@ -714,7 +714,13 @@ class Pipeline:
         """A real film's characters need reference pictures before any video is paid, so faces hold from shot to
         shot. A character no library character fits gets a library entry of its own from the story bible; every cast
         character still without pictures gets them (Gemini images, a few cents each, under the cap). The cast gate
-        then shows them. Pictures already there are kept: this costs nothing a second time."""
+        then shows them. Pictures already there are kept: this costs nothing a second time.
+
+        A character the video model never shows (characters.minors_off_screen: someone under 18 on a project whose
+        Veo shows adults only) is kept out of every shot, so no picture of them is used: none is asked for, and a
+        portrait Google would refuse (a child written crying or hurt) never stops the film. Their library entry and
+        their voice are made as for anyone."""
+        from .characters import minors_off_screen
         from .identity import build_identity_pack, images_to_make, plan_identity_pack, register_new_characters
 
         from .looks import keep_faces
@@ -725,11 +731,23 @@ class Pipeline:
         if added:
             self.p.lock.write_text(yaml.safe_dump(lock.model_dump(), sort_keys=False, allow_unicode=True),
                                    encoding="utf-8")
-        if images_to_make(plan_identity_pack(bible, lock, self.library, log=lambda m: None)):
+        unseen = minors_off_screen(bible.characters, self.cfg)
+        only = None                                       # every character, as a film without children has it
+        if unseen:
+            every = plan_identity_pack(bible, lock, self.library, log=lambda m: None)
+            drawn_from = {job.reference_asset for job in every if job.spec.id not in unseen and job.reference_asset}
+            left_out = [job.spec.id for job in every if job.spec.id in unseen and job.asset.id not in drawn_from]
+            if left_out:                                  # a face another character is drawn from is still made
+                only = [job.spec.id for job in every if job.spec.id not in left_out]
+                self.log(f"  no pictures needed for {', '.join(unseen[c] for c in left_out)}: the video model shows "
+                         "no one under 18, so they are kept out of every shot")
+                if not only:
+                    return
+        if images_to_make(plan_identity_pack(bible, lock, self.library, only=only, log=lambda m: None)):
             from .looks import owner_words
             build_identity_pack(bible, lock, self.library, self._identity_images(), log=self.log,
-                                notes=owner_words(self.p.root))
-        jobs = [job for job in plan_identity_pack(bible, lock, self.library, log=lambda m: None)
+                                notes=owner_words(self.p.root), only=only)
+        jobs = [job for job in plan_identity_pack(bible, lock, self.library, only=only, log=lambda m: None)
                 if not job.front.exists()]
         theirs = [job.spec.id for job in jobs if getattr(job.asset, "owner_picture", False)]
         if theirs:

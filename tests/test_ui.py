@@ -1035,6 +1035,18 @@ def test_cast_cards_find_the_pictures_of_a_locked_library_character(client, root
     assert html.count("01_front.png") >= 1
 
 
+def test_the_cast_card_of_a_child_kept_off_screen_says_why_it_has_no_picture(client, root):
+    """The fixture film runs on Veo, which shows no one under 18: a character of 8 is kept out of every shot and
+    the cast step makes no picture of them; the card says so. Adults' cards say nothing of the kind."""
+    assert "Kept out of frame" not in client.get("/film/demo").text
+    path = root / "demo" / "project" / "01_story_bible.json"
+    bible = json.loads(path.read_text())
+    bible["characters"][0]["physical"]["age"] = 8
+    path.write_text(json.dumps(bible), encoding="utf-8")
+    cast = card(client.get("/film/demo").text, "cast")
+    assert cast.count("Kept out of frame: Google's video model shows no one under 18") == 1
+
+
 def finished_film(root):
     """The fixture film delivered: every shot filmed, the cut and the delivery there, the row done."""
     proj = root / "demo"

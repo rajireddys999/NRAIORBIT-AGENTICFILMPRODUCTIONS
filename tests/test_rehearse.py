@@ -150,3 +150,18 @@ def test_shots_longer_than_a_clip_are_a_note_and_waste_only_counts_seconds_cut_a
     assert not any("shorter than the" in f["what"] for f in found["waste"])   # nothing generated is cut away
     long = next(f["what"] for f in found["notes"] if "longer than Veo's 8 s clip" in f["what"])
     assert "held or slowed in the edit" in long
+
+
+def test_a_child_kept_off_screen_is_not_counted_among_the_pictures_to_make(tmp_path):
+    """Veo shows no one under 18: the cast step draws no picture of a child, so the rehearsal neither promises
+    pictures for one nor stops for the lack of them."""
+    def with_arjun_as_a_boy(pipeline):
+        bible = StoryBible.model_validate_json(pipeline.p.bible.read_text())
+        chars = [c if c.id != "arjun" else c.model_copy(update={"physical": c.physical.model_copy(update={"age": 8})})
+                 for c in bible.characters]
+        pipeline.p.bible.write_text(bible.model_copy(update={"characters": chars}).model_dump_json(), encoding="utf-8")
+        return pipeline
+    notes = said(rehearse.rehearse(with_arjun_as_a_boy(film(tmp_path / "a", cast={"build_identity": True}))), "notes")
+    assert "the cast step makes reference pictures for meera: about 3 pictures" in notes
+    stops = said(rehearse.rehearse(with_arjun_as_a_boy(film(tmp_path / "b"))), "stops")
+    assert "no reference pictures for meera:" in stops and "no reference pictures for arjun" not in stops

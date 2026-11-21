@@ -87,18 +87,20 @@ class FakeImages:
         Path(out).write_bytes(b"png")
 
 
-def cast_step(tmp_path, images, *library_ids):
-    """Pipeline._build_cast over a project whose casting left Chintu and Meera pending and cast Bhairava."""
-    bible = bible_with_a_monkey()
+def cast_step(tmp_path, images, *library_ids, cfg=None, bible=None, extra_cast=()):
+    """Pipeline._build_cast over a project whose casting left Chintu and Meera pending and cast Bhairava. `cfg`: the
+    film's config ({}: no video model named, so nobody is kept off screen); `extra_cast`: more pending characters."""
+    bible = bible or bible_with_a_monkey()
     paths = ProjectPaths(tmp_path / "film")
     paths.bible.parent.mkdir(parents=True, exist_ok=True)
     paths.bible.write_text(bible.model_dump_json(), encoding="utf-8")
     library = library_with(tmp_path, *library_ids)
     lock = CastLock(characters={"chintu": CastEntry(character_asset="characters/chintu@pending"),
                                 "meera": CastEntry(character_asset="characters/meera@pending"),
-                                "bhairava": CastEntry(character_asset="characters/bhairava_old@v1")})
+                                "bhairava": CastEntry(character_asset="characters/bhairava_old@v1"),
+                                **{cid: CastEntry(character_asset=f"characters/{cid}@pending") for cid in extra_cast}})
     paths.lock.write_text(yaml.safe_dump(lock.model_dump()), encoding="utf-8")
-    p = SimpleNamespace(p=paths, library=library, log=lambda *_: None, _identity_images=lambda: images,
+    p = SimpleNamespace(p=paths, library=library, cfg=cfg or {}, log=lambda *_: None, _identity_images=lambda: images,
                         _lock=lambda: CastLock.model_validate(yaml.safe_load(paths.lock.read_text())),
                         _load=lambda path, model: model.model_validate_json(Path(path).read_text()))
     return p, paths
@@ -175,6 +177,75 @@ def test_a_refused_portrait_blocks_with_the_characters_name(tmp_path):
     p, _ = cast_step(tmp_path, FakeImages(refuse="macaque"), "bhairava_old")
     with pytest.raises(PipelineBlocked, match=r"\['chintu'\] have no portrait"):
         Pipeline._build_cast(p)
+
+
+VEO_ADULTS_ONLY = {"providers": {"video": "veo"}}                 # Veo shows no one under 18 (allow_adult, the default)
+
+
+def bible_with_a_crying_child() -> StoryBible:
+    """The monkey film's cast plus the hero as a boy of 8, written as the scene has him (a real film stopped on
+    this: Google refused the portrait of a crying, hurt child)."""
+    bible = bible_with_a_monkey()
+    heroine = bible.characters[1]
+    boy = heroine.model_copy(update={"id": "raghava_child", "name_en": "Raghava (child)", "physical": heroine.physical.model_copy(
+        update={"gender": "male", "age": 8, "build": "skinny, small", "face": "round innocent face, tear-streaked",
+                "marks": "fresh cut on left palm"}), "costume_baseline": "torn khaki school shorts, barefoot"})
+    return bible.model_copy(update={"characters": [*bible.characters, boy]})
+
+
+def test_a_child_kept_off_screen_gets_no_pictures_and_never_stops_the_cast(tmp_path):
+    """Veo shows no one under 18, so the boy is kept out of every shot and no picture of him is ever used: none is
+    asked for (the portrait Google would refuse is never requested), the cast goes on, everyone else is drawn as
+    before, and he still has his library entry in the lock."""
+    images, logs = FakeImages(refuse="8-year-old"), []
+    p, paths = cast_step(tmp_path, images, "bhairava_old", cfg=VEO_ADULTS_ONLY, bible=bible_with_a_crying_child(),
+                         extra_cast=("raghava_child",))
+    p.log = logs.append
+    Pipeline._build_cast(p)                                        # no PipelineBlocked
+    assert images.prompts and not any("8-year-old" in t or "tear-streaked" in t for t in images.prompts)
+    for aid in ("chintu_film", "meera_film", "bhairava_old"):
+        assert (tmp_path / "library" / "characters" / aid / "refs" / "face" / "01_front.png").exists()
+    assert not (tmp_path / "library" / "characters" / "raghava_child_film" / "refs").exists()
+    lock = CastLock.model_validate(yaml.safe_load(paths.lock.read_text()))
+    assert lock.characters["raghava_child"].character_asset == "characters/raghava_child_film@v1"
+    assert any("no pictures needed for Raghava (child) (8)" in line for line in logs)
+    made = len(images.prompts)
+    Pipeline._build_cast(p)                                        # the next run asks for nothing either
+    assert len(images.prompts) == made
+
+
+def test_a_child_the_video_model_does_show_still_needs_a_portrait(tmp_path):
+    """On a project whose Veo may show children (person_generation allow_all) the boy is in the shots, so his
+    portrait is asked for, and a refusal stops the cast by name as it always did."""
+    cfg = {"providers": {"video": "veo"}, "google": {"person_generation": "allow_all"}}
+    p, _ = cast_step(tmp_path, FakeImages(refuse="8-year-old"), "bhairava_old", cfg=cfg,
+                     bible=bible_with_a_crying_child(), extra_cast=("raghava_child",))
+    with pytest.raises(PipelineBlocked, match=r"\['raghava_child'\] have no portrait"):
+        Pipeline._build_cast(p)
+    images = FakeImages()                                          # and one Google draws is made like anyone's
+    p, _ = cast_step(tmp_path / "second", images, "bhairava_old", cfg=cfg, bible=bible_with_a_crying_child(),
+                     extra_cast=("raghava_child",))
+    Pipeline._build_cast(p)
+    assert any("8-year-old" in t for t in images.prompts)
+
+
+def test_a_child_whose_face_another_character_is_drawn_from_is_still_drawn(tmp_path):
+    """The grown hero drawn from the boy's portrait (identity_from): the boy's face is a source picture, so it is
+    made even though he is never on screen."""
+    images = FakeImages()
+    p, paths = cast_step(tmp_path, images, "bhairava_old", cfg=VEO_ADULTS_ONLY, bible=bible_with_a_crying_child(),
+                         extra_cast=("raghava_child",))
+    Pipeline._build_cast(p)                                        # registers the entries; the boy has no pictures
+    manifest = tmp_path / "library" / "characters" / "meera_film" / "manifest.yaml"
+    data = yaml.safe_load(manifest.read_text())
+    data["identity_from"] = {"asset": "raghava_child_film", "change": "the same person twenty years older"}
+    manifest.write_text(yaml.safe_dump(data))
+    for picture in (tmp_path / "library" / "characters" / "meera_film" / "refs").rglob("*.png"):
+        picture.unlink()                                           # her pictures are made again, from his face
+    p.library = AssetRegistry.load(tmp_path / "library")
+    Pipeline._build_cast(p)
+    assert (tmp_path / "library" / "characters" / "raghava_child_film" / "refs" / "face" / "01_front.png").exists()
+    assert any("8-year-old" in t for t in images.prompts)
 
 
 def test_the_cast_step_runs_before_the_cast_gate_only_for_films_that_make_pictures(tmp_path):

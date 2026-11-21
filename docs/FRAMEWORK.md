@@ -54,6 +54,11 @@ story.md ──> story_bible ──> outline ──> scenes ──> cast ──>
 `nraiorbit produce <slug>` runs the whole row with the gates set by the project's `policy` (ask, auto, or stop) and
 writes a one-page QA and cost report at the end. The runner never raises a budget cap on its own.
 
+**Children.** Veo shows no one under 18 unless Google has allowlisted the project (`google.person_generation:
+allow_all`). On every other project a character under 18 is planned out of every shot (their scenes are filmed
+around them, with their voice), so the cast step makes no pictures of them and a portrait Google would refuse never
+stops the film; their cast card says they are kept out of frame.
+
 ## 3. Where the one-off scripts went
 
 | Scratchpad script (godavari10) | Now |

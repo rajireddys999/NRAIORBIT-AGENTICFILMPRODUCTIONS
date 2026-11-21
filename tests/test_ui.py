@@ -1047,6 +1047,49 @@ def test_the_cast_card_of_a_child_kept_off_screen_says_why_it_has_no_picture(cli
     assert cast.count("Kept out of frame: Google's video model shows no one under 18") == 1
 
 
+def test_new_shorts_queues_a_short_on_the_films_own_queue(client, root):
+    """The New Shorts tab: the New film form with a short's fields. It writes the idea, a short's settings beside it
+    and one row marked short on the same sheet; the film page then shows a short (upright, no cards, no reels)."""
+    from urllib.parse import unquote
+    form = client.get("/shorts/new").text
+    assert 'action="/shorts/new"' in form and 'name="seconds"' in form and "Queue this short" in form
+    assert 'name="quality" value="sd"' in form and 'data-per-minute="4.0"' in form      # the same two tool sets
+    assert 'href="/shorts/new" class="on"' in form and 'href="/shorts/new"' in client.get("/new").text
+    idea = "A little girl gives her umbrella to a wet puppy in the rain."
+    r = client.post("/shorts/new", data={"slug": "Rain Umbrella", "story": idea, "budget": "12", "seconds": "45",
+                                         "quality": "SD", "start": "1"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/film/rain-umbrella")
+    assert "queued as a 46-second short" in unquote(r.headers["location"])          # even seconds: 45 becomes 46
+    assert (root / "stories" / "rain-umbrella.md").read_text(encoding="utf-8").strip() == idea
+    over = yaml.safe_load((root / "stories" / "rain-umbrella.overrides.yaml").read_text())
+    assert over == app_mod.short_overrides(46, "sd") and over["film"]["format"] == "short"
+    assert over["google"] == {"veo_aspect_ratio": "9:16"} and over["film"]["resolution"] == [1080, 1920]
+    new = rows(root)[-1]
+    assert new["slug"] == "rain-umbrella" and new["quality"] == "sd" and "format" not in new   # a film's row
+    assert new["state"] == "new" and new["budget_usd"] == "12" and new["publish"] == "private"
+    assert client.started == ["nraiorbit-runner"]
+    page = client.get("/film/rain-umbrella").text
+    assert "SHORT · 46 S TARGET · UPRIGHT 9:16" in page and "<b>SD</b> tools" in page
+    assert 'id="cards"' not in page and "Shorts for Instagram and YouTube" not in page and ">The short<" in page
+    home = client.get("/").text
+    assert "46 S · SHORT" in home and 'href="/shorts/new"' in home
+    # a film queued the old way is no short, and its page is as it was
+    r = client.post("/new", data={"slug": "plain-film", "story": idea * 2, "budget": "10"}, follow_redirects=False)
+    assert r.status_code == 303 and rows(root)[-1]["slug"] == "plain-film"
+    assert yaml.safe_load((root / "stories" / "plain-film.overrides.yaml").read_text()) == {
+        "film": {"runtime_minutes": 10}, "quality": "hd"}
+    film = client.get("/film/plain-film").text
+    assert 'id="cards"' in film and "UPRIGHT 9:16" not in film and "Film &amp; trailer" in film
+    # mistakes come back as the form with the reason, and nothing is queued
+    for wrong, said in (({"story": "too short"}, "too short to plan a short from"), ({"seconds": "5"}, "10 to 180 seconds"),
+                        ({"seconds": "400"}, "10 to 180 seconds"), ({"seconds": "nan"}, "number of seconds"),
+                        ({"budget": "0"}, "above zero"), ({"budget": "inf"}, "real number above zero"),
+                        ({"quality": "ultra"}, "tool set must be one of HD, SD")):
+        r = client.post("/shorts/new", data={"slug": "bad", "story": idea, "budget": "12", "seconds": "30", **wrong})
+        assert r.status_code == 400 and said in r.text and 'name="story"' in r.text, wrong
+    assert not any(row["slug"] == "bad" for row in rows(root))
+
+
 def finished_film(root):
     """The fixture film delivered: every shot filmed, the cut and the delivery there, the row done."""
     proj = root / "demo"

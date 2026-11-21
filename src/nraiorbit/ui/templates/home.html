@@ -44,7 +44,10 @@
     <p class="eyebrow">{{ now.strftime('%A · %d %b %Y') }} · {{ now.strftime('%H:%M') }} {{ now.tzname() }}</p>
     <h1 style="margin:0">Films in <em>orbit.</em></h1>
   </div>
-  <a class="btn big" href="/new"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>New film</a>
+  <div class="row" style="gap:10px">
+    <a class="btn big" href="/new"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>New film</a>
+    <a class="btn big quiet" href="/shorts/new"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>New Shorts</a>
+  </div>
 </div>
 
 {% if featured %}
@@ -52,7 +55,7 @@
   <a class="frame" href="/film/{{ featured.slug }}">
     <span class="bars" aria-hidden="true"></span>
     <span class="tag tl">{% if featured.gates %}<span style="color:#4FD8F0">●</span> WAITING AT THE {{ featured.gates[0]|upper }} GATE{% else %}<span style="color:#FF4757">●</span> {{ featured.state|upper }}{% endif %}</span>
-    {% if featured.runtime %}<span class="tag tr">{{ featured.runtime }} MIN</span>{% endif %}
+    {% if featured.format == 'short' %}<span class="tag tr">{% if featured.seconds %}{{ featured.seconds }} S · {% endif %}SHORT</span>{% elif featured.runtime %}<span class="tag tr">{{ featured.runtime }} MIN</span>{% endif %}
     <span class="tag br">{{ featured.slug }}</span>
     <span class="title">{{ featured.title_te or featured.title }}</span>
   </a>
@@ -137,7 +140,7 @@
       <a class="frame{% if hue %} hue{{ hue }}{% endif %}" href="/film/{{ f.slug }}" aria-label="Open {{ f.title }}">
         <span class="bars" aria-hidden="true"></span>
         <span class="badge {{ f.state.split(':')[0] }}">{{ f.state }}</span>
-        {% if f.runtime %}<span class="tag tr">{{ f.runtime }} MIN</span>{% endif %}
+        {% if f.format == 'short' %}<span class="tag tr">{% if f.seconds %}{{ f.seconds }} S · {% endif %}SHORT</span>{% elif f.runtime %}<span class="tag tr">{{ f.runtime }} MIN</span>{% endif %}
         <span class="title" style="font-size:24px">{{ f.title_te or f.title }}</span>
       </a>
       <div class="body">

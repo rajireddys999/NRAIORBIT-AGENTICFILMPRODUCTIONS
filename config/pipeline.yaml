@@ -2,9 +2,12 @@
 # Copy into a project (projects/<slug>/pipeline.yaml) to override per film.
 
 film:
+  format: film                     # film | short: a short (the control room's New Shorts tab) is an upright 9:16
+                                   # piece of under three minutes with its own structure template, no trailer, no
+                                   # reels and no cards, uploaded as a YouTube Short; the tab writes its settings
   runtime_minutes: 105
   runtime_tolerance_minutes: 3
-  structure_template: auto         # auto | telugu_commercial | family_drama | thriller | village_action
+  structure_template: auto         # auto | telugu_commercial | family_drama | thriller | village_action (a short: short)
   language: te
   subtitle_languages: [te, en]
   resolution: [1920, 1080]         # generation is upscaled to this; use [3840, 2160] for 4K masters
@@ -95,6 +98,7 @@ google:                            # used by the veo / gemini / lyria providers 
                                          # -preview name is replaced by its released -001 name when Google says so
   veo_tier: fast                   # pricing tier of that model: standard | fast | lite
   veo_resolution: 720p             # generate 720p; the edit upscales to film.resolution
+  veo_aspect_ratio: "16:9"         # 16:9 | 9:16 (upright, for a short); the first frames are drawn the same shape
   veo_mode: keyframe               # keyframe (Gemini first frame -> Veo) | reference (Veo asset references, 8 s)
   video_tiers:                     # per-shot Veo settings (shot.video_tier picks one; null = the three above)
     standard_1080p: {model: veo-3.1-generate-001, tier: standard, resolution: 1080p}

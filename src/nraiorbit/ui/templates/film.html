@@ -73,7 +73,7 @@
     <div class="metaline" style="margin-top:12px">
       <span>{{ f.slug|upper }}</span>
       {% if f.bible.genres %}<span class="sep">·</span><span>{{ f.bible.genres|join(' / ')|upper }}</span>{% endif %}
-      {% if f.runtime %}<span class="sep">·</span><span>{{ f.runtime }} MIN TARGET</span>{% endif %}
+      {% if f.format == 'short' %}<span class="sep">·</span><span class="gold">SHORT{% if f.seconds %} · {{ f.seconds }} S TARGET{% endif %} · UPRIGHT 9:16</span>{% elif f.runtime %}<span class="sep">·</span><span>{{ f.runtime }} MIN TARGET</span>{% endif %}
       {% if shot_count %}<span class="sep">·</span><span>{{ shot_count }} SHOTS</span>{% endif %}
       {% if f.cast %}<span class="sep">·</span><span>{{ f.cast|length }} CAST</span>{% endif %}
       {% if f.bible.tone %}<span class="sep">·</span><span class="cyan">{{ f.bible.tone|upper }}</span>{% endif %}
@@ -81,7 +81,7 @@
   </div>
   <div class="actions">
     {% if settings.project and settings.job %}<form class="inline" method="post" action="/tick"><input type="hidden" name="next" value="/film/{{ f.slug }}"><button class="quiet"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>Run a tick now</button></form>{% endif %}
-    {% if f.media['movie.mp4'] %}<a class="btn quiet" href="{{ f.media['movie.mp4'] }}">Open the film</a>{% endif %}
+    {% if f.media['movie.mp4'] %}<a class="btn quiet" href="{{ f.media['movie.mp4'] }}">Open the {{ 'short' if f.format == 'short' else 'film' }}</a>{% endif %}
     {% if f.media['trailer.mp4'] %}<a class="btn quiet" href="{{ f.media['trailer.mp4'] }}">Trailer</a>{% endif %}
   </div>
 </div>
@@ -95,7 +95,7 @@
     {% if f.keyframes %}<img src="{{ f.keyframes[0].url }}" alt="First frame of {{ f.keyframes[0].shot_id }}">{% endif %}
     <span class="bars" aria-hidden="true"></span>
     <span class="tag tl">{% if f.gates %}<span style="color:#4FD8F0">●</span> WAITING AT THE {{ f.gates[0]|upper }} GATE{% elif state0 == 'producing' %}<span style="color:#FF4757">●</span> PRODUCING{% else %}{{ f.state|upper }}{% endif %}</span>
-    {% if f.keyframes %}<span class="tag tr">{{ f.keyframes[0].shot_id|upper }} · FIRST FRAME</span>{% elif f.runtime %}<span class="tag tr">{{ f.runtime }} MIN</span>{% endif %}
+    {% if f.keyframes %}<span class="tag tr">{{ f.keyframes[0].shot_id|upper }} · FIRST FRAME</span>{% elif f.format == 'short' %}<span class="tag tr">{% if f.seconds %}{{ f.seconds }} S · {% endif %}SHORT</span>{% elif f.runtime %}<span class="tag tr">{{ f.runtime }} MIN</span>{% endif %}
     {% if f.stages.render.text and not f.tools_planned %}<span class="tag bl">{{ f.stages.render.text|upper }}</span>{% endif %}
     <span class="tag br">{{ f.bible.structure_template|default('')|upper if f.bible.structure_template else 'NO PLAN YET' }}</span>
   </div>
@@ -508,14 +508,15 @@
 </div>
 
 <div class="card" id="assemble">
-  <div class="section-head"><h2>Film &amp; trailer</h2>{{ run_badge('assemble') }}</div>
+  <div class="section-head"><h2>{% if f.format == 'short' %}The short{% else %}Film &amp; trailer{% endif %}</h2>{{ run_badge('assemble') }}</div>
   {{ tools_head('assemble') }}
   <div class="grid g2">
-    {% if f.media['movie.mp4'] %}<div><h3 style="margin-top:0">Film</h3><video controls preload="metadata" src="{{ f.media['movie.mp4'] }}"></video></div>{% endif %}
+    {% if f.media['movie.mp4'] %}<div><h3 style="margin-top:0">{{ 'Short' if f.format == 'short' else 'Film' }}</h3><video controls preload="metadata" src="{{ f.media['movie.mp4'] }}"{% if f.format == 'short' %} style="max-height:70vh;aspect-ratio:9/16;width:auto;max-width:100%;background:#000"{% endif %}></video></div>{% endif %}
     {% if f.media['trailer.mp4'] %}<div><h3 style="margin-top:0">Trailer</h3><video controls preload="metadata" src="{{ f.media['trailer.mp4'] }}"></video></div>{% endif %}
   </div>
   {% if not f.media %}<p class="muted">Not assembled yet.</p>{% endif %}
-  {% if f.reels or f.row %}
+  {% if f.format == 'short' %}<p class="small muted">An upright 9:16 short, shot that way: no trailer, no reels and no title cards. It goes to YouTube as a Short once you approve the upload.</p>{% endif %}
+  {% if f.format != 'short' and (f.reels or f.row) %}
   <h3 id="reels">Shorts for Instagram and YouTube</h3>
   <p class="small muted">Each short is a whole moment from the film itself, 5 to 15 seconds, starting and ending where the film cuts, with no line cut off; its own picture and sound (nothing paid). The same shorts are for Instagram (download them) and YouTube Shorts.</p>
   {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/shorts-count" style="margin:6px 0 10px">
@@ -552,6 +553,7 @@
   {% if not f.qa_film and not f.qa_md and not f.strips %}<p class="muted">No QA report yet.</p>{% endif %}
 </div>
 
+{% if f.format != 'short' %}
 <div class="card" id="cards">
   <div class="section-head"><h2>Title &amp; end cards</h2>{{ run_badge('cards') }}</div>
   {{ tools_head('cards') }}
@@ -578,6 +580,7 @@
   <p class="tiny dim" style="margin-top:6px">Claude turns your words into a few cards, Telugu over English, and the runner joins them around the film without re-encoding it. You then watch the film with its cards and approve, or change the words and make them again. A new cut of the film gets its cards again from the same words.</p>
   {% else %}<p class="small muted">This film is not in the queue; its cards are made from Claude Code.</p>{% endif %}
 </div>
+{% endif %}
 
 <div class="card" id="deliver">
   <div class="section-head"><h2>Delivery</h2>{{ run_badge('deliver') }}</div>
@@ -593,6 +596,9 @@
   {% if pub is mapping %}{% for k, v in pub.items() %}<p>{{ k }}: {% if v is mapping and v.id %}<a href="https://youtu.be/{{ v.id }}" target="_blank" rel="noopener">youtu.be/{{ v.id }}</a>{% elif v is string and v|length < 20 %}<a href="https://youtu.be/{{ v }}" target="_blank" rel="noopener">youtu.be/{{ v }}</a>{% else %}{{ v }}{% endif %}</p>{% endfor %}
   {% elif pub %}<p>{{ pub }}</p>{% else %}<p class="muted">Not published. Policy: {{ f.row.publish if f.row and f.row.publish else f.policy.publish or 'none' }}.</p>{% endif %}
   {% if youtube.channel %}<p class="small muted">Channel: {{ youtube.channel }}</p>{% elif youtube.can_connect %}<p class="small"><a href="/youtube/connect">Connect YouTube</a> first; the runner uploads on its next pass over a finished film whose publish setting is not none.</p>{% endif %}
+  {% if f.format == 'short' %}
+  <p class="small muted">This short goes up as one YouTube Short, with its own title and description, when you approve the upload above.</p>
+  {% else %}
   <h3 style="margin-top:16px">Shorts</h3>
   {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/shorts-mode" style="margin-bottom:8px">
     <select name="mode" aria-label="How the reels go up as Shorts" style="width:auto">
@@ -618,6 +624,7 @@
     </form>
     <p class="tiny dim" style="margin-top:6px">Apart from the film's own upload and its approval. Only public Shorts count toward YouTube's Shorts views.</p>
     {% else %}<p class="small muted">Connect YouTube to upload the reels as Shorts.</p>{% endif %}
+  {% endif %}
   {% endif %}
   {% endif %}
 </div>

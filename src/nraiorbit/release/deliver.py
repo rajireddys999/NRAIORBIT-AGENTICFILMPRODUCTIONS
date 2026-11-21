@@ -14,7 +14,10 @@ from pathlib import Path
 from ..post import ffmpeg
 from . import gcs
 
-SMALL = ["-vf", "scale=1280:-2:flags=lanczos", "-c:v", "libx264", "-preset", "medium", "-b:v", "2000k",
+# 1280 wide for a film; an upright master (a short, 1080x1920) is 1280 tall instead, so the copy is 720x1280 and
+# never an enlargement
+SMALL = ["-vf", "scale=w='if(gt(iw,ih),1280,-2)':h='if(gt(iw,ih),-2,1280)':flags=lanczos", "-c:v", "libx264",
+         "-preset", "medium", "-b:v", "2000k",
          "-maxrate", "2400k", "-bufsize", "4800k", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
          "-movflags", "+faststart"]
 

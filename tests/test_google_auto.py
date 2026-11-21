@@ -1073,3 +1073,18 @@ def test_sync_silence_sends_the_model_only_the_frames_with_a_voice(setup):
         for r in recs.values():                                   # every crop sent lies inside a voiced stretch
             for seg in r.get("segments") or []:
                 assert seg["end"] - seg["start"] >= 8
+
+
+def test_a_short_is_shot_upright_and_its_first_frames_are_drawn_upright(setup):
+    """google.veo_aspect_ratio 9:16 (a short): every clip is asked for at 9:16 in words and in the setting, and each
+    first frame is drawn the same shape; the cast's reference pictures keep theirs."""
+    fake = setup.fake
+    cast_pictures = len(fake.image_calls)
+    pipeline, cfg = setup.make()
+    pipeline.cfg = deep_merge(pipeline.cfg, {"google": {"veo_aspect_ratio": "9:16"}})
+    pipeline.run(until="render")
+    assert fake.video_calls and {c["config"].aspect_ratio for c in fake.video_calls} == {"9:16"}
+    assert all(c["prompt"].endswith("9:16 vertical, upright for a phone screen.") for c in fake.video_calls)
+    frames = fake.image_calls[cast_pictures:]
+    assert frames and {c["config"].image_config.aspect_ratio for c in frames} == {"9:16"}
+    assert {c["config"].image_config.aspect_ratio for c in fake.image_calls[:cast_pictures]} == {"3:4", "2:3"}

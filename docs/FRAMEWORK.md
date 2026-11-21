@@ -54,6 +54,13 @@ story.md ──> story_bible ──> outline ──> scenes ──> cast ──>
 `nraiorbit produce <slug>` runs the whole row with the gates set by the project's `policy` (ask, auto, or stop) and
 writes a one-page QA and cost report at the end. The runner never raises a budget cap on its own.
 
+**Shorts.** The control room's New Shorts tab queues a short on the same sheet, runner and tool sets (HD or SD) as a
+film. What makes it a short is written beside its idea (`stories/<slug>.overrides.yaml`): `film.format: short`, its
+length in seconds (10 to 180, even), the `short` structure template (a hook, a turn, a payoff), an upright 1080 x 1920
+picture shot at 9:16 (`google.veo_aspect_ratio`), and no trailer, reels or title cards. It goes through the same
+gates (story, cast, cost, first frames, the cut, the upload) and ends as one YouTube Short. If its lines need more
+time it runs longer, never past the three minutes YouTube takes as a Short. A film names no format and runs as before.
+
 **Children.** Veo shows no one under 18 unless Google has allowlisted the project (`google.person_generation:
 allow_all`). On every other project a character under 18 is planned out of every shot (their scenes are filmed
 around them, with their voice), so the cast step makes no pictures of them and a portrait Google would refuse never

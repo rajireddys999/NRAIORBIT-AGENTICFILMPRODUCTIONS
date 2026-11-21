@@ -85,12 +85,18 @@ def shot_budget(target_seconds: float, clip_lengths: list[int]) -> str:
             "dialogue lines (block_ids) and cover reactions within a shot, rather than cutting on every line.")
 
 
+VERTICAL_FRAMING = ("This is a vertical short for a phone screen (9:16, upright). Compose every shot for height: the "
+                    "subject centred, faces in the upper two thirds of the frame, little empty width; medium shots and "
+                    "close-ups over wide landscapes, and the action kept inside the middle of the frame.")
+
+
 class Director(Agent):
     name = "director"
 
     def shots(self, bible: StoryBible, lock: CastLock, scene: SceneOutline, script: SceneScript,
               action_candidates: list[str], rasa_defaults: dict, clip_lengths: list[int] | None = None,
-              issue: str = "", off_screen: dict[str, str] | None = None) -> ShotList:
+              issue: str = "", off_screen: dict[str, str] | None = None, framing: str = "") -> ShotList:
+        """`framing`: a rule about the frame itself (VERTICAL_FRAMING for a short), added to the task."""
         task = (
             f"Plan the shots for {scene.scene_id}. Target scene length: {scene.target_seconds} s.\n"
             f"<scene_outline>\n{scene.model_dump_json(indent=1)}\n</scene_outline>\n"
@@ -102,6 +108,8 @@ class Director(Agent):
             task += "\n" + shot_budget(scene.target_seconds, clip_lengths)
         if off_screen:
             task += "\n" + off_screen_rule(off_screen)
+        if framing:
+            task += "\n" + framing
         if issue:
             task += f"\nYour previous shot list for this scene could not be used: {issue}"
         context = project_context(("story_bible", bible), ("cast_lock", lock))

@@ -19,6 +19,7 @@ from fastapi.templating import Jinja2Templates
 from .. import looks as looks_mod
 from .. import tools
 from ..config import quality_key, quality_names
+from ..planning.runtime import SHORT_MAX_S
 from ..service import feed as feed_mod
 from ..service import queue
 from . import films
@@ -27,6 +28,23 @@ from .store import Store
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,40}$")
+SHORT_SECONDS = (10, SHORT_MAX_S)         # a YouTube Short: an upright video of up to three minutes
+
+
+def short_overrides(seconds: int, tool_set: str) -> dict:
+    """What the New Shorts tab writes beside a short's idea (stories/<slug>.overrides.yaml): the same runner, the
+    same HD or SD tool set, with the short's own settings on top: format short, its length, the short structure
+    template, an upright 1080x1920 picture shot at 9:16, and no trailer, reels or title cards. A film's settings are
+    never touched: a film carries no format and runs as before."""
+    return {
+        "quality": tool_set,
+        "film": {"format": "short", "runtime_minutes": round(seconds / 60, 6), "runtime_tolerance_minutes": 0.1,
+                 "structure_template": "short", "resolution": [1080, 1920]},
+        "google": {"veo_aspect_ratio": "9:16"},
+        "reels": {"enabled": False},
+        "cards": [],
+        "review_gates": {"trailer": {"enabled": False}, "cards": {"enabled": False}},
+    }
 
 
 def slugify(text: str) -> str:
@@ -620,6 +638,79 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
                 msg = f"{slug} queued; the tick could not be started: {type(exc).__name__}"
         return back(f"/film/{slug}", msg)
 
+    # ------------------------------------------------------------------ New Shorts: the same queue, a short's settings
+    SHORT_DEFAULTS = {"slug": "", "story": "", "budget": "15", "seconds": "30", "gates": "ask", "publish": "private",
+                      "start": "1", "quality": "hd"}
+
+    @app.get("/shorts/new", response_class=HTMLResponse)
+    def new_short_form(request: Request, email: str = Depends(guard)):
+        return page("short.html", request, email, form=dict(SHORT_DEFAULTS), error=None, sets=tools.quality_menu(),
+                    limits=SHORT_SECONDS)
+
+    @app.post("/shorts/new")
+    def new_short(request: Request, email: str = Depends(guard), slug: str = Form(""), story: str = Form(""),
+                  budget: str = Form(""), seconds: str = Form("45"), gates: str = Form("ask"),
+                  publish: str = Form("private"), start: str = Form(""), quality: str = Form("hd")):
+        """A short: the idea goes to the bucket as a story, its settings beside it (short_overrides, which is what
+        makes it a short), and one row to the same queue sheet, written exactly as a film's. The runner takes it
+        like any story; the film page shows it."""
+        form = {"slug": slug, "story": story, "budget": budget, "seconds": seconds, "gates": gates,
+                "publish": publish, "start": start, "quality": quality}
+
+        def again(error: str):
+            resp = page("short.html", request, email, form=form, error=error, sets=tools.quality_menu(),
+                        limits=SHORT_SECONDS)
+            resp.status_code = 400
+            return resp
+
+        tool_set = quality_key(quality)
+        if tool_set not in quality_names():
+            return again("The tool set must be one of " + ", ".join(s.upper() for s in quality_names()) + ".")
+        if len(story.strip()) < 20:
+            return again("The idea is too short to plan a short from. One or two lines is the least: who, what "
+                         "happens, how it ends.")
+        try:
+            cap = float(budget)
+        except ValueError:
+            return again("The budget cap must be a number.")
+        if not math.isfinite(cap) or cap <= 0:
+            return again("The budget cap must be a real number above zero: nothing is paid without one.")
+        try:
+            length = int(float(seconds or SHORT_DEFAULTS["seconds"]))
+        except (ValueError, OverflowError):
+            return again("Length must be a number of seconds.")
+        if not SHORT_SECONDS[0] <= length <= SHORT_SECONDS[1]:
+            return again(f"A short is {SHORT_SECONDS[0]} to {SHORT_SECONDS[1]} seconds long (YouTube takes up to "
+                         "three minutes).")
+        length += length % 2                             # even seconds: the clips are 4, 6 or 8 s, nothing is trimmed
+        if gates not in ("ask", "auto") or publish not in ("none", "private", "unlisted", "public"):
+            return again("Gates must be ask or auto; YouTube none, private, unlisted or public.")
+        rows = load_rows(store, STORIES, queue.STORY_COLUMNS)
+        used = {r["slug"] for r in rows}
+        slug = pick_slug(slug, story, lambda s: s in used or store.exists(f"{s}/project/pipeline.yaml")
+                         or store.exists(f"{s}/project/01_story_bible.json") or store.exists(f"stories/{s}.md"))
+        store.write_text(f"stories/{slug}.md", story.strip() + "\n", "text/markdown")
+        store.write_text(f"stories/{slug}.overrides.yaml", yaml.safe_dump(short_overrides(length, tool_set)),
+                         "text/yaml")
+
+        def add(text: str) -> str:
+            rows = queue.rows_of(text, queue.STORY_COLUMNS)
+            if any(r["slug"] == slug for r in rows):
+                raise HTTPException(400, f"{slug} exists already; pick another slug")
+            rows.append({"slug": slug, "story_uri": store.uri(f"stories/{slug}.md"), "budget_usd": money_text(cap),
+                         "gates": gates, "publish": publish, "state": "new", "note": "", "updated": queue.now(),
+                         "quality": tool_set})
+            return queue.csv_of(rows, queue.STORY_COLUMNS)
+        store.update_text(STORIES, add, "text/csv")
+        msg = f"{slug} queued as a {length}-second short; the runner picks it up within 15 minutes"
+        if start and settings.project and settings.job:
+            try:
+                ex = runner_mod.run(settings.project, settings.region, settings.job)
+                msg = f"{slug} queued as a {length}-second short and a tick started ({ex})"
+            except Exception as exc:
+                msg = f"{slug} queued as a {length}-second short; the tick could not be started: {type(exc).__name__}"
+        return back(f"/film/{slug}", msg)
+
     @app.get("/film/{slug}", response_class=HTMLResponse)
     def film(slug: str, request: Request, email: str = Depends(guard)):
         if not SLUG_RE.match(slug) and slug != "_template":
@@ -649,7 +740,7 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
             beat = queue.takeover_at(row, films.progress_record(store, slug))              # a run that beats: minutes
             resumes = min(t for t in (beat, limit) if t is not None) if (beat or limit) else None
             stalled = {"since": row.get("updated"), "hours": hours, "resumes": resumes.isoformat() if resumes else None}
-        return page("film.html", request, email, f=d, stages=films.STAGES, runner=panel, log_lines=log_lines,
+        return page("film.html", request, email, f=d, stages=films.stages_for(d["format"]), runner=panel, log_lines=log_lines,
                     latest=latest, last_log_at=last_log_at, runner_running=bool(running), youtube=youtube_status(),
                     doings=doings, dupes=duplicates(panel["executions"], doings), stalled=stalled)
 

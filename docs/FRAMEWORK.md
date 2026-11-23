@@ -74,6 +74,10 @@ pictures per character, every face the pipeline drew, and notes.
 allow_all`). On every other project a character under 18 is planned out of every shot (their scenes are filmed
 around them, with their voice), so the cast step makes no pictures of them and a portrait Google would refuse never
 stops the film; their cast card says they are kept out of frame.
+The same rule can fire on a frame of adults: the image model sometimes draws a grown character (short, round-faced)
+looking like a child, and Veo refuses the picture (support code 17301594). The words were right, so the first frame
+is drawn again saying each person's age and height, twice at most (`reports/adult_frames.json` counts), before the
+shot is worded again; under `ask` the new frame waits for a look like any new first frame.
 
 ## 3. Where the one-off scripts went
 

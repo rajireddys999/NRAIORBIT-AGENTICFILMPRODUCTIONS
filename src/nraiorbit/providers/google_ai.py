@@ -271,6 +271,32 @@ def keyframe_prompt(shot: Shot, base_prompt: str, n_refs_by_char: list[tuple],
 
 # ------------------------------------------------------------------------------ video
 
+# Veo's child rule (Google's responsible-AI guidelines list these support codes under "Child"): a request whose
+# picture or words seem to show someone under 18 is refused unless Google has allowlisted the project to show
+# children. It also fires on a first frame in which the image model drew a grown character looking like a child.
+CHILD_CODES = ("17301594", "58061214")
+ADULT_REDRAWS = 2                        # times a shot's first frame is drawn again as adults before the refusal stands
+ADULT_FRAMES = "adult_frames.json"       # reports/: {shot_id: times its first frame was drawn again as adults}
+
+
+def child_rule(refusal: str) -> bool:
+    """Whether a refusal is Google's child rule: the picture or the words seem to show someone under 18."""
+    text = (refusal or "").lower()
+    return any(code in text for code in CHILD_CODES) or "person/face generation" in text
+
+
+def adults_line(people) -> str:
+    """Words for a first frame whose people are all adults but were drawn looking like children: each one's age and
+    height, said plainly. `people`: the story bible's characters in frame."""
+    def one(spec) -> str:
+        ph = spec.physical
+        kind = {"male": "man", "female": "woman"}.get(str(ph.gender).lower(), "adult")
+        tall = f", {ph.height_cm} cm tall" if getattr(ph, "height_cm", None) else ""
+        return f"{spec.name_en} is a grown {kind} of {ph.age}{tall}"
+    return ("Everyone in this picture is an adult: nobody is a child or a teenager. "
+            + "; ".join(one(s) for s in people)
+            + ". Draw each of them with an adult's face, height and proportions, at adult size beside the others.")
+
 
 @register("video", "veo")
 class VeoVideo:
@@ -296,6 +322,7 @@ class VeoVideo:
         self._worded: dict[str, dict] = {}                # shot_id -> its new words, once per shot per run
         self._released: dict[str, str] = {}              # a retired preview model -> its released name, this run
         self._tried: set[str] = set()                     # shots a rewrite was asked for this run (done or not)
+        self._as_adults: set[str] = set()                 # shots whose first frame is drawn again saying all are adults
         self.look_first = False                           # the faces gate is on: a new still waits for a look
         self.log = print
 
@@ -349,6 +376,8 @@ class VeoVideo:
             animals = {c.name_en for c in self.bible.characters if is_animal(c)}
             names = {c.id: c.name_en for c in self.bible.characters}
             owner = {names.get(cid, cid): words for cid, words in owner_words(self.root).items()}
+            if shot.shot_id in self._as_adults:           # refused under the child rule with only adults in frame
+                prompt = f"{prompt} {adults_line(self._adults_in(shot))}"
             self.images.generate(keyframe_prompt(shot, prompt, [(n, len(p), n in animals) for n, p in refs], owner),
                                  keyframe,
                                  refs=[p for _, paths in refs for p in paths], item=f"keyframe {shot.shot_id}",
@@ -375,6 +404,54 @@ class VeoVideo:
                 raise
         draw(safer)
         return safer
+
+    def _adults_in(self, shot: Shot) -> list:
+        """The people in the shot's frame when every one of them is an adult (18 or over in the story bible); [] when
+        someone is under 18 or unknown, or the frame holds no person. Animals are not counted."""
+        from ..identity import is_animal
+        specs = {c.id: c for c in self.bible.characters}
+        people = []
+        for cid in shot.characters_in_frame:
+            spec = specs.get(cid)
+            if spec is None:
+                return []
+            if is_animal(spec):
+                continue
+            age = getattr(spec.physical, "age", None)
+            if not isinstance(age, (int, float)) or age < 18:
+                return []
+            people.append(spec)
+        return people
+
+    def _redraw_as_adults(self, shot: Shot, ctx: RenderContext, refusal: str) -> bool:
+        """Veo refused the shot under its child rule although everyone in the frame is an adult: the image model drew
+        a grown character looking like a child, so the picture is wrong, not the words. The first frame is set aside
+        (take_N.refused.png) and the next one is drawn saying each person's age and height. True when a new frame is
+        to be drawn; False when this is not that refusal, someone in frame is under 18, the shot has no first frame,
+        or the shot has had its ADULT_REDRAWS already (counted in reports/adult_frames.json, so a later run does not
+        start over)."""
+        if not child_rule(refusal) or self.g.get("veo_mode", "keyframe") != "keyframe" or not self._adults_in(shot):
+            return False
+        keyframe = self.root / "06_keyframes" / shot.shot_id / f"take_{max(1, ctx.seed)}.png"
+        if not keyframe.exists():
+            return False
+        record = self.root / "reports" / ADULT_FRAMES
+        try:
+            done = json.loads(record.read_text(encoding="utf-8")) if record.exists() else {}
+        except ValueError:
+            done = {}
+        done = done if isinstance(done, dict) else {}
+        tries = done.get(shot.shot_id) if isinstance(done.get(shot.shot_id), int) else 0
+        if tries >= ADULT_REDRAWS:
+            return False
+        done[shot.shot_id] = tries + 1
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(json.dumps(done, indent=1, sort_keys=True), encoding="utf-8")
+        keyframe.replace(keyframe.with_name(f"{keyframe.stem}.refused.png"))
+        self._as_adults.add(shot.shot_id)
+        self.log(f"  {shot.shot_id}: Google's video model took its first frame for a picture of a child, and everyone "
+                 f"in it is an adult; the frame is drawn again saying so ({tries + 1} of {ADULT_REDRAWS})")
+        return True
 
     def _reword(self, shot: Shot, scene_id: str, refusal: str) -> Shot | None:
         """The shot worded again after a safety refusal (self.safer saves it), at most once per shot in a run."""
@@ -415,14 +492,26 @@ class VeoVideo:
     def render_shot(self, shot: Shot, out: Path, ctx: RenderContext) -> Path:
         """The shot's clip. A clip Veo refuses for safety is worded again once and asked for again; in keyframe mode
         its first frame, drawn from the refused words, is set aside (take_N.refused.png) and drawn from the new words,
-        since the picture itself is often what was refused."""
+        since the picture itself is often what was refused. Before any of that, a refusal under Veo's child rule of a
+        frame that holds only adults gets a new first frame that says so (_redraw_as_adults): the words were right."""
         shot = self._words(shot)
         try:
             return self._render(shot, out, ctx)
         except ShotFiltered as refused:
-            worded = self._reword(shot, ctx.scene_id, str(refused))
-            if worded is None:
-                raise
+            stands = refused
+        while self._redraw_as_adults(shot, ctx, str(stands)):   # all adults, one drawn like a child: a new picture
+            try:
+                return self._render(shot, out, ctx)
+            except ShotFiltered as refused:
+                stands = refused
+        why = str(stands)
+        if child_rule(why) and self._adults_in(shot):     # the director hears what the picture got wrong
+            why += (" Everyone in this shot is an adult; the picture drew one of them like a child. Word each as an "
+                    "unmistakable grown adult (age, adult height and build, facial hair where they have it) and "
+                    "replace childlike poses or actions with adult ones.")
+        worded = self._reword(shot, ctx.scene_id, why)
+        if worded is None:
+            raise stands
         keyframe = self.root / "06_keyframes" / shot.shot_id / f"take_{max(1, ctx.seed)}.png"
         if keyframe.exists():
             keyframe.replace(keyframe.with_name(f"{keyframe.stem}.refused.png"))

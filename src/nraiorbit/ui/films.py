@@ -959,6 +959,7 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
                                "voice_asset": None, "costumes": None, "images": [], "el_voice": el_voice(cid),
                                "voice_note": voice_note(cid, spec), "off_screen": cid in unseen})
     from ..looks import BUILDS, CHOICES, RIGHTS, film_folder, fingerprint, in_film, waiting
+    from . import fixes                                   # the Fix dialog's side of the page (it reads this module)
     folder = film_folder(slug)
     given = _yaml(store, f"{folder}/{CHOICES}")
     given = given if isinstance(given, dict) else {}
@@ -1085,6 +1086,7 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         "story_text": store.read_text(f"{slug}/project/input/story.md") or "",
         "ahead": rehearsal_view(_json(store, f"{slug}/reports/rehearsal.json")),
         "cap_suggest": cap_suggestion(state, cash),
+        "fix": fixes.view(store, slug, row),
         "tools": stage_tools, "tools_line": {k: tools.line(v) for k, v in stage_tools.items()},
         "tools_planned": planned, "render_note": tools.render_note(resolved),
         "used": tools.used(_jsonl(store, f"{slug}/reports/llm_usage.jsonl"), cash["rows"], resolved),

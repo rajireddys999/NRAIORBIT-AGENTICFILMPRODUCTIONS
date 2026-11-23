@@ -585,12 +585,16 @@ def _takes_progress(fn) -> bool:
 
 
 def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: str | None, produce_fn, learn_fn,
-         template: Path | None = None, fetch_story=_fetch, log=print, feed_fn=None, sfx_fn=None) -> dict:
+         template: Path | None = None, fetch_story=_fetch, log=print, feed_fn=None, sfx_fn=None,
+         fix_fn=None) -> dict:
     """One pass: one reference profile, then one story step. Returns what happened. With a bucket, the execution
     says what it is doing in queue/running/ while it works (service/progress.py), and the record goes when it exits,
     whatever happened."""
     tracker = TRACKER_FACTORY(bucket, log=log) if bucket else None
     try:
+        fixed = []                                        # a stopped film the owner asked Claude about: a
+        if bucket and fix_fn and FIXES is not None:       # minute's work too, and it changes nothing in the film
+            fixed = FIXES(bucket, fix_fn, lambda: load(stories_uri, STORY_COLUMNS), log)
         shorts = []                                       # first: a minute's work, never behind an hour's film run
         if bucket and SHORTS is not None:                 # the owner asked for a film's Shorts: no film run needed
             shorts = SHORTS(bucket, lambda: load(stories_uri, STORY_COLUMNS), log)   # the sheet only when asked
@@ -604,6 +608,8 @@ def tick(stories_uri: str, references_uri: str, projects_dir: Path, *, bucket: s
             out["shorts"] = shorts
         if built:
             out["feed"] = built
+        if fixed:
+            out["fixes"] = fixed
         return out
     finally:
         if tracker is not None:
@@ -623,6 +629,21 @@ def _shorts(bucket: str, rows, log) -> list[str]:
 
 
 SHORTS = _shorts                                          # tests replace it
+
+
+def _fixes(bucket: str, ask_fn, rows, log) -> list[str]:
+    """The stopped films the owner asked Claude about (service/fix.py); a bucket that cannot be read is logged,
+    never the tick's end."""
+    from . import fix
+    try:
+        from ..release import gcs
+        return fix.run(gcs.client().bucket(bucket), ask_fn, rows, log=log)
+    except Exception as exc:
+        log(f"  Fix requests not looked at: {type(exc).__name__}: {str(exc)[:120]}")
+        return []
+
+
+FIXES = _fixes                                            # tests replace it
 
 
 def _feed(bucket: str, build_fn, log, sfx_fn=None) -> list[str]:

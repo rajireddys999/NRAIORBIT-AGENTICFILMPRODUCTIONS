@@ -1440,6 +1440,44 @@ def create_app(store: Store, settings: Settings | None = None) -> FastAPI:
         return back(f"/film/{slug}", "Rejected: the AI editor reads your note and decides what to redo; its decision "
                                      "shows on this page. " + tick_now("the decision is under way"))
 
+    @app.post("/film/{slug}/fix")
+    def fix_ask(slug: str, email: str = Depends(guard), words: str = Form("")):
+        """Ask Claude about a stopped film: what happened and the one thing to do about it. Saved as
+        stories/<slug>.fix.json with the evidence (the stop, the film's plan, the last lines of the run that
+        stopped); the next tick takes it once (service/fix.py) and writes the answer into the film's reports for
+        this page to show. Nothing in the film, its row, its gates or its money changes here or there: the answer
+        is an offer the owner applies with the page's own buttons."""
+        from ..service import fix as fix_mod
+        from . import fixes
+        if not SLUG_RE.match(slug):
+            raise HTTPException(404)
+        row = next((r for r in load_rows(store, STORIES, queue.STORY_COLUMNS) if r["slug"] == slug), None)
+        if row is None:
+            return back(f"/film/{slug}", "This film is not in the queue, so there is no stop to ask about; "
+                                         "nothing changed.")
+        if not row["state"].startswith("blocked:"):
+            return back(f"/film/{slug}", f"The film is {row['state'][:60]}, not stopped: there is nothing to fix.")
+        if fixes.waiting(store, slug, row):
+            return back(f"/film/{slug}", "Claude is already reading this stop; the answer shows on this page.")
+        if fixes.asked_today(store, slug, row) >= fix_mod.PER_DAY:
+            return back(f"/film/{slug}", f"Claude was asked {fix_mod.PER_DAY} times today for this film; ask again "
+                                         "tomorrow, or use Send back for rework. Nothing changed.")
+        panel = runner_panel()
+        running = {e["name"] for e in panel["executions"] if e["state"] == "running"}
+        # the lines of the run that stopped (its record names the execution), else of the latest tick
+        ran = (films.progress_record(store, slug) or {}).get("execution") or \
+            (panel["executions"][0]["name"] if panel["executions"] else None)
+        try:
+            log_lines = runner_mod.logs(settings.project, ran, tz=tz) if ran else []
+        except Exception:                                  # no log is still an ask: the stop and the plan go along
+            log_lines = []
+        ask = fixes.request(store, slug, row, films.detail(store, slug, row, running, tz=tz), log_lines,
+                            words.strip()[:fix_mod.WORDS], email)
+        store.write_text(f"{fix_mod.REQUESTS}{slug}{fix_mod.SUFFIX}", json.dumps(ask, ensure_ascii=False),
+                         "application/json")
+        return back(f"/film/{slug}", "Asked Claude about this stop; " + tick_now(
+            "the answer shows on this page in a minute or two"))
+
     @app.post("/film/{slug}/cap-and-rerun")
     def cap_and_rerun(slug: str, email: str = Depends(guard), budget: str = Form("")):
         """One click for a film the estimate stopped: the new cap into the row and, the film being blocked, a

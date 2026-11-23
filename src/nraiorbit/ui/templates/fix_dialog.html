@@ -1,0 +1,115 @@
+{# The Fix dialog on a stopped film's card (ui/fixes.py, service/fix.py). Its buttons are the page's own: Retry, Send
+   back and the cap, which check what is sent as they always do. Nothing here changes the film by itself. #}
+{% set a = f.fix.answer %}
+<style>
+dialog.fix { background:var(--card); color:var(--ink); border:1px solid var(--line2); border-radius:22px; padding:22px 26px; width:min(700px, calc(100vw - 32px)); max-height:calc(100vh - 48px); overflow:auto; box-shadow:0 30px 80px rgba(0,0,0,.6) }
+dialog.fix::backdrop { background:rgba(4,5,10,.74) }
+dialog.fix .fix-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px } dialog.fix .fix-head h3 { margin:0 }
+dialog.fix .fix-part { border-top:1px solid var(--line); padding:12px 0 } dialog.fix .fix-part p { margin:0 0 8px }
+dialog.fix .fix-label { font-size:11px; font-weight:800; letter-spacing:.14em; text-transform:uppercase; color:var(--gold) }
+dialog.fix form { display:grid; gap:8px; margin-top:8px } dialog.fix label { margin:6px 0 0 } dialog.fix textarea { min-height:96px }
+dialog.fix input[type=number] { width:160px }
+</style>
+<dialog id="fixdlg" class="fix"{% if a %} data-answer="{{ a.id }}"{% endif %}>
+  <div class="fix-head"><h3>Fix this stop</h3><button type="button" class="sm quiet" data-close="fixdlg">Close</button></div>
+  <p class="small" style="margin:0 0 4px">{% if f.issue_step %}<span class="dim">{{ f.issue_step }} · </span>{% endif %}The run stopped: <span class="bad">{{ f.state[8:] }}</span></p>
+  {% if f.row.note and f.row.note != f.state[8:] %}<p class="tiny dim" style="margin:0 0 10px">{{ f.row.note }}</p>{% endif %}
+
+  {% if f.fix.pending %}
+  <div class="fix-part">
+    <p><span class="live-dot" style="margin-right:8px"></span>Claude is reading this stop (asked {{ f.fix.pending.at|local }}). The answer shows here in a minute or two; this page refreshes by itself.</p>
+    {% if f.fix.pending.words %}<p class="small muted">You added: {{ f.fix.pending.words }}</p>{% endif %}
+  </div>
+  {% elif a and a.error %}
+  <div class="fix-part"><p class="fix-label">No answer</p><p class="bad">{{ a.error }}</p></div>
+  {% elif a %}
+  <div class="fix-part"><p class="fix-label">What happened</p><p>{{ a.what_happened }}</p></div>
+  <div class="fix-part"><p class="fix-label">Why</p><p>{{ a.why }}</p></div>
+  <div class="fix-part">
+    <p class="fix-label">What to do{% if a.sure == 'guess' %} · <span class="bad">Claude is guessing here</span>{% elif a.sure == 'likely' %} · likely, not certain{% endif %}</p>
+    {% if a.kind == 'retry' %}
+    <p>Run the film again as it is. Everything made so far is kept, and nothing already paid for is paid again.</p>
+    <form method="post" action="/film/{{ f.slug }}/retry"><div><button class="sm">Run it again</button></div></form>
+    {% elif a.kind == 'redo_shots' %}
+    <p>Plan these shots again from the notes below and make them anew. You see each new first frame before its clip is paid for (about a dollar a shot).</p>
+    <form method="post" action="/film/{{ f.slug }}/rework">
+      <input type="hidden" name="stage" value="render">
+      <label>Shots to remake
+        <input name="shots" value="{{ a.shots_text }}" required pattern="\s*sc\d{3}_s\d{3}(\s*,\s*sc\d{3}_s\d{3})*\s*" title="Shot ids like sc013_s003, with commas between them"></label>
+      <label>What must change in them (edit it if you like)
+        <textarea name="notes" rows="5" required maxlength="2000">{{ a.notes }}</textarea></label>
+      <div><button class="sm">Send these shots back</button></div>
+    </form>
+    {% elif a.kind == 'redo_step' %}
+    <p>Redo <b>{{ a.step_label }}</b> from the notes below, and every step after it. The reviews and the cost check ask you again; clips that are kept are not paid for again.</p>
+    <form method="post" action="/film/{{ f.slug }}/rework">
+      <label>Step to redo
+        <select name="stage">{% for key, label in f.rework_steps if key != 'render' %}<option value="{{ key }}"{% if key == a.step %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+      <label>What must change (edit it if you like)
+        <textarea name="notes" rows="5" required maxlength="2000">{{ a.notes }}</textarea></label>
+      <div><button class="sm">Send it back</button></div>
+    </form>
+    {% elif a.kind == 'raise_cap' %}
+    <p>Raise this film's budget cap{% if f.money.cap %} (it is {{ f.money.cap|money }} now, {{ f.money.spent|money }} spent){% endif %}.
+      {% if a.cap_action == 'cap-and-rerun' %}The run then stops at the cost check with the estimate, and nothing is paid until you approve it there.
+      {% else %}Saving the cap does not start the run: afterwards press "Fix is in place, retry" on the card.{% endif %}</p>
+    <form method="post" action="/film/{{ f.slug }}/{{ a.cap_action }}">
+      <label>New cap, in dollars
+        <input name="budget" type="number" min="1" step="1" required value="{{ '%.0f'|format(a.cap) }}"></label>
+      <div><button class="sm">{{ 'Raise the cap and re-run' if a.cap_action == 'cap-and-rerun' else 'Save the new cap' }}</button></div>
+    </form>
+    {% elif a.kind == 'outside' %}
+    <p>This needs something done outside the control room:</p>
+    <p style="white-space:pre-line">{{ a.owner_steps }}</p>
+    <form method="post" action="/film/{{ f.slug }}/retry"><div><button class="sm">It is done, run it again</button></div></form>
+    {% elif a.kind == 'code_change' %}
+    <p>This stop comes from the pipeline itself, not from this film, so no button here gets past it. It needs a change to the pipeline's code, which the control room cannot make yet.</p>
+    <label>The note for whoever makes the change
+      <textarea id="fix-code-note" rows="6" readonly>{{ a.code_note }}</textarea></label>
+    <div style="margin-top:8px"><button type="button" class="sm quiet" data-fixcopy="fix-code-note">Copy the note</button></div>
+    {% elif a.kind == 'ask' %}
+    <p>{{ a.question }}</p>
+    {% else %}
+    <p>Claude did not give a fix the control room can apply.{% if a.not_offered %} {{ a.not_offered }}{% endif %} Ask again with more detail, or use "Send back for rework" under this card.</p>
+    {% endif %}
+    {% if a.after %}<p class="small muted" style="margin-top:10px">After that: {{ a.after }}</p>{% endif %}
+  </div>
+  {% endif %}
+
+  {% if not f.fix.pending %}
+  <div class="fix-part">
+    {% if f.fix.unanswered %}<p class="small bad">Your ask of {{ f.fix.unanswered|local }} got no answer: the runner did not pick it up. Ask again.</p>{% endif %}
+    {% if f.fix.left %}
+    {% if a and not a.error and a.kind not in ['ask', 'none'] %}<details><summary class="small"><b>Ask again</b> · tell Claude what it missed</summary>{% endif %}
+    <form method="post" action="/film/{{ f.slug }}/fix">
+      <label>{{ 'Your answer' if a and a.kind == 'ask' else 'Anything Claude should know (optional)' }}
+        <textarea name="words" rows="3" maxlength="{{ f.fix.words_max }}"{% if a and a.kind == 'ask' %} required{% endif %} placeholder="For example: Pandu is 26 and was drawn like a small boy. Or: I already topped up the credit."></textarea></label>
+      <div><button class="sm{% if a and not a.error and a.kind not in ['ask', 'none'] %} quiet{% endif %}">{{ 'Ask Claude again' if a else 'Ask Claude what to do' }}</button></div>
+    </form>
+    {% if a and not a.error and a.kind not in ['ask', 'none'] %}</details>{% endif %}
+    <p class="tiny dim" style="margin-top:8px">Claude reads this stop, the film's plan and the runner's last lines, and answers here in a minute or two. An answer costs a few cents and changes nothing by itself: you decide. {{ f.fix.left }} of {{ f.fix.per_day }} asks left today for this film.</p>
+    {% else %}
+    <p class="small muted">Claude was asked {{ f.fix.per_day }} times today for this film. Ask again tomorrow, or use "Send back for rework" under this card.</p>
+    {% endif %}
+  </div>
+  {% endif %}
+  {% if a %}<p class="tiny dim" style="margin:0">Answered {{ a.at|local }}{% if a.usd %} · this answer cost about ${{ '%.2f'|format(a.usd) }}{% endif %}{% if a.words %} · you had added: {{ a.words }}{% endif %}</p>{% endif %}
+</dialog>
+<script>(function () {
+  var dlg = document.getElementById("fixdlg");
+  if (!dlg || !dlg.showModal) return;
+  document.querySelectorAll('[data-open="fixdlg"]').forEach(function (b) {
+    b.addEventListener("click", function (e) { e.preventDefault(); dlg.showModal(); }); });
+  dlg.querySelectorAll('[data-close="fixdlg"]').forEach(function (b) { b.addEventListener("click", function () { dlg.close(); }); });
+  dlg.addEventListener("click", function (e) { if (e.target === dlg) dlg.close(); });   /* a click outside the box */
+  dlg.querySelectorAll("[data-fixcopy]").forEach(function (b) { b.addEventListener("click", function () {
+    var t = document.getElementById(b.dataset.fixcopy); t.select();
+    (navigator.clipboard ? navigator.clipboard.writeText(t.value) : Promise.reject()).then(function () { b.textContent = "Copied"; },
+      function () { document.execCommand("copy"); b.textContent = "Copied"; }); }); });
+  var id = dlg.getAttribute("data-answer"), seen = null;                             /* a new answer opens once */
+  try { seen = localStorage.getItem("fix-seen:{{ f.slug }}"); } catch (e) {}
+  if (location.hash === "#fix" || (id && seen !== id)) {
+    dlg.showModal();
+    try { if (id) localStorage.setItem("fix-seen:{{ f.slug }}", id); } catch (e) {}
+  }
+})();</script>

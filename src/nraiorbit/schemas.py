@@ -250,6 +250,38 @@ class TrailerDirection(BaseModel):
     why: str = Field(description="How this direction answers the owner, in plain English")
 
 
+class StopRemedy(BaseModel):
+    """The one thing to do about a film whose run stopped. Only the fields its kind uses are filled."""
+
+    kind: Literal["retry", "redo_shots", "redo_step", "raise_cap", "outside", "code_change", "ask"] = Field(
+        description="retry: run again as it is. redo_shots: plan the named shots again from notes and make them "
+                    "anew. redo_step: redo one planning step and everything after it, from notes. raise_cap: a "
+                    "higher budget cap. outside: something only the owner can do outside the control room. "
+                    "code_change: the pipeline itself must change. ask: one question, when the evidence does not say")
+    step: Literal["none", "story", "outline", "scenes", "cast", "shots", "assemble", "trailer"] = Field(
+        description="For redo_step: the step to redo; none for every other kind")
+    shots: list[str] = Field(description="For redo_shots: shot ids (sc001_s001) from the evidence; else empty")
+    notes_for_agents: str = Field(description="For redo_shots and redo_step: exactly what the agents redoing it "
+                                              "must change, in plain English; else empty")
+    cap_usd: float = Field(description="For raise_cap: the new cap in dollars; else 0")
+    owner_steps: str = Field(description="For outside: the steps the owner takes, in order, in plain English; else "
+                                         "empty")
+    code_note: str = Field(description="For code_change: what in the pipeline must change and why, for a developer; "
+                                       "else empty")
+
+
+class StopDiagnosis(BaseModel):
+    """Why a film's run stopped and what to do about it, for an owner who does not read code."""
+
+    what_happened: str = Field(description="What stopped, in one or two plain sentences with no code or file names")
+    why: str = Field(description="The cause, in plain English, from the evidence")
+    remedy: StopRemedy
+    after: str = Field(description="What the owner will see after doing it: where the film stops next and roughly "
+                                   "what it costs")
+    question: str = Field(description="For kind ask: the one question to the owner; else empty")
+    sure: Literal["sure", "likely", "guess"] = Field(description="How well the evidence supports this")
+
+
 class ShortLine(BaseModel):
     """One dialogue line written shorter, so it fits the shots that carry it."""
 

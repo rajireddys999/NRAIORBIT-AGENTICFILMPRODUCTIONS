@@ -1003,6 +1003,12 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
             if rel in card.get("_files", ()):              # faces are fixed: the face in the film, to look at
                 card["gallery"].insert(0, {"pick": None, "url": img(rel), "source": "the face in the film",
                                            "at": None, "final": True, "removable": False})
+        if state_now["open"] and "cast" in gates:         # the casting window: the face the pipeline chose and drew,
+            before = ((taken.get(cid) or {}).get("before") or {}).get("character_asset") or ""   # to keep or replace
+            chosen = before if card.get("look") and before else now    # under a look taken in: its casting before it
+            rel = (f"library/characters/{chosen.rsplit('/', 1)[-1].split('@')[0]}/refs/face/01_front.png"
+                   if chosen and not chosen.endswith("@pending") else "")
+            card["default_face"] = img(rel) if rel and (rel in card.get("_files", ()) or store.exists(rel)) else None
     looks = {**state_now,
              "builds": [(k, label) for k, (label, _) in BUILDS.items()], "rights": list(RIGHTS.items()),
              "waiting": waiting(given, taken, set(names), locked, tried),

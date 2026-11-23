@@ -61,6 +61,15 @@ picture shot at 9:16 (`google.veo_aspect_ratio`), and no trailer, reels or title
 gates (story, cast, cost, first frames, the cut, the upload) and ends as one YouTube Short. If its lines need more
 time it runs longer, never past the three minutes YouTube takes as a Short. A film names no format and runs as before.
 
+**Your own cast, on top of the pipeline's.** The pipeline casts every character and draws their faces first. While
+that cast waits for the owner (a queued film with gates on ask), the film page opens with a Choose your cast window
+above the pipeline: one tile per character showing the pipeline's choice, with one form for your own picture and a
+body build. Saved in one step, the picture goes into the film's own gallery (`<slug>/characters/`) and is that
+character's face: the cast step draws the character's other pictures from it, and it is the first reference picture
+of every shot they are in, through the whole film. A tile with your picture also shows the pipeline's choice and a
+button back to it. Once the cast is approved the window is gone. The Cast card further down keeps the rest: several
+pictures per character, every face the pipeline drew, and notes.
+
 **Children.** Veo shows no one under 18 unless Google has allowlisted the project (`google.person_generation:
 allow_all`). On every other project a character under 18 is planned out of every shot (their scenes are filmed
 around them, with their voice), so the cast step makes no pictures of them and a portrait Google would refuse never

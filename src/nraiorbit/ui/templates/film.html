@@ -109,6 +109,7 @@
         <p class="small" style="margin:0 0 8px">{{ n.why }} <a href="{{ n.href }}">{{ n.look }}</a></p>
         {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/approve"><input type="hidden" name="gate" value="{{ n.gate }}"><button class="sm">Approve and continue</button></form>
         {% else %}<p class="small muted">This film is not in the queue; approve it from Claude Code (<span class="mono">nraiorbit approve {{ f.slug }} {{ n.gate }}</span>).</p>{% endif %}
+        {% if n.gate == 'cast' and f.looks.open and f.cast %}<a class="btn quiet sm" href="#casting" style="margin-left:6px">Give your own pictures first</a>{% endif %}
       </div>
       {% endfor %}
       {% if state0 == 'blocked' %}
@@ -207,6 +208,71 @@
     {% if f.bible.logline %}<p class="muted" style="margin-top:14px">{{ f.bible.logline }}</p>{% endif %}
   </div>
 </section>
+
+{% if f.looks.open and f.cast and 'cast' in f.gates %}
+<section class="card" id="casting" aria-label="Choose your cast" style="border-color:rgba(242,181,68,.5)">
+  <div class="section-head"><h2>Choose your cast</h2><span class="mono tiny dim">optional · on top of the pipeline's cast · before you approve</span></div>
+  <p class="small muted" style="max-width:860px;margin:6px 0 14px">The pipeline has cast every character and drawn the face on each tile. Keep its choice, or give any character your own picture and a body build and save: your picture becomes that character's face, and every shot they are in is drawn from it, through the whole film. The runner draws that character again (a few cents) and the cast waits for you once more.</p>
+  <div class="grid g3">
+  {% for c in f.cast %}
+    {% set mine = c.look.picture if c.look and c.look.picture else None %}
+    <div style="display:grid;grid-template-columns:96px minmax(0,1fr);gap:12px;align-items:start;padding:12px;border:1px solid var(--line);border-radius:14px;background:var(--well)">
+      <div>
+        {% if mine %}<img class="face" src="{{ mine }}" alt="Your picture of {{ c.name }}" loading="lazy" style="border-color:var(--gold)">
+          <div class="tiny" style="text-align:center;margin-top:4px;color:var(--gold)">Your choice</div>
+          {% if c.default_face %}<img src="{{ c.default_face }}" alt="The pipeline's choice for {{ c.name }}" loading="lazy" style="display:block;width:56px;aspect-ratio:3/4;object-fit:cover;border-radius:8px;border:1px solid var(--line);margin:10px auto 0;opacity:.85">
+          <div class="tiny dim" style="text-align:center;margin-top:2px">Pipeline's choice</div>{% endif %}
+        {% elif c.default_face %}<img class="face" src="{{ c.default_face }}" alt="The pipeline's choice for {{ c.name }}" loading="lazy">
+          <div class="tiny dim" style="text-align:center;margin-top:4px">Pipeline's choice</div>
+        {% else %}<div class="face" style="display:flex;align-items:center;justify-content:center;font-family:var(--serif);font-size:34px;color:var(--gold)">{{ c.name[:1] }}</div>{% endif %}
+      </div>
+      <div style="min-width:0">
+        <b class="te">{{ c.name_te or c.name }}</b> <span class="small">{{ c.name }}{% if c.role %} · <span class="muted">{{ c.role }}</span>{% endif %}</span>
+        {% if c.physical %}<div class="tiny muted">{{ c.physical.gender }}, {{ c.physical.age }}, {{ c.physical.build }}</div>{% endif %}
+        <div style="margin:6px 0">
+          {% if c.off_screen %}<span class="badge plain">kept out of frame</span>
+          {% elif c.look and c.look.removing %}<span class="badge partial">going back to the pipeline's choice</span>
+          {% elif mine %}<span class="badge {{ 'done' if c.look.taken else 'partial' }}">your picture · {{ 'in the film' if c.look.taken else 'waiting to be drawn' }}</span>
+          {% elif c.default_face %}<span class="badge plain">the pipeline's choice</span>
+          {% else %}<span class="badge todo">not drawn yet</span>{% endif %}
+          {% if c.look and c.look.build %}<div class="tiny muted" style="margin-top:4px">body: {{ c.look.build }}</div>{% endif %}
+        </div>
+        {% if c.off_screen %}<div class="tiny" style="color:var(--cyan)">Google's video model shows no one under 18, so no picture of them is used in this film.</div>
+        {% else %}
+        <form method="post" action="/film/{{ f.slug }}/casting" enctype="multipart/form-data" data-casting style="display:grid;gap:8px">
+          <input type="hidden" name="character" value="{{ c.id }}">
+          <label style="margin:4px 0 0">Your picture of {{ c.name }}
+            <input type="file" name="picture" accept="image/jpeg,image/png,image/webp" aria-label="Your picture of {{ c.name }}" style="margin-top:6px"></label>
+          <div class="tiny dim">JPEG, PNG or WebP, with one clear face.</div>
+          <div>{% for k, label in f.looks.rights %}<label class="check" style="font-size:12.5px;font-weight:500;align-items:flex-start;gap:8px;margin:4px 0"><input type="radio" name="rights" value="{{ k }}" style="width:auto;margin-top:2px">{{ label }}</label>{% endfor %}</div>
+          <label style="margin:4px 0 0">Body build
+            <select name="build" aria-label="Body build of {{ c.name }}" style="margin-top:6px"><option value="">Keep as it is</option><option value="written">As the story says</option>{% for k, label in f.looks.builds %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select></label>
+          <p class="tiny" data-note style="color:var(--warn);margin:0"></p>
+          <div class="actions"><button class="sm">Save for {{ c.name }}</button></div>
+        </form>
+        {% if c.look and not c.look.removing %}<form method="post" action="/film/{{ f.slug }}/look-remove" class="inline" style="margin-top:6px"><input type="hidden" name="character" value="{{ c.id }}"><button class="sm quiet">Use the pipeline's choice again</button></form>{% endif %}
+        {% if c.look and c.look.stuck and not c.look.taken %}<div class="tiny" style="color:var(--warn);margin-top:4px">Not taken in: {{ c.look.stuck }}. Save it again to try once more.</div>{% endif %}
+        {% endif %}
+      </div>
+    </div>
+  {% endfor %}
+  </div>
+  <p class="tiny dim" style="margin:12px 0 0">More pictures per character, every face the pipeline drew, and notes on how someone looks: under <a href="#cast">Cast</a>.{% if f.row %} When every face is right, approve the cast above.{% endif %}</p>
+  <script>(function () {
+    document.querySelectorAll("form[data-casting]").forEach(function (form) {
+      var note = form.querySelector("[data-note]");
+      form.addEventListener("submit", function (e) {
+        var file = form.querySelector("input[type=file]"), build = form.querySelector("select[name=build]");
+        var picked = file.files.length > 0, said = "";
+        if (!picked && !build.value) { said = "Choose a picture or a body build first."; }
+        else if (picked && !form.querySelector("input[name=rights]:checked")) { said = "Say whose picture this is."; }
+        note.textContent = said;
+        if (said) { e.preventDefault(); }
+      });
+    });
+  })();</script>
+</section>
+{% endif %}
 
 {% if f.ahead %}
 <section class="card" id="ahead" aria-label="What stands between this film and YouTube">

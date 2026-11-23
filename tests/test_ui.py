@@ -2161,3 +2161,90 @@ def test_a_film_finished_before_the_cards_step_never_waits_on_it(client, root):
     (root / "demo" / "reports" / "produce.json").write_text(json.dumps(report))
     d = films.detail(Store(str(root)), "demo", rows(root)[0])
     assert d["stages"]["cards"] == {"status": "skipped", "text": "no cards: the film goes out as cut"}
+
+
+def test_the_casting_window_at_the_top_takes_a_picture_and_a_body_for_each_character(client, root):
+    """Once the pipeline has cast and drawn everyone and the cast waits for the owner, the film page opens a window
+    above the pipeline, on top of that cast: one tile per character showing the pipeline's choice, with one form for
+    the owner's picture and a body build, saved in one step. The picture goes into the film's gallery and is the
+    character's final face at once, the cast is drawn again and waits again; a mistake changes nothing."""
+    from urllib.parse import unquote
+    proj = root / "demo"
+    at_cast(root)
+    lock = yaml.safe_load((proj / "project" / "cast.lock.yaml").read_text())["characters"]
+    hero, other = list(lock)[:2]
+    face_dir = root / "library" / "characters" / f"{hero}_x" / "refs" / "face"      # the face the pipeline drew
+    face_dir.mkdir(parents=True)
+    (face_dir / "01_front.png").write_bytes(jpeg((10, 20, 30)))
+    page = client.get("/film/demo").text
+    window = page[page.index('id="casting"'):page.index('id="ahead"') if 'id="ahead"' in page else page.index('id="flow"')]
+    assert page.index('id="casting"') < page.index('id="flow"')                       # above the pipeline
+    assert "<details" not in window and "Choose your cast" in window                # open: no click needed
+    assert f"library/characters/{hero}_x/refs/face/01_front.png" in window and "Pipeline's choice" in window
+    assert "the pipeline's choice" in window and "Use the pipeline's choice again" not in window
+    assert window.count('action="/film/demo/casting"') == len(lock) and "through the whole film" in window
+    assert 'href="#casting"' in page[:page.index('id="casting"')]                     # the cast gate's card points at it
+    # nothing given, a picture without saying whose it is, a file that is no picture, a build that does not exist
+    for data, files, said in (
+            ({"character": hero}, None, "Choose a picture or a body build"),
+            ({"character": hero}, {"picture": ("a.jpg", jpeg(), "image/jpeg")}, "Say whose picture this is"),
+            ({"character": hero, "rights": "own"}, {"picture": ("x.pdf", b"%PDF no picture", "application/pdf")}, "picture"),
+            ({"character": hero, "build": "giant"}, None, "No body build called"),
+            ({"character": "nobody", "build": "slim"}, None, "No character")):
+        r = client.post("/film/demo/casting", data=data, files=files, follow_redirects=False)
+        assert r.status_code == 303 and said in unquote(r.headers["location"]), (data, unquote(r.headers["location"]))
+    assert not (proj / "characters" / "looks.yaml").exists() and rows(root)[0]["state"] == "awaiting:cast"
+    assert not client.started
+    # one step: the picture and the body build
+    r = client.post("/film/demo/casting", data={"character": hero, "rights": "own", "build": "very_muscular"},
+                    files={"picture": ("a.jpg", jpeg(), "image/jpeg")}, follow_redirects=False)
+    said = unquote(r.headers["location"])
+    assert "your picture is the face and the body build is saved" in said and "the cast waits for you again" in said
+    mine = yaml.safe_load((proj / "characters" / "gallery.yaml").read_text())[hero][0]
+    assert mine["source"] == "yours" and mine["rights"] == "own" and (proj / "characters" / hero / mine["file"]).exists()
+    look = yaml.safe_load((proj / "characters" / "looks.yaml").read_text())[hero]
+    assert look["image"] == mine["file"] and look["image_sha"] == mine["sha"] and look["build"] == "very_muscular"
+    assert rows(root)[0]["state"] == "retry" and client.started == ["nraiorbit-runner"]   # drawn again at once
+    at_cast(root)
+    page = client.get("/film/demo").text
+    window = page[page.index('id="casting"'):page.index('id="flow"')]
+    assert "your picture · waiting to be drawn" in window and "body: Very muscular (bodybuilder)" in window
+    assert f"characters/{hero}/{mine['file']}" in window and "Your choice" in window    # the tile shows the picture given
+    assert f"library/characters/{hero}_x/refs/face/01_front.png" in window              # beside the pipeline's choice
+    assert window.count("Use the pipeline's choice again") == 1 and 'action="/film/demo/look-remove"' in window
+    # the body alone keeps the face; the same again changes nothing
+    r = client.post("/film/demo/casting", data={"character": hero, "build": "athletic"}, follow_redirects=False)
+    assert "the body build is saved" in unquote(r.headers["location"])
+    look = yaml.safe_load((proj / "characters" / "looks.yaml").read_text())[hero]
+    assert look["image"] == mine["file"] and look["build"] == "athletic"
+    at_cast(root)
+    r = client.post("/film/demo/casting", data={"character": hero, "build": "athletic"}, follow_redirects=False)
+    assert "already; nothing changed" in unquote(r.headers["location"])
+    # another character, body only, with no picture of theirs
+    r = client.post("/film/demo/casting", data={"character": other, "build": "slim"}, follow_redirects=False)
+    assert yaml.safe_load((proj / "characters" / "looks.yaml").read_text())[other] .get("build") == "slim"
+
+
+def test_the_casting_window_closes_with_the_cast_and_leaves_a_child_out(client, root):
+    """The window sits on top of the cast the pipeline made: it is there only while the cast waits for the owner,
+    never before the pipeline has cast anyone and never after the cast is approved (a save is then refused). A
+    character kept out of frame (under 18 on Veo) gets no upload: no picture of them is ever used."""
+    from urllib.parse import unquote
+    proj = root / "demo"
+    assert 'id="casting"' not in client.get("/film/demo").text                         # the fixture waits elsewhere
+    path = proj / "project" / "01_story_bible.json"
+    bible = json.loads(path.read_text())
+    child = bible["characters"][0]["id"]
+    bible["characters"][0]["physical"]["age"] = 8
+    path.write_text(json.dumps(bible), encoding="utf-8")
+    at_cast(root)
+    page = client.get("/film/demo").text
+    window = page[page.index('id="casting"'):page.index('id="flow"')]
+    assert window.count('action="/film/demo/casting"') == len(bible["characters"]) - 1
+    assert "kept out of frame" in window and f'name="character" value="{child}"' not in window
+    (proj / "reviews" / "cast.approved").write_text("x")
+    page = client.get("/film/demo").text
+    assert 'id="casting"' not in page
+    r = client.post("/film/demo/casting", data={"character": bible["characters"][1]["id"], "build": "slim"},
+                    follow_redirects=False)
+    assert "The cast is approved" in unquote(r.headers["location"]) and not (proj / "characters" / "looks.yaml").exists()

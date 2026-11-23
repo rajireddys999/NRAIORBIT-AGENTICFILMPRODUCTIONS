@@ -607,8 +607,24 @@ def cmd_service(args) -> None:
             made = feed.build_sfx(feed.STARTER_SFX, ledger, per_sound, key, log=log)   # those the feed lacks
             return {"made": made, "spent_usd": round(ledger.spent(), 2)}
 
+        def fix_fn(evidence: str, words: str):
+            import tempfile
+
+            from .agents import Troubleshooter
+            from .costing import claude_actual, load_pricing
+            from .llm import ClaudeClient
+            from .service import fix
+            cfg = studio_config()
+            with tempfile.TemporaryDirectory() as d:      # this one call's usage, priced for the answer's record
+                llm = ClaudeClient(model=cfg["llm"]["model"], max_tokens=fix.MAX_TOKENS,
+                                   usage_log=Path(d) / "reports" / "llm_usage.jsonl")
+                decision = Troubleshooter(llm, cfg).diagnose(evidence, words)
+                spent = claude_actual(Path(d), load_pricing(None))
+            return decision, (round(spent[0], 4) if spent else None)
+
         out = queue.tick(args.stories, args.references, PROJECTS, bucket=args.bucket, produce_fn=produce_fn,
-                         learn_fn=learn_fn, template=project_template(), feed_fn=feed_fn, sfx_fn=sfx_fn)
+                         learn_fn=learn_fn, template=project_template(), feed_fn=feed_fn, sfx_fn=sfx_fn,
+                         fix_fn=fix_fn)
         print(out)
         return
     if args.action == "add-story":                       # load and save (gcloud when the client's login is stale)

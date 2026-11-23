@@ -217,6 +217,20 @@ gates' review marks are backed up with the project; the sheet's cap, gates and p
 project on every tick, so a change in the control room reaches the run; a story may bring
 `<story>.overrides.yaml` (runtime, voice cast); a reference row carries the video's minutes for the cost guard.
 
+Fix this (2026-11-23). When a run stops (`blocked:`), the stop card on the film page has a second button beside
+Retry. It opens a dialog where the owner asks Claude what happened and may add a line of their own. The control room
+saves the ask as `stories/<slug>.fix.json` with the evidence the page already holds (the stop, the last run's
+steps, the money, the characters, the shots the stop names, what the checks flagged, earlier send-backs, the last
+lines of the run that stopped) and starts a tick. The tick takes it once, before its story step
+(`service/fix.py`), asks the troubleshooter (`agents/troubleshooter.py`, one Claude call of a few cents, at most 8
+a day for a film) and writes `<slug>/reports/fix.json`. The dialog then shows what happened, why, and one remedy
+with its form filled in: run again, remake named shots from notes, redo a step from notes, raise the cap, steps to
+take outside the control room, or a note that the pipeline's code must change. The forms are the page's own
+(Retry, Send back, the cap), so the film's shots, steps and figures are checked as they always are; the answer
+itself changes nothing, never approves a gate and never deletes. It is shown only for the stop it was asked about:
+a re-run, a Send back or an edit of the row hides it. A code change is said, not made: the control room cannot
+change the pipeline yet.
+
 ## 9. Concurrency and tick overhead (2026-10-20)
 
 Planning a film is mostly Claude calls made one after another, and every tick pays a fixed cost before it works.

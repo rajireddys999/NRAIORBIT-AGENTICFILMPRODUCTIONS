@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ f.title }} · {{ settings.title }}{% endblock %}
-{% set refresh = 20 if f.live else (45 if f.state in ['new','approved','retry','producing'] else (30 if f.shorts_asked else 0)) %}
+{% set refresh = 20 if f.live else (45 if f.state in ['new','approved','retry','producing'] else (30 if f.shorts_asked or (f.fix and f.fix.pending) else 0)) %}
 {% block style %}
 .desk-head { display:flex; align-items:flex-end; justify-content:space-between; gap:20px; flex-wrap:wrap; margin-bottom:20px }
 .desk-head h1 { font-family:var(--te); font-weight:700; font-size:48px; line-height:1.05 } .desk-head h1 .en { font-family:var(--serif); font-weight:400; color:var(--muted); font-size:24px; display:block; margin-top:8px }
@@ -118,7 +118,11 @@
         <p style="margin:0 0 4px"><b>The run stopped here</b>: <span class="bad">{{ f.state[8:] }}</span></p>
         <p class="small" style="margin:0 0 8px">{{ f.hint or (f.row.note if f.row else '') }}</p>
         {% if f.row %}<form class="inline" method="post" action="/film/{{ f.slug }}/retry"><button class="sm">{{ 'Re-run after the change' if f.issue and f.issue.outside else 'Fix is in place, retry' }}</button></form>{% endif %}
+        {% if f.fix %}<button type="button" class="sm quiet" data-open="fixdlg" style="margin-left:6px">Fix this…</button>
+        {% if f.fix.pending %}<p class="small" style="margin:10px 0 0"><span class="live-dot" style="margin-right:8px"></span>Claude is reading this stop (asked {{ f.fix.pending.at|local }}). The answer shows here in a minute or two; this page refreshes by itself.</p>
+        {% elif f.fix.answer %}<p class="small" style="margin:10px 0 0">Claude looked at this stop: <b>{{ f.fix.answer.headline }}</b>. <a href="#fix" data-open="fixdlg">Open the fix</a></p>{% endif %}{% endif %}
       </div>
+      {% if f.fix %}{% include "fix_dialog.html" %}{% endif %}
       {% elif stalled %}
       <div class="need" style="border:1px solid var(--line2);border-radius:14px;padding:12px 14px;margin-bottom:10px">
         <p style="margin:0 0 4px"><b>The last run stopped without finishing</b></p>

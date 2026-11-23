@@ -344,3 +344,125 @@ def test_the_run_stops_at_faces_naming_the_new_stills_and_takes_the_approval_bac
     assert held.value.gate == "faces" and not (reviews / "faces.approved").exists()
     assert "sc008_s002, sc012_s002" in (reviews / "faces.pending").read_text(encoding="utf-8")
 
+
+
+# ---- an adult drawn like a child: Veo's child rule on a frame that holds only adults
+
+CHILD_REFUSAL = ("The input image contains content that has been blocked by your current safety settings for "
+                 "person/face generation. If you think this was an error, send feedback. Support codes: 17301594")
+
+
+def _child_setup(root, clip=None, accept=lambda words: False):
+    """render_shot against a Veo that refuses under its child rule (the real message) unless `accept` likes the words
+    the first frame was last drawn from; an accepted request returns `clip`."""
+    import shutil
+
+    from nraiorbit.providers import RenderContext
+    drawn, sent = [], []
+
+    def generate(prompt, out, *, refs=(), item=""):
+        drawn.append(prompt)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"\x89PNG\r\n\x1a\n")
+        return out
+
+    class Models:
+        def generate_videos(self, **kw):
+            sent.append(kw)
+            if drawn and accept(drawn[-1]):
+                video = SimpleNamespace(save=lambda p: shutil.copy(clip, p))
+                return SimpleNamespace(name=None, done=True, error=None, result=None, response=SimpleNamespace(
+                    generated_videos=[SimpleNamespace(video=video)]))
+            return SimpleNamespace(name=None, done=True, error={"code": 3, "message": CHILD_REFUSAL})
+    video = _veo(root)
+    video.client = SimpleNamespace(models=Models(), files=SimpleNamespace(download=lambda file: None))
+    video.images = SimpleNamespace(generate=generate, price=0.04)
+    video.log = lambda *_: None
+    ref = root / "ref.png"
+    ref.write_bytes(b"\x89PNG\r\n\x1a\n")
+    video._refs = lambda shot, lock, limit: [(c, [ref]) for c in shot.characters_in_frame]
+    shot = next(s for s in ShotList.model_validate_json((root / "04_shots" / "sc001.json").read_text(
+        encoding="utf-8")).shots if s.characters_in_frame)
+    ctx = RenderContext(cast=CastLock(characters={}), scene_id="sc001", resolution=(1280, 720), fps=24, seed=1)
+    return video, drawn, sent, shot, ctx
+
+
+def test_the_child_rule_is_told_from_other_refusals_and_the_adults_are_named_with_their_ages():
+    from nraiorbit.providers.google_ai import adults_line, child_rule
+    assert child_rule(f"Veo refused sc013_s003: {CHILD_REFUSAL}") and child_rule("Support codes: 58061214")
+    assert child_rule("blocked by your current safety settings for person/face generation")
+    assert not child_rule("guideline: knife") and not child_rule("") and not child_rule("Support codes: 61493863")
+    bible = StoryBible.model_validate(STORY_BIBLE)
+    said = adults_line(bible.characters[:2])
+    assert said.startswith("Everyone in this picture is an adult: nobody is a child or a teenager. ")
+    assert "Arjun is a grown man of 32, 180 cm tall; Meera is a grown woman of 26, 162 cm tall." in said
+
+
+def test_an_adult_drawn_like_a_child_gets_a_new_first_frame_that_says_everyone_is_an_adult(root):
+    """A real stop: the image model drew a man of 26 as a small boy, and Veo refused the picture under its child rule
+    (support code 17301594). Everyone in the frame is an adult, so the words were right and the picture wrong: the
+    frame is set aside and drawn again saying each person's age and height, and the clip is made. The director is
+    not asked and the shot's words stay as they are."""
+    pytest.importorskip("google.genai")
+    from nraiorbit.post import ffmpeg
+    if not ffmpeg.available():
+        pytest.skip("ffmpeg not installed")
+    clip = root / "veo.mp4"
+    ffmpeg.run(["-f", "lavfi", "-i", "testsrc2=s=320x180:r=24:d=1", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(clip)])
+    video, drawn, sent, shot, ctx = _child_setup(root, clip, accept=lambda words: "is a grown" in words)
+    director, logs = Director(), []
+    video.safer = safer_shot_fn(root, lambda: director, lambda *_: None)
+    video.log = logs.append
+    out = video.render_shot(shot, root / "out.mp4", ctx)
+    assert out.exists() and len(sent) == 2 and director.asked == []                # a new picture, not new words
+    assert len(drawn) == 2 and "Everyone in this picture is an adult" not in drawn[0]
+    assert ("Everyone in this picture is an adult: nobody is a child or a teenager. Bhairava is a grown man of 55, "
+            "176 cm tall. Draw each of them with an adult's face, height and proportions") in drawn[1]
+    frames = root / "06_keyframes" / shot.shot_id
+    assert (frames / "take_1.refused.png").exists() and (frames / "take_1.png").exists()
+    assert json.loads((root / "reports" / "adult_frames.json").read_text()) == {shot.shot_id: 1}
+    assert any("everyone in it is an adult" in line and "(1 of 2)" in line for line in logs)
+    plan = ShotList.model_validate_json((root / "04_shots" / "sc001.json").read_text(encoding="utf-8"))
+    assert plan == ShotList.model_validate({"scene_id": "sc001", "shots": SHOTS["sc001"]})   # the words stay as planned
+    assert not (root / "reports" / SAFETY_REWRITES).exists()
+
+
+def test_a_frame_refused_as_adults_twice_gets_new_words_once_and_then_the_refusal_stands(root):
+    """Two redraws as adults at most; then the director words the shot again once (told what the picture got wrong),
+    and after that the refusal stands and goes to the review queue as before. A later run starts none of it over."""
+    pytest.importorskip("google.genai")
+    from nraiorbit.providers.google_ai import ShotFiltered
+    video, drawn, sent, shot, ctx = _child_setup(root)                             # a Veo that never accepts
+    director = Director()
+    video.safer = safer_shot_fn(root, lambda: director, lambda *_: None)
+    with pytest.raises(ShotFiltered, match="17301594"):
+        video.render_shot(shot, root / "out.mp4", ctx)
+    assert len(drawn) == 4 and len(sent) == 4                  # as planned, twice as adults, once from the new words
+    assert all("Everyone in this picture is an adult" in words for words in drawn[1:])
+    assert len(director.asked) == 1 and "Everyone in this shot is an adult" in director.asked[0][1]
+    assert json.loads((root / "reports" / "adult_frames.json").read_text()) == {shot.shot_id: 2}
+    later, drawn2, sent2, shot2, ctx2 = _child_setup(root)                         # the next run, from what is on disk
+    later.safer = safer_shot_fn(root, lambda: director, lambda *_: None)
+    with pytest.raises(ShotFiltered, match="17301594"):
+        later.render_shot(shot2, root / "out.mp4", ctx2)
+    assert drawn2 == [] and len(sent2) == 1 and len(director.asked) == 1
+
+
+def test_a_frame_with_someone_under_18_is_not_drawn_again_as_adults(root):
+    """The child rule on a frame that does hold a child is not this case (children are kept out of frame by the
+    planner): no adult redraw, the director's rewording as before."""
+    pytest.importorskip("google.genai")
+    from nraiorbit.providers.google_ai import ShotFiltered
+    bible = json.loads((root / "01_story_bible.json").read_text(encoding="utf-8"))
+    for c in bible["characters"]:
+        if c["id"] == "bhairava":
+            c["physical"]["age"] = 12
+    (root / "01_story_bible.json").write_text(json.dumps(bible), encoding="utf-8")
+    video, drawn, sent, shot, ctx = _child_setup(root)
+    director = Director()
+    video.safer = safer_shot_fn(root, lambda: director, lambda *_: None)
+    with pytest.raises(ShotFiltered):
+        video.render_shot(shot, root / "out.mp4", ctx)
+    assert len(drawn) == 2 and len(sent) == 2 and len(director.asked) == 1
+    assert "Everyone in this" not in director.asked[0][1] and not any("is an adult" in words for words in drawn)
+    assert not (root / "reports" / "adult_frames.json").exists()

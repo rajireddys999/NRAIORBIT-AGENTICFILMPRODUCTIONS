@@ -69,6 +69,13 @@ def with_quality(base: dict, own: dict, config_dir: Path = DEFAULT_CONFIG_DIR) -
     return cfg
 
 
+def is_short(cfg: dict | None) -> bool:
+    """A vertical short (film.format: short, written by the control room's New Shorts tab) rather than a film: its own
+    structure template, upright shots, no trailer, one upload as a YouTube Short. A config that names no format is a
+    film, as every film made before the tab was."""
+    return str(((cfg or {}).get("film") or {}).get("format") or "film") == "short"
+
+
 def load_pipeline_config(project_dir: Path | None = None, config_dir: Path = DEFAULT_CONFIG_DIR) -> dict:
     cfg = load_yaml(config_dir / "pipeline.yaml")
     own = load_yaml(project_dir / "pipeline.yaml") if project_dir is not None \

@@ -614,8 +614,9 @@ def speaking_shots(root: Path, only: list[str] | None = None) -> dict[str, float
 
 def _lyria_preview(root: Path, cfg: dict) -> tuple[int, int]:
     """(cues Lyria will generate, cues already cached or in inbox/music). Every cue is rendered whatever
-    render.only says; the trailer's cue counts while trailer.mp4 is not built (its length is only known then)."""
-    from .config import load_navarasa
+    render.only says; the trailer's cue counts while trailer.mp4 is not built (its length is only known then). A
+    short has no trailer, so none is counted for it."""
+    from .config import is_short, load_navarasa
     from .planning.music import plan_cues
     from .planning.score import film_spans, load_styles, score_cue, slot_for
     from .providers.inbox import _find_audio
@@ -645,7 +646,7 @@ def _lyria_preview(root: Path, cfg: dict) -> tuple[int, int]:
             cached += 1
         else:
             new += 1
-    if not (root / "11_master" / "trailer.mp4").exists():
+    if not is_short(cfg) and not (root / "11_master" / "trailer.mp4").exists():
         if _find_audio(inbox, "trailer"):
             cached += 1
         else:

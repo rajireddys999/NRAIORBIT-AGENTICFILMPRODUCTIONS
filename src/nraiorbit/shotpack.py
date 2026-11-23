@@ -100,7 +100,8 @@ def character_line(cid: str, costume_id: str | None, bible: StoryBible, lock: Ca
 
 
 def veo_prompt(shot: Shot, scene: SceneOutline, bible: StoryBible, lock: CastLock, navarasa: dict,
-               speaking: str | None) -> str:
+               speaking: str | None, vertical: bool = False) -> str:
+    """`vertical`: an upright 9:16 frame (a short) instead of the 16:9 feature frame."""
     look = navarasa["rasas"][shot.rasa]["look"]
     move = MOVE_WORDS.get(shot.camera_move, shot.camera_move)
     camera = f"{SIZE_WORDS.get(shot.size, shot.size)}, {shot.lens_mm}mm lens, {move}"
@@ -123,7 +124,8 @@ def veo_prompt(shot: Shot, scene: SceneOutline, bible: StoryBible, lock: CastLoc
     parts.append(f"Setting: {scene.heading.title()}, {bible.era_and_region}.")
     parts.append(f"Look: {look['palette'].replace('_', ' ')} palette, {look['contrast'].replace('_', ' ')} contrast"
                  f"{', ' + atmosphere.replace('_', ' ') if atmosphere else ''}. "
-                 "Photorealistic cinematic Telugu feature film, natural skin texture, 24fps film look, 16:9.")
+                 "Photorealistic cinematic Telugu feature film, natural skin texture, 24fps film look, "
+                 + ("9:16 vertical, upright for a phone screen." if vertical else "16:9."))
     return " ".join(parts)
 
 
@@ -174,7 +176,8 @@ def export(root: Path, library: AssetRegistry, navarasa: dict, pricing: dict, go
             speaker = next((script_blocks[b]["character_id"] for b in shot.block_ids
                             if b in script_blocks and script_blocks[b]["kind"] == "dialogue"
                             and script_blocks[b]["character_id"] in shot.characters_in_frame), None)
-            prompt = veo_prompt(shot, sc, bible, lock, navarasa, names.get(speaker) if speaker else None)
+            prompt = veo_prompt(shot, sc, bible, lock, navarasa, names.get(speaker) if speaker else None,
+                                vertical=str((google or {}).get("veo_aspect_ratio") or "") == "9:16")
             _, tier_name, resolution = veo_settings(google or {}, shot)   # 1080p clips are 8 s only
             tier = f"{VEO_TIER_NAMES.get(tier_name, tier_name)} {resolution}" if shot.video_tier else ""
             clip_s, n_clips = billed_seconds(shot.duration_s, veo_durations(pricing, resolution), ext)

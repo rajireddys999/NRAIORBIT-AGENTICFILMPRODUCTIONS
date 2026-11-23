@@ -66,6 +66,34 @@ def build_metadata(bible: StoryBible, outline: Outline, *, privacy: str = "priva
     }
 
 
+SHORT_TAG = " #Shorts"
+SHORT_TAGS = ["Telugu short film", "Shorts", "AI film"]
+
+
+def build_short_metadata(bible: StoryBible, *, privacy: str = "private") -> dict:
+    """A YouTube Short's metadata (film.format: short). YouTube files any upright video up to three minutes as a
+    Short by itself; the #Shorts tag in the title and the description is the custom. No chapters, no trailer."""
+    head = f"{bible.title_te} | {bible.title_en}"
+    lines = [head, "", bible.logline, "", "This short was made with AI-generated visuals, voices and music.",
+             "#Shorts #Telugu #AIFilm"]
+    tags = sorted({*SHORT_TAGS, bible.title_en, *bible.genres})
+    return {
+        "snippet": {
+            "title": head[:100 - len(SHORT_TAG)] + SHORT_TAG,
+            "description": "\n".join(lines)[:5000],
+            "tags": tags,
+            "categoryId": FILM_AND_ANIMATION,
+            "defaultLanguage": "te",
+            "defaultAudioLanguage": "te",
+        },
+        "status": {
+            "privacyStatus": privacy,
+            "selfDeclaredMadeForKids": False,
+            "containsSyntheticMedia": True,
+        },
+    }
+
+
 TOKEN_SECRET = "YOUTUBE_TOKEN_JSON"
 
 

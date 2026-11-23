@@ -33,6 +33,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from ..costing import PAID_LIPSYNC, BudgetExceeded, SpendLedger
+from ..config import is_short
 from ..pipeline import CutDoesNotMatch, GatePending, LinesTooLong, Pipeline, PipelineBlocked
 from .queue import GATES as GATE_ORDER
 
@@ -755,15 +756,17 @@ def produce(pipeline: Pipeline, *, bucket: str | None = None, publish: str | Non
         clear(pipeline, "publish")                       # this very film and trailer are up: never asked again
     elif not approved(pipeline, "publish"):
         qa = "" if report["steps"].get("qa_film") == "ok" else " The film check did not pass: look at QA first."
-        hold(pipeline, "publish", f"Watch the film and the trailer, then approve the {pol['publish']} YouTube "
+        what = "short" if is_short(pipeline.cfg) else "film and the trailer"
+        hold(pipeline, "publish", f"Watch the {what}, then approve the {pol['publish']} YouTube "
                                   f"upload.{qa}\n")
         report["steps"]["publish"] = "awaiting:publish"
         return finish("awaiting:publish")
     else:
         if pipeline.ledger.fence is not None:            # out of touch: another run may be uploading it now
             pipeline.ledger.fence()
-        try:
-            report["steps"]["publish"] = publish_youtube(root, pol["publish"], bucket=bucket)
+        try:                                             # a short names itself; a film calls as it always did
+            report["steps"]["publish"] = publish_youtube(root, pol["publish"], bucket=bucket,
+                                                         **({"short": True} if is_short(pipeline.cfg) else {}))
             clear(pipeline, "publish", "pending", "approved")     # one approval, one upload: a new cut asks again
         except Exception as exc:
             report["steps"]["publish"] = f"skipped: {type(exc).__name__}: {str(exc)[:160]}"
@@ -815,10 +818,11 @@ def cost_gate(pipeline: Pipeline) -> tuple[dict | None, dict | None]:
     return None, preview
 
 
-def publish_youtube(root: Path, privacy: str, bucket: str | None = None) -> dict:
+def publish_youtube(root: Path, privacy: str, bucket: str | None = None, short: bool = False) -> dict:
     """Upload the film (and the trailer when there is one) with the metadata the outline gives. The OAuth client
     secrets come from YOUTUBE_CLIENT_SECRETS (default client_secret.json next to the project) and the token, made
-    once on a laptop, from YOUTUBE_TOKEN (default <project>/.youtube_token.json)."""
+    once on a laptop, from YOUTUBE_TOKEN (default <project>/.youtube_token.json). `short`: the cut is a vertical
+    short, uploaded once as a YouTube Short (its own title and description, captions, no chapters, no trailer)."""
     from ..publish import youtube
     from ..schemas import Outline, StoryBible
 
@@ -842,6 +846,17 @@ def publish_youtube(root: Path, privacy: str, bucket: str | None = None) -> dict
         if bucket:                                        # in the bucket at once: a run killed now never uploads it again
             from ..ops import backup
             backup.put_report(root, bucket, done_path.name)
+
+    if short:
+        film = master / "movie.mp4"
+        if not uploaded_already(out, "film", film):
+            captions = {lang: master / f"subs_{lang}.srt" for lang in ("te", "en")
+                        if (master / f"subs_{lang}.srt").exists()}
+            video_id = youtube.upload(film, youtube.build_short_metadata(bible, privacy=privacy), creds,
+                                      captions=captions)
+            out["film"] = {"id": video_id, "file": fingerprint(film), "privacy": privacy, "cards": False, "short": True}
+            record()
+        return out
 
     from ..post import titlecards
     cards = titlecards.release(root)                      # the film with its title and end cards, when it has them

@@ -51,6 +51,17 @@ TEMPLATES: dict[str, list[tuple[str, float, float, list[str]]]] = {
     ],
 }
 
+# A vertical short (film.format: short): a hook, a turn and a payoff in well under three minutes, with no landmark
+# set pieces. Kept apart from TEMPLATES so a feature's `auto` never picks it.
+SHORT_MAX_S = 180            # YouTube files an upright video of up to three minutes as a Short; a longer one is not
+SHORT_TEMPLATE: dict[str, list[tuple[str, float, float, list[str]]]] = {
+    "short": [
+        ("hook", 0.00, 0.20, []),
+        ("turn", 0.20, 0.75, []),
+        ("payoff", 0.75, 1.00, []),
+    ],
+}
+
 # Where each landmark may start, as a fraction of runtime (lenient windows).
 LANDMARK_WINDOWS = {
     "hero_intro": (0.0, 0.20),
@@ -69,10 +80,16 @@ class Block:
 
 def template_blocks(template: str, runtime_minutes: float) -> list[Block]:
     total = runtime_minutes * 60
-    return [Block(n, round(a * total, 1), round(b * total, 1), sp) for n, a, b, sp in TEMPLATES[template]]
+    blocks = TEMPLATES[template] if template in TEMPLATES else SHORT_TEMPLATE[template]
+    return [Block(n, round(a * total, 1), round(b * total, 1), sp) for n, a, b, sp in blocks]
 
 
 def describe_template(template: str, runtime_minutes: float) -> str:
+    if template in SHORT_TEMPLATE:                       # a short is written in seconds, not minutes
+        lines = [f"Structure template '{template}' for {round(runtime_minutes * 60)} seconds:"]
+        for b in template_blocks(template, runtime_minutes):
+            lines.append(f"- {b.name}: {b.start_s:.0f}-{b.end_s:.0f} s")
+        return "\n".join(lines)
     lines = [f"Structure template '{template}' for {runtime_minutes:g} minutes:"]
     for b in template_blocks(template, runtime_minutes):
         sp = f" (must contain: {', '.join(b.set_pieces)})" if b.set_pieces else ""
@@ -124,7 +141,9 @@ def rebalance_outline(outline: Outline, runtime_minutes: float, min_scene_s: int
     return Outline(scenes=[s.model_copy(update={"target_seconds": t}) for s, t in zip(outline.scenes, lengths)])
 
 
-def validate_outline(outline: Outline, runtime_minutes: float, tolerance_minutes: float) -> list[str]:
+def validate_outline(outline: Outline, runtime_minutes: float, tolerance_minutes: float,
+                     template: str | None = None) -> list[str]:
+    """`template`: the bible's structure template; a short's (SHORT_TEMPLATE) has no landmarks to check."""
     issues: list[str] = []
     total = sum(s.target_seconds for s in outline.scenes)
     if abs(total - runtime_minutes * 60) > tolerance_minutes * 60:
@@ -132,6 +151,8 @@ def validate_outline(outline: Outline, runtime_minutes: float, tolerance_minutes
     ids = [s.scene_id for s in outline.scenes]
     if len(ids) != len(set(ids)):
         issues.append("duplicate scene ids")
+    if template in SHORT_TEMPLATE:
+        return issues
     starts = scene_start_times(outline)
     for landmark, (lo, hi) in LANDMARK_WINDOWS.items():
         scenes = [s for s in outline.scenes if s.set_piece == landmark]

@@ -548,3 +548,23 @@ def test_the_scenes_stage_tells_the_critic_how_long_each_scene_runs(tmp_path):
                         _animal_lines_as_sound=lambda s, b: s)
     Pipeline._scenes(p)
     assert len(seen) == 1 and seen[0][2] == sc.target_seconds
+
+
+def test_a_short_grows_to_hold_its_lines_but_never_past_three_minutes(film):
+    """A short follows the film's rule (the length asked for is a target), up to what YouTube takes as a Short: past
+    180 seconds it stops and says so, since a longer upload would not be a Short."""
+    from nraiorbit.pipeline import PipelineBlocked
+    from nraiorbit.schemas import Outline, SceneScript, StoryBible
+    film.cfg["film"] = {**film.cfg["film"], "format": "short", "runtime_minutes": 0.2}      # 12 s asked for
+    bible = StoryBible.model_validate_json(film.p.bible.read_text()).model_copy(update={"structure_template": "short"})
+    outline = Outline.model_validate_json(film.p.outline.read_text())
+    revised = []
+    film.screenwriter = N(revise=lambda *a: revised.append(a[3]) or a[2])                   # a screenwriter who cuts nothing
+    out = film._fit_scene_lengths(bible, outline)
+    assert len(revised) == 1 and 20 < out.scenes[0].target_seconds <= 180                    # past 5/3, to hold the lines
+    path = film.p.scenes / "sc001.json"
+    script = SceneScript.model_validate_json(path.read_text())
+    path.write_text(script.model_copy(update={"blocks": [b.model_copy(update={"text_te": "అ" * 700})
+                                                         for b in script.blocks]}).model_dump_json(), encoding="utf-8")
+    with pytest.raises(PipelineBlocked, match="more than the 180 seconds YouTube allows a Short"):
+        film._fit_scene_lengths(bible, Outline.model_validate_json(film.p.outline.read_text()))

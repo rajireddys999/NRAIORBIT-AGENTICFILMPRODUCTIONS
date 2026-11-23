@@ -127,15 +127,22 @@ def shorts_count(store: Store, slug: str, cfg: dict) -> int:
     return REEL_COUNT
 
 
-def step_of(key: str | None) -> tuple[int, str] | None:
-    """(step number, label) of a stage key, as the pipeline below numbers them."""
-    keys = [k for k, _ in STAGES]
-    return (keys.index(key) + 1, dict(STAGES)[key]) if key in keys else None
+def step_of(key: str | None, stages=None) -> tuple[int, str] | None:
+    """(step number, label) of a stage key, as the pipeline below numbers them (`stages`: the page's own list when
+    it is not every stage: a short's has no title cards)."""
+    stages = STAGES if stages is None else stages
+    keys = [k for k, _ in stages]
+    return (keys.index(key) + 1, dict(stages)[key]) if key in keys else None
 
 
-def gate_help(gate: str) -> dict:
+def gate_help(gate: str, short: bool = False) -> dict:
+    """`short`: the words for a vertical short (one upload, no trailer) where the film's would mislead."""
     title, why, href, look = GATE_HELP.get(gate) or (f"Approve {gate.replace('_', ' ')}", "", "#flow", "See the step")
-    step = step_of(GATES.get(gate))
+    if short and gate == "publish":
+        why, look = "Uploads the short to your channel as a YouTube Short. Watch it first.", "Watch the short"
+    elif short and gate in ("pacing", "final_cut"):
+        title, why, look = "Approve the short", "Watch the whole short: the cut and the sound.", "Watch the short"
+    step = step_of(GATES.get(gate), stages_for("short") if short else None)
     return {"gate": gate, "title": title, "why": why, "href": href, "look": look,
             "step": f"Step {step[0]} · {step[1]}" if step else ""}
 
@@ -290,6 +297,35 @@ def _config(store: Store, slug: str) -> dict:
     page still renders."""
     cfg = _yaml(store, f"{slug}/project/pipeline.yaml")
     return cfg if isinstance(cfg, dict) else {}
+
+
+def film_format(cfg: dict, overrides: dict | None = None) -> str:
+    """film | short: the project's own file says; before the first tick writes one, the story's overrides do (the
+    New Shorts tab writes film.format: short there). Anything else is a film."""
+    own = (cfg.get("film") or {}).get("format") if isinstance(cfg.get("film"), dict) else None
+    if not own and isinstance(overrides, dict) and isinstance(overrides.get("film"), dict):
+        own = overrides["film"].get("format")
+    return "short" if own == "short" else "film"
+
+
+def short_seconds(cfg: dict, overrides: dict | None, fmt: str) -> int | None:
+    """A short's length in seconds: the project's own file, or its overrides before the first tick writes one."""
+    if fmt != "short":
+        return None
+    minutes = (cfg.get("film") or {}).get("runtime_minutes") if isinstance(cfg.get("film"), dict) else None
+    if minutes is None and isinstance(overrides, dict) and isinstance(overrides.get("film"), dict):
+        minutes = overrides["film"].get("runtime_minutes")
+    try:
+        return int(round(float(minutes) * 60)) if minutes is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def stages_for(fmt: str) -> list[tuple[str, str]]:
+    """The steps the film page lists: a short has no title or end cards, and its cut is the whole piece."""
+    if fmt != "short":
+        return STAGES
+    return [(k, "The short" if k == "assemble" else label) for k, label in STAGES if k != "cards"]
 
 
 def _jsonl(store: Store, rel: str) -> list[dict]:
@@ -589,10 +625,13 @@ def summary(store: Store, slug: str, row: dict | None) -> dict:
     state = (row or {}).get("state") or (produce or {}).get("state") or ("made by hand" if bible else "new")
     resolved, planned = run_config(cfg, row)                    # no overrides read: the board stays cheap
     render = tools.phase_tools(tools.stage_tools(resolved, planned)["render"], "render")
+    over = None if cfg else story_overrides(store, row)       # only a film with no project yet: is it a short?
+    fmt = film_format(cfg, over)
     return {
         "slug": slug, "row": row, "title": (bible or {}).get("title_en") or slug, "title_te": (bible or {}).get("title_te"),
         "logline": (bible or {}).get("logline"), "state": state, "gates": gates,
         "runtime": (cfg.get("film") or {}).get("runtime_minutes"),
+        "format": fmt, "seconds": short_seconds(cfg, over, fmt),
         "money": money(store, slug, cfg, row, produce),
         "has_film": any(n.endswith("/movie.mp4") for n in master),
         "has_trailer": any(n.endswith("/trailer.mp4") for n in master),
@@ -648,6 +687,8 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
     """Everything the film page shows. `running` is the set of execution names Cloud Run reports as running: the
     runner's progress record counts as live only while its execution is among them."""
     cfg = _config(store, slug)
+    over = None if cfg else story_overrides(store, row)       # what the first tick will merge into the project
+    fmt = film_format(cfg, over)
     bible = _json(store, f"{slug}/project/01_story_bible.json") or {}
     outline = _json(store, f"{slug}/project/02_outline.json") or {}
     cast = _yaml(store, f"{slug}/project/cast.lock.yaml") or {}
@@ -695,7 +736,7 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
     cash = money(store, slug, cfg, row, produce)
     state = (row or {}).get("state") or (produce or {}).get("state") or ("made by hand" if bible else "new")
     # the raw file stays the source for money and policy; the tools are read from what the runner resolves
-    resolved, planned = run_config(cfg, row, None if cfg else story_overrides(store, row))
+    resolved, planned = run_config(cfg, row, over)
     stage_tools = tools.stage_tools(resolved, planned, shots=shots)
 
     with_leads = [sh for sh in shots if sh.get("characters_in_frame")]
@@ -776,11 +817,11 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         render_status = "done" if has_film or str(steps.get("render", "")) not in ("", "todo") else render_status
         render_bits = ["placeholder picture and voices (mock providers)"] + [b for b in render_bits if "music" in b]
     put("render", render_status, "; ".join(render_bits))
-    cut = ", ".join(x for x, ok in (("film", has_film), ("trailer", has_trailer)) if ok)
+    cut = ", ".join(x for x, ok in (("short" if fmt == "short" else "film", has_film), ("trailer", has_trailer)) if ok)
     put("assemble", "awaiting" if any(g in gates for g in ("pacing", "final_cut", "trailer")) else
         ("done" if has_film else "todo"),
         (cut + (" (animatic)" if mock and has_film else "")
-         + ("; the trailer is next" if has_film and not has_trailer else "")))
+         + ("; the trailer is next" if has_film and not has_trailer and fmt != "short" else "")))
     qa_bits = []
     if qa_film is not None and qa_film.get("skipped"):
         qa_bits.append(f"skipped: {qa_film['skipped']}"[:120])
@@ -1016,8 +1057,8 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         "rework_steps": REWORK_STEPS, "rework_default": REWORK_DEFAULT.get(
             (gates[0] if gates else (issue or {}).get("stage")) or "", "render"),
         "gate_for": gate_for, "next_stage": next_stage, "live": live, "animatic": mock, "issue": issue,
-        "needs": [gate_help(g) for g in gates], "activity": activity(progress, live, tz),
-        "issue_step": (lambda s: f"Step {s[0]} · {s[1]}" if s else "")(step_of((issue or {}).get("stage"))),
+        "needs": [gate_help(g, fmt == "short") for g in gates], "activity": activity(progress, live, tz),
+        "issue_step": (lambda s: f"Step {s[0]} · {s[1]}" if s else "")(step_of((issue or {}).get("stage"), stages_for(fmt))),
         "cost_lines": cost_lines(cash["estimate"], cfg, [sh for sh in shots if sh.get("shot_id") not in clips],
                                  [sh for sh in with_leads if sh.get("shot_id") not in keyframes], scenes, cues)
         if not mock else [],
@@ -1034,6 +1075,7 @@ def detail(store: Store, slug: str, row: dict | None, running=(), tz=None) -> di
         "state": state,
         "hint": explain_note((row or {}).get("note") or (row or {}).get("state")),
         "policy": cfg.get("policy") or {}, "runtime": (cfg.get("film") or {}).get("runtime_minutes"),
+        "format": fmt, "seconds": short_seconds(cfg, over, fmt),
         "story_text": store.read_text(f"{slug}/project/input/story.md") or "",
         "ahead": rehearsal_view(_json(store, f"{slug}/reports/rehearsal.json")),
         "cap_suggest": cap_suggestion(state, cash),

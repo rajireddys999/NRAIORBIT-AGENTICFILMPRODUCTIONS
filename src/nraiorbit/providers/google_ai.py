@@ -337,6 +337,11 @@ class VeoVideo:
         except UnknownVideoTier as e:
             raise GoogleAPIError(str(e)) from None
 
+    def _upright(self) -> bool:
+        """google.veo_aspect_ratio 9:16 (a short): the clip and its first frame are upright. Anything else is the
+        feature frame, 16:9, and every call is made exactly as before."""
+        return str(self.g.get("veo_aspect_ratio") or "16:9").strip() == "9:16"
+
     def _keyframe(self, shot: Shot, prompt: str, refs: list[tuple[str, list[Path]]], keyframe: Path) -> Path:
         if not keyframe.exists():
             from ..identity import is_animal
@@ -346,7 +351,8 @@ class VeoVideo:
             owner = {names.get(cid, cid): words for cid, words in owner_words(self.root).items()}
             self.images.generate(keyframe_prompt(shot, prompt, [(n, len(p), n in animals) for n, p in refs], owner),
                                  keyframe,
-                                 refs=[p for _, paths in refs for p in paths], item=f"keyframe {shot.shot_id}")
+                                 refs=[p for _, paths in refs for p in paths], item=f"keyframe {shot.shot_id}",
+                                 **({"aspect_ratio": "9:16"} if self._upright() else {}))
         return keyframe
 
     def _first_frame(self, shot: Shot, scene_id: str, cast: CastLock, refs, keyframe: Path) -> Shot:
@@ -358,8 +364,8 @@ class VeoVideo:
         scene = next(s for s in self.outline.scenes if s.scene_id == scene_id)
 
         def draw(s: Shot) -> None:
-            self._keyframe(s, veo_prompt(s, scene, self.bible, cast, self.navarasa, self._speaker(s, scene_id)), refs,
-                           keyframe)
+            self._keyframe(s, veo_prompt(s, scene, self.bible, cast, self.navarasa, self._speaker(s, scene_id),
+                                         **({"vertical": True} if self._upright() else {})), refs, keyframe)
         try:
             draw(shot)
             return shot
@@ -444,7 +450,9 @@ class VeoVideo:
         else:
             model, tier, resolution = self._settings(shot)
             scene = next(s for s in self.outline.scenes if s.scene_id == ctx.scene_id)
-            prompt = veo_prompt(shot, scene, self.bible, ctx.cast, self.navarasa, self._speaker(shot, ctx.scene_id))
+            upright = {"vertical": True} if self._upright() else {}
+            prompt = veo_prompt(shot, scene, self.bible, ctx.cast, self.navarasa, self._speaker(shot, ctx.scene_id),
+                                **upright)
             mode = self.g.get("veo_mode", "keyframe")
             seconds = veo_clip_seconds(shot.duration_s, self.pricing, resolution, mode, bool(shot.characters_in_frame))
             cost = seconds * veo_price_per_second(self.pricing, self.g, tier, resolution)
@@ -454,7 +462,7 @@ class VeoVideo:
             self.ledger.check(cost + first_frame, f"Veo {shot.shot_id} ({seconds} s)"
                               + (" and its first frame" if first_frame else ""))
 
-            config = dict(duration_seconds=seconds, aspect_ratio="16:9", resolution=resolution,
+            config = dict(duration_seconds=seconds, aspect_ratio="9:16" if upright else "16:9", resolution=resolution,
                           negative_prompt=NEGATIVE, number_of_videos=1)
             if self.g.get("vertex"):                      # Veo audio is dropped in the edit (dialogue is TTS); on
                 config["generate_audio"] = bool(self.g.get("veo_audio", False))  # Vertex it is billed extra
@@ -474,7 +482,7 @@ class VeoVideo:
                     raise FirstFrameToLookAt(shot.shot_id)
                 if drawn is not shot:                     # worded again after a refusal: the clip in the same words
                     kwargs["prompt"] = veo_prompt(drawn, scene, self.bible, ctx.cast, self.navarasa,
-                                                  self._speaker(drawn, ctx.scene_id))
+                                                  self._speaker(drawn, ctx.scene_id), **upright)
                 if first_frame:                          # a refused frame and its redraw are both on the ledger now
                     self.ledger.check(cost, f"Veo {shot.shot_id} ({seconds} s)")
                 kwargs["image"] = types.Image.from_file(location=str(keyframe))

@@ -9,11 +9,22 @@ from .base import Agent, project_context
 class StoryAnalyst(Agent):
     name = "story_analyst"
 
-    def run(self, plot: str, runtime_minutes: float, template: str, template_guide: str) -> StoryBible:
+    def run(self, plot: str, runtime_minutes: float, template: str, template_guide: str,
+            short_seconds: int | None = None) -> StoryBible:
+        """`short_seconds`: a vertical short of that many seconds (film.format: short) instead of a feature."""
         template_line = (
             "Choose the structure_template that best fits the plot."
             if template == "auto" else f"Use structure_template '{template}'."
         )
+        if short_seconds:
+            task = (
+                f"Build the Story Bible for a {short_seconds}-second vertical Telugu short for YouTube Shorts: one "
+                "idea told on a phone screen (9:16, upright) in that time, with a hook in the first three seconds, "
+                "one turn and a payoff at the end. One or two characters, one setting, a few short lines at most, "
+                "and a single act whose beats are the hook, the turn and the payoff. No interval, no sub-plots.\n"
+                f"Use structure_template 'short'.\n\n{template_guide}\n\n<plot>\n{plot}\n</plot>"
+            )
+            return self.ask(StoryBible, context="", task=task)
         task = (
             f"Build the Story Bible for a {runtime_minutes:g}-minute Telugu feature film.\n"
             f"{template_line}\n\n{template_guide}\n\n<plot>\n{plot}\n</plot>"
@@ -25,11 +36,20 @@ class Screenwriter(Agent):
     name = "screenwriter"
 
     def outline(self, bible: StoryBible, runtime_minutes: float, template_guide: str,
-                issues: list[str] | None = None) -> Outline:
-        task = (
-            f"Write the scene outline for the whole film. Scene target_seconds must sum to "
-            f"{int(runtime_minutes * 60)} seconds.\n{template_guide}"
-        )
+                issues: list[str] | None = None, short_seconds: int | None = None) -> Outline:
+        """`short_seconds`: the outline of a vertical short of that many seconds (film.format: short)."""
+        if short_seconds:
+            task = (
+                f"Write the scene outline for the whole short: one or two scenes whose target_seconds sum to "
+                f"{short_seconds} seconds, the first opening on the hook and the last ending on the payoff. No "
+                "interval and no set pieces (set_piece none); every scene is a whole moment with one clear rasa.\n"
+                f"{template_guide}"
+            )
+        else:
+            task = (
+                f"Write the scene outline for the whole film. Scene target_seconds must sum to "
+                f"{int(runtime_minutes * 60)} seconds.\n{template_guide}"
+            )
         if issues:
             task += "\n\nThe previous outline had these problems; fix them:\n- " + "\n- ".join(issues)
         return self.ask(Outline, context=project_context(("story_bible", bible)), task=task)

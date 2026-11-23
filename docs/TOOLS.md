@@ -24,6 +24,9 @@ the set fills in the tools the film's own `pipeline.yaml` does not name:
 | Claude | Opus 5.5 for every agent | Sonnet 5.5 for the shot lists, critic, casting, music and cards; Opus for the story and the script |
 | About, a minute of film | $13 | $4 |
 
+A short (the New Shorts tab) uses the same two sets, shot upright at 9:16; the page prices it from the same
+per-minute figures (30 seconds: about $7 on HD, about $2 on SD).
+
 The figures are from the last film's ledger and the lip-sync look test of 2026-11-07; the
 cost step prices every film shot by shot before anything is paid. A tool named in the
 film's own file beats the set, so a hand-picked `lipsync.model` stays.

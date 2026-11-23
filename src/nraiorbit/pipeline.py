@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from .agents import CardWriter, CastingAgent, DialogueCritic, Director, Editor, MusicDirector, Screenwriter, StoryAnalyst
 from .agents.production import least_shots, most_shots, shots_fit
 from .concurrency import ordered_map, workers
-from .config import REPO_ROOT, load_navarasa, load_pipeline_config
+from .config import REPO_ROOT, is_short, load_navarasa, load_pipeline_config
 from .costing import BudgetExceeded, SpendLedger, crowd_voices, load_pricing, load_takes
 from .guards.identity import IdentityGuard, IdentityThresholds
 from .guards.voice import VoiceGuard, VoiceTake, VoiceThresholds
@@ -515,9 +515,16 @@ class Pipeline:
         if not self.p.bible.exists():
             plot = self.p.story_input.read_text(encoding="utf-8")
             runtime, template = self._film["runtime_minutes"], self._film["structure_template"]
-            names = list(TEMPLATES) if template == "auto" else [template]
+            a_short = is_short({"film": self._film})      # the New Shorts tab: its own template, told in seconds
+            if a_short:
+                template = "short"
+                names, short = [template], {"short_seconds": int(round(float(runtime) * 60))}
+            else:
+                names, short = (list(TEMPLATES) if template == "auto" else [template]), {}
             guide = "\n\n".join(describe_template(t, runtime) for t in names)
-            bible = self.story_analyst.run(plot, runtime, template, guide)
+            bible = self.story_analyst.run(plot, runtime, template, guide, **short)
+            if a_short and bible.structure_template != "short":         # whatever the analyst named: a short is one
+                bible = bible.model_copy(update={"structure_template": "short"})
             self._save(self.p.bible, bible)
             self.log(f"  story bible: {bible.title_en} / {bible.title_te}, {len(bible.characters)} characters")
         self.gate("story")
@@ -533,19 +540,20 @@ class Pipeline:
         known = {c.id for c in bible.characters}
 
         def check(o: Outline) -> list[str]:
-            issues = validate_outline(o, runtime, tol)
+            issues = validate_outline(o, runtime, tol, template=bible.structure_template)
             for sc in o.scenes:
                 issues += [f"{sc.scene_id}: unknown character '{c}'" for c in sc.characters if c not in known]
             return issues
 
         grid = self._grid_lengths()                       # scene targets the clips can add up to: even for 4, 6
         step = math.gcd(*grid) if grid else 1              # and 8 s, a multiple of 8 when 8 s is the only length
-        outline = rebalance_outline(self.screenwriter.outline(bible, runtime, guide), runtime, step=step)
+        short = {"short_seconds": int(round(float(runtime) * 60))} if bible.structure_template == "short" else {}
+        outline = rebalance_outline(self.screenwriter.outline(bible, runtime, guide, **short), runtime, step=step)
         issues = check(outline)
         if issues:
             self.log(f"  outline issues, asking for a revision: {issues}")
-            outline = rebalance_outline(self.screenwriter.outline(bible, runtime, guide, issues=issues), runtime,
-                                        step=step)
+            outline = rebalance_outline(self.screenwriter.outline(bible, runtime, guide, issues=issues, **short),
+                                        runtime, step=step)
             issues = check(outline)
         for issue in issues:
             self._report("outline_issues", {"issue": issue})
@@ -598,6 +606,11 @@ class Pipeline:
         from .planning.fit import chars_for, lengthen_scenes, max_runtime_s, scene_speech
         grid = self._grid_lengths()                   # the same step as the outline: lengths the clips add up to
         cap, step = max_runtime_s(self._film), (math.gcd(*grid) if grid else 1)
+        most = math.inf                               # a film grows as far as its talking needs
+        if bible.structure_template == "short":       # a short never passes what YouTube takes as a Short
+            from .planning.runtime import SHORT_MAX_S
+            most = float(SHORT_MAX_S)
+            cap = min(cap, most)
         known = {c.id for c in bible.characters}
         lengths = {sc.scene_id: sc.target_seconds for sc in outline.scenes}
         for attempt in (1, 2):
@@ -608,7 +621,12 @@ class Pipeline:
             if not cut:
                 break
             if attempt == 2:                          # still over after one shortening: the film grows to hold it
-                new, _ = lengthen_scenes(lengths, speech, math.inf, step)
+                new, still = lengthen_scenes(lengths, speech, most, step)
+                if still:                             # only a short has a limit: three minutes
+                    raise PipelineBlocked(
+                        f"this short's dialogue needs more than the {int(most)} seconds YouTube allows a Short ("
+                        + "; ".join(f"{sid} has {speech[sid]:.0f} s of talking" for sid in still)
+                        + "). Send it back to Scenes with a note to say less, or make it as a film")
                 total = sum(int(v) for v in new.values())
                 self._report("scene_fit", {"over_cap": {sid: round(cut[sid], 1) for sid in cut}, "cap_s": cap,
                                            "film_seconds": total})
@@ -883,6 +901,9 @@ class Pipeline:
         if off_screen:                      # the video model will not show them: planned out of frame from the start
             kw["off_screen"] = off_screen
             self.log(f"  kept out of frame (the video model shows no one under 18): {', '.join(off_screen.values())}")
+        if bible.structure_template == "short":   # a short: upright shots, composed for a phone screen
+            from .agents.production import VERTICAL_FRAMING
+            kw["framing"] = VERTICAL_FRAMING
         plans = {}
         for i, out in ordered_map(lambda p: self.director.shots(bible, lock, p.sc, p.script, p.actions, p.camera, **kw),
                                   prepared, fan_out(self, len(prepared)), warm_first=True):
@@ -1850,6 +1871,9 @@ class Pipeline:
     # ------------------------------------------------------------------ S15 trailer
 
     def _trailer(self) -> None:
+        if is_short(self.cfg):                           # a short is the whole piece: no trailer, no trailer gate
+            self.log("  trailer: none for a short")
+            return
         out = self.p.master / "trailer.mp4"
         if not out.exists():
             bible = self._load(self.p.bible, StoryBible)

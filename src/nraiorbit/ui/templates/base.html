@@ -202,6 +202,7 @@ footer .line { display:flex; align-items:center; justify-content:space-between; 
   <nav class="primary" aria-label="Primary">
     <a href="/" {% if path == '/' or path.startswith('/film') %}class="on"{% endif %}>Films</a>
     <a href="/new" {% if path == '/new' %}class="on"{% endif %}>New film</a>
+    <a href="/shorts/new" {% if path == '/shorts/new' %}class="on"{% endif %}>New Shorts</a>
     <a href="/references" {% if path == '/references' %}class="on"{% endif %}>References</a>
     <a href="/feed" {% if path == '/feed' %}class="on"{% endif %}>Sound library</a>
   </nav>

@@ -97,7 +97,7 @@ class StoryBible(BaseModel):
     logline: str
     genres: list[str]
     tone: str
-    structure_template: Literal["telugu_commercial", "family_drama", "thriller", "village_action"]
+    structure_template: Literal["telugu_commercial", "family_drama", "thriller", "village_action", "short"]
     era_and_region: str
     world: str
     themes: list[str]
